@@ -56,3 +56,5 @@ In general you'll notice I use a lot of map-filter-reduce, because functional pr
  - **test_features.py** : uses multiprocessing.Pool to map the feature testing function in parallel.
  - **get_prediction_maps.py** : contains usage of numpy.apply_over_axis to transform image data, along with usage of Python's multiprocessing and functional tools.
  - **get_model.py** : This is really just a wrapper to call a function in *ml.py*, just so that *ml.py* doesn't have to be touched or editted ever in normal usage.
+
+![sample_result_map](./sample_files/generated_prediction_map.jpg)
