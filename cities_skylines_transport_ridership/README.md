@@ -27,6 +27,6 @@ Plots are generated individually before being stitched simply with *numpy.concat
 
 The combined plot results are included in the repository.
 
-![individual](./files/results/individual_Mean_Rider_Percentage.jpg)
+![individual](./files/results/individual_Mean Rider Percentage.jpg)
 
-![categories](./files/results/categories_Mean_Rider_Percentage.jpg)
+![categories](./files/results/categories_Mean Rider Percentage.jpg)
