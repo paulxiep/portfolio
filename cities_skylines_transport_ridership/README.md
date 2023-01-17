@@ -5,7 +5,6 @@ This is a simple data visualization project.
 The data are public transport ridership of different cities created in Cities Skylines.
 
 Examples of the data used are the attached Sebascodegan.jpg and Shuangbashi.jpg
-![categories](./Sebascodegan.jpg)
 
 This is then input into the text file *files/data.txt*. 
 (by hand, no OCR used) The text file was designed in a simple format just in case other city builders may be tempted to share their data they can do so in the same format.
