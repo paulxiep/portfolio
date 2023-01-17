@@ -83,14 +83,14 @@ def plot(cities):
             ncities = len(cities_square.index)
 
             out = pd.concat([selected.sum(), cities_percent.mean()], axis=1)
-            out.columns = ['Total Riders', 'Mean Rider Percentage']
-            total = out['Total Riders']['Total']
+            out.columns = ['total_riders', 'mean_rider_percentage']
+            total = out['total_riders']['Total']
             out = out.drop('Total')
             out['Category'] = out.index
             out['Category'] = out['Category'].map(categorize)
             out['Transport'] = out.index
 
-            for col in ['Total Riders', 'Mean Rider Percentage']:
+            for col in ['total_riders', 'mean_rider_percentage']:
                 out = out.sort_values(col, ascending=False)
                 import matplotlib.pyplot as plt
 
@@ -121,7 +121,7 @@ def plot(cities):
 
 def combine_plots():
     for plot_type in ['individual', 'categories']:
-        for col in ['Total Riders', 'Mean Rider Percentage']:
+        for col in ['total_riders', 'mean_rider_percentage']:
             images = [['archipelago', 'canal', 'valley'], ['singlebodied', 'layered', 'international'],
                       ['flat', 'bumpy', 'european']]
             images = list(map(lambda y: list(map(lambda x: cv2.imread(f'files/results/{plot_type}_{col}_{x}.jpg'), y)), images))
