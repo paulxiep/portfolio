@@ -2,10 +2,13 @@ import json
 import operator
 from functools import reduce
 import os
+import yaml
 import re
 from util import *
 
-save_file = '/Users/paulx/Documents/Paradox Interactive/Europa Universalis IV/save games/Xie Kamchatka 4.eu4'
+with open('settings.yaml', 'r') as f:
+    save_file = yaml.safe_load(f)['file_path']['save_file']
+# save_file = '/Users/paulx/Documents/Paradox Interactive/Europa Universalis IV/save games/Xie Kamchatka 4.eu4'
 
 def get_province_data(save_data):
     province_data = {}
@@ -18,19 +21,19 @@ def get_province_data(save_data):
         except:
             owner = None
         try:
-            tax = re.search('base_tax=(\d*).', save_data[0]).group(1)
+            tax = int(re.search('base_tax=(\d*).', save_data[0]).group(1))
         except:
             tax = 1
         try:
-            production = re.search('base_production=(\d*).', save_data[0]).group(1)
+            production = int(re.search('base_production=(\d*).', save_data[0]).group(1))
         except:
             production = 1
         try:
-            manpower = re.search('base_manpower=(\d*).', save_data[0]).group(1)
+            manpower = int(re.search('base_manpower=(\d*).', save_data[0]).group(1))
         except:
             manpower = 1
         try:
-            trade_power = re.search('trade_power=(\d*.\d*)\n', save_data[0]).group(1)
+            trade_power = float(re.search('trade_power=(\d*.\d*)\n', save_data[0]).group(1))
             province_data[str(i)] = {'tax': tax, 'production': production, 'manpower': manpower,
                                      'trade_power': trade_power, 'owner': owner}
         except:

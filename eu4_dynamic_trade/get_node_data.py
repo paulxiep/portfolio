@@ -2,12 +2,17 @@ import json
 import operator
 from functools import reduce
 import os
+import yaml
 import re
 from util import *
 from get_save_data import get_save_data
 
-game_data_path = '/Games/Steam/steamapps/common/Europa Universalis IV'
-node_data_path = 'common/tradenodes'
+with open('settings.yaml', 'r') as f:
+    settings = yaml.safe_load(f)
+game_data_path = settings['file_path']['game_data_path']
+node_data_path = settings['file_path']['node_data_path']
+# game_data_path = '/Games/Steam/steamapps/common/Europa Universalis IV'
+# node_data_path = 'common/tradenodes'
 
 def find_close_bracket(string):
     open_brackets = 0
