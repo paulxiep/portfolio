@@ -242,14 +242,20 @@ class HexBoard:
 
 
 class CatanHexBoard(HexBoard):
-    def __init__(self, h_length, d_length):
-        super().__init__(h_length, d_length)
+    def __init__(self, max_players=4):
         self.resource_types = ['ore', 'brick', 'wool', 'grain', 'lumber', 'desert']
+        if max_players == 4:
+            super().__init__(3, 3)
+            self.resource_count = dict(zip(self.resource_types, [3, 3, 4, 4, 4, 1]))
+            self.numbers = reduce(list.__add__,
+                                  map(lambda x: [x, x] if abs(x - 7) < 5 else [x], list(range(2, 7)) + list(range(8, 13))))
+        elif max_players == 6:
+            super().__init__(3, 4)
+            self.resource_count = dict(zip(self.resource_types, [5, 5, 6, 6, 6, 2]))
+            self.numbers = reduce(list.__add__,
+                                  map(lambda x: [x, x, x] if abs(x - 7) < 5 else [x, x], list(range(2, 7)) + list(range(8, 13))))
         self.players = ['orange red', 'blue', 'floral white']
-        self.resource_count = dict(zip(self.resource_types, [3, 3, 4, 4, 4, 1]))
         self.resources = reduce(list.__add__, [[resource] * repeat for resource, repeat in self.resource_count.items()])
-        self.numbers = reduce(list.__add__,
-                              map(lambda x: [x, x] if abs(x - 7) < 5 else [x], list(range(2, 7)) + list(range(8, 13))))
         self.assign_resources()
         self.assign_numbers()
 

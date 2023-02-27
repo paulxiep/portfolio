@@ -86,7 +86,7 @@ if __name__ == '__main__':
     root = Tk()
     root.title('Catan')
     root.geometry('800x600')
-    catan_board = CatanHexBoard(3, 3)
+    catan_board = CatanHexBoard(6)
     # for corner in catan_board.corner_list:
     #     corner.city = random.choice(['orange red', 'blue', 'floral white', None])
     catan_canvas = CatanCanvas(root, width=600, height=600)
