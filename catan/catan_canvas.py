@@ -6,11 +6,11 @@ class CatanCanvas(Canvas):
     def __init__(self, master, session, coor=(200, 100), *args, **kwargs):
         Canvas.__init__(self, master=master, *args, **kwargs)
         self.coor = coor
-        self.hex_color_code = {'ore': 'gray', 'brick': 'orange red',
+        self.hex_color_code = {'ore': 'gray', 'brick': 'sienna2',
                            'wool': 'beige', 'grain': 'yellow',
-                           'lumber': 'green', 'desert': 'red',
+                           'lumber': 'green', 'desert': 'khaki',
                            'none': 'light sky blue'}
-        self.player_color_code = {None: 'black', **{item: item for item in ['orange', 'blue', 'white']}}
+        self.player_color_code = {None: 'black', **{item: item for item in ['white', 'orange', 'blue', 'red']}}
         self.corner_button_image = ImageTk.PhotoImage(self.create_corner_button_img())
         self.session = session
 

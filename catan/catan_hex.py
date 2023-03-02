@@ -52,6 +52,9 @@ class CatanHex(Hex):
         self.number = 0
         self.robber = False
 
+    def pips(self):
+        return (6 - abs(7 - self.number)) * (self.number != 0)
+
     def __repr__(self):
         if not self.robber:
             return self.resource[0].upper() + str(self.number).zfill(2)

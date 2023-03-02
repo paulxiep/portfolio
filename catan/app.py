@@ -2,10 +2,16 @@ from catan_hex import *
 from tkinter import *
 from catan_canvas import CatanCanvas
 import random
-from functools import reduce
+from functools import reduce, partial
 from itertools import groupby
+from gtts import gTTS
+import playsound
+# import os
+# from time import sleep
 
-player_order = ['white', 'orange', 'blue']
+player_order = ['white', 'orange', 'blue', 'red']
+# ai_players = {'red': 'greedy_ai'}
+ai_players = {player: 'greedy_ai' for player in player_order}
 player_last = {player: None for player in player_order}
 player_last_turn = {player: 0 for player in player_order}
 first_actions = ['settlement', 'road']
@@ -53,8 +59,8 @@ class CatanSession(Tk):
         self.players = {player: {
             'resource': 0,
             'ore': 0,
-            'brick': 2,
-            'lumber': 2,
+            'brick': 0,
+            'lumber': 0,
             'grain': 0,
             'wool': 0,
             'army': 0,
@@ -67,9 +73,11 @@ class CatanSession(Tk):
                 'development': 0
             }
         } for player in player_order}
+        self.tokens = {player: {'settlement': 5, 'city': 4, 'road': 5} for player in player_order}
         self.inactive_development = {player:[] for player in player_order}
         self.development_pool = development_cards.copy()
         self.resource_data = {player: {} for player in player_order}
+        self.resource_spin = {player: {} for player in player_order}
         self.player_columns = {}
         self.resource_rows = {}
         self.trade_rates = {player: {resource: 4 for resource in resource_types} for player in player_order}
@@ -80,6 +88,17 @@ class CatanSession(Tk):
         self.discarding = False
         self.plenty = False
         self.monopoly = False
+        self.wait_ai = False
+
+    def instruction(self, instruction):
+        print(instruction)
+        self.instruction_label.config(text=instruction)
+        try:
+            gTTS(text=instruction, lang='en').save('temp.mp3')
+            playsound.playsound('.\\temp.mp3')
+        except:
+            return None
+
     def clear_ui_frame(self):
         for widget in self.generic_ui_frame.winfo_children():
             widget.destroy()
@@ -120,22 +139,22 @@ class CatanSession(Tk):
         self.table.place(x=20, y=150)
         self.build_buttons = {build: Button(self.turn_ui_frame, text=f'buy {build}', command=getattr(self, f'buy_{build}'), state='disabled') for build in build_options.keys()}
         [build_button.place(x=20+100*i, y=450) for i, build_button in enumerate(self.build_buttons.values())]
-        Label(self.turn_ui_frame, text='trade away').place(x=220, y=170)
-        Label(self.turn_ui_frame, text='trade for').place(x=360, y=170)
+        Label(self.turn_ui_frame, text='trade away').place(x=260, y=170)
+        Label(self.turn_ui_frame, text='trade for').place(x=400, y=170)
         self.trade_button = Button(self.turn_ui_frame, text='Trade', command=self.bank_trade, state='disabled')
-        self.trade_button.place(x=305, y=200)
+        self.trade_button.place(x=345, y=200)
         self.trade_away_var = StringVar(self)
         self.trade_away_option = OptionMenu(self.turn_ui_frame, self.trade_away_var, *resource_types)
-        self.trade_away_option.place(x=220, y=200)
+        self.trade_away_option.place(x=260, y=200)
         self.trade_for_var = StringVar(self)
         self.trade_for_option = OptionMenu(self.turn_ui_frame, self.trade_for_var, *resource_types)
-        self.trade_for_option.place(x=360, y=200)
+        self.trade_for_option.place(x=400, y=200)
         self.development_var = StringVar(self)
-        Label(self.turn_ui_frame, text='development').place(x=220, y=380)
-        self.development_option = OptionMenu(self.turn_ui_frame, self.development_var, *set(development_cards))
-        self.development_option.place(x=220, y=400)
+        Label(self.turn_ui_frame, text='development').place(x=260, y=380)
+        self.development_option = OptionMenu(self.turn_ui_frame, self.development_var, *[card for card in set(development_cards) if card != 'victory'])
+        self.development_option.place(x=260, y=400)
         self.use_development_button = Button(self.turn_ui_frame, text='Use', command=self.use_development)
-        self.use_development_button.place(x=320, y=400)
+        self.use_development_button.place(x=360, y=400)
 
         for j, resource in enumerate(self.players[player_order[0]].keys()):
             if not isinstance(self.players[player_order[0]][resource], dict):
@@ -150,12 +169,14 @@ class CatanSession(Tk):
             self.player_columns[player].grid(row=0, column=i+1)
             for j, resource in enumerate(self.players[player].keys()):
                 if not isinstance(self.players[player][resource], dict):
-                    self.resource_data[player][resource] = Label(self.table, text=0)
-                    self.resource_data[player][resource].grid(row=j+1, column=i+1)
+                    self.resource_data[player][resource] = IntVar(self, value=0)
+                    self.resource_spin[player][resource] = Spinbox(self.table, values=tuple(range(20)), width=4, textvariable=self.resource_data[player][resource], state='disabled')
+                    self.resource_spin[player][resource].grid(row=j+1, column=i+1)
                 else:
                     for k, development in enumerate(self.players[player][resource].keys()):
-                        self.resource_data[player][development] = Label(self.table, text=0)
-                        self.resource_data[player][development].grid(row=j+1+k, column=i+1)
+                        self.resource_data[player][development] = IntVar(self, value=0)
+                        self.resource_spin[player][development] = Spinbox(self.table, values=tuple(range(20)), width=4, textvariable=self.resource_data[player][development], state='disabled')
+                        self.resource_spin[player][development].grid(row=j+1+k, column=i+1)
         self.update()
         self.dfs(game_state_dict, 'catan')
 
@@ -219,52 +240,31 @@ class CatanSession(Tk):
             for player in player_order:
                 if player in self.game_state:
                     break
-            eligible = []
             last_corner = player_last[player]
             eligible = [edge.coor for edge in last_corner.edges.values() if edge is not None]
-            # if last_corner.type == 'top':
-            #     try:
-            #         eligible.append(last_corner.hexes[6].edges[1].coor)
-            #         eligible.append(last_corner.hexes[6].edges[11].coor)
-            #     except:
-            #         try:
-            #             eligible.append(last_corner.hexes[10].edges[5].coor)
-            #         except:
-            #             eligible.append(last_corner.hexes[2].edges[7].coor)
-            #     try:
-            #         eligible.append(last_corner.hexes[2].edges[9].coor)
-            #     except:
-            #         eligible.append(last_corner.hexes[10].edges[3].coor)
-            # else:
-            #     try:
-            #         eligible.append(last_corner.hexes[12].edges[5].coor)
-            #         eligible.append(last_corner.hexes[12].edges[7].coor)
-            #     except:
-            #         try:
-            #             eligible.append(last_corner.hexes[4].edges[11].coor)
-            #         except:
-            #             eligible.append(last_corner.hexes[8].edges[1].coor)
-            #     try:
-            #         eligible.append(last_corner.hexes[4].edges[9].coor)
-            #     except:
-            #         eligible.append(last_corner.hexes[8].edges[3].coor)
             return eligible
         for current_player in player_order:
             if current_player in self.game_state:
                 break
+        if current_player in ai_players.keys():
+            self.wait_ai = True
+        else:
+            self.wait_ai = False
         if self.game_state[-1] == current_player:
             while len(self.inactive_development[current_player]) > 0:
                 development = self.inactive_development[current_player].pop()
                 self.players[current_player]['development'][development] += 1
-                self.resource_data[current_player][development].config(text=self.players[current_player]['development'][development])
+                self.resource_data[current_player][development].set(self.players[current_player]['development'][development])
         if self.game_state[-1]=='road':
-            self.instruction_label.config(text=f'{current_player} place road')
+            # self.instruction_label.config(text=f'{current_player} place road')
+            self.instruction(f'{current_player} place road')
             if 'initial_placement' in self.game_state:
                 eligible = compile_eligible_road_initial()
             self.canvas.draw_road_placer(self.board, self, eligible=eligible)
             self.update()
         elif self.game_state[-1]=='settlement':
-            self.instruction_label.config(text=f'{current_player} place settlement')
+            # self.instruction_label.config(text=f'{current_player} place settlement')
+            self.instruction(f'{current_player} place settlement')
             if 'initial_placement' in self.game_state:
                 ineligible = self.compile_ineligible_settlement()
             self.canvas.draw_buttons(self.board, self, ineligible=ineligible)
@@ -275,11 +275,13 @@ class CatanSession(Tk):
                 if hex is not None and hex.resource != 'desert':
                     to_collect[hex.resource] += 1
                     self.players[current_player][hex.resource] += 1
-                    self.resource_data[current_player][hex.resource].config(text=self.players[current_player][hex.resource])
+                    self.resource_data[current_player][hex.resource].set(self.players[current_player][hex.resource])
             to_collect_text = ' and '.join([f'{v} {k}' for k, v in to_collect.items() if v>0])
-            self.instruction_label.config(text=f'{current_player} collects {to_collect_text}')
+            # self.instruction_label.config(text=f'{current_player} collects {to_collect_text}')
+            self.instruction(f'{current_player} collects {to_collect_text}')
         elif self.game_state[-1] == 'dice':
-            self.instruction_label.config(text=f'{current_player} throws dice')
+            # self.instruction_label.config(text=f'{current_player} throws dice')
+            self.instruction(f'{current_player} throws dice')
         elif self.game_state[-1] == 'resolve_dice' and self.dice!=7:
             collect = {player: {resource: 0 for resource in resource_types} for player in player_order}
             for corner in self.board.corner_list:
@@ -288,20 +290,20 @@ class CatanSession(Tk):
                         if hex is not None and hex.number == self.dice and not hex.robber:
                             collect[corner.settlement][hex.resource] += 1
                             self.players[corner.settlement][hex.resource] += 1
-                            self.resource_data[corner.settlement][hex.resource].config(text=self.players[corner.settlement][hex.resource])
+                            self.resource_data[corner.settlement][hex.resource].set(self.players[corner.settlement][hex.resource])
 
                 if corner.city is not None:
                     for hex in corner.hexes.values():
                         if hex is not None and hex.number == self.dice and not hex.robber:
                             collect[corner.city][hex.resource] += 2
                             self.players[corner.city][hex.resource] += 2
-                            self.resource_data[corner.city][hex.resource].config(
-                                text=self.players[corner.city][hex.resource])
+                            self.resource_data[corner.city][hex.resource].set(self.players[corner.city][hex.resource])
 
-            to_collect_text = '\n'.join(list(filter(lambda x: not x.endswith('ects '), [f'{player} collects ' + ', '.join([f'{v} {k}' for k, v in collect[player].items() if v > 0]) for player in player_order])))
+            to_collect_text = ',\n'.join(list(filter(lambda x: not x.endswith('ects '), [f'{player} collects ' + ', '.join([f'{v} {k}' for k, v in collect[player].items() if v > 0]) for player in player_order])))
             if len(to_collect_text)==0:
                 to_collect_text = 'Click Proceed'
-            self.instruction_label.config(text=to_collect_text)
+            # self.instruction_label.config(text=to_collect_text)
+            self.instruction(to_collect_text)
         elif self.game_state[-1] == 'resolve_dice' and self.dice==7:
             to_discard = {}
             for player in player_order:
@@ -310,11 +312,13 @@ class CatanSession(Tk):
                     to_discard[player] = random.sample(total, len(total)//2)
                     for resource in to_discard[player]:
                         self.players[player][resource] -= 1
-                        self.resource_data[player][resource].config(text=self.players[player][resource])
-            to_discard_text = '\n'.join(list(filter(lambda x: not x.endswith('ards '), [f'{player} discards ' + ', '.join([f'{v} {k}' for k, v in {key: len(list(res)) for key, res in groupby(to_discard[player])}.items()]) for player in to_discard.keys()])))
+                        self.resource_data[player][resource].set(self.players[player][resource])
+            to_discard_text = ',\n'.join(list(filter(lambda x: not x.endswith('ards '), [f'{player} discards ' + ', '.join([f'{v} {k}' for k, v in {key: len(list(res)) for key, res in groupby(to_discard[player])}.items()]) for player in to_discard.keys()])))
             if len(to_discard_text)==0:
                 to_discard_text = 'Click proceed after moving robber'
-            self.instruction_label.config(text=to_discard_text)
+            # self.instruction_label.config(text=to_discard_text)
+            self.instruction(to_discard_text)
+            # print(to_discard_text)
             self.moving_robber()
         else:
             self.instruction_label.config(text='Click Proceed')
@@ -324,17 +328,25 @@ class CatanSession(Tk):
             [build_button.config(state='normal') for build_button in self.build_buttons.values()]
         elif self.game_state[-1] == 'trade':
             self.trade_button.config(state='normal')
+        if self.game_state[-1] == 'trade' or self.game_state[-1] == 'resolve_dice':
+            [self.resource_spin[p][key].config(state='normal') for p in player_order for key in resource_types]
+        else:
+            [self.resource_spin[p][key].config(state='disabled') for p in player_order for key in resource_types]
+            for p in player_order:
+                for key in resource_types:
+                    self.players[p][key] = self.resource_data[p][key].get()
 
-    def bank_trade(self):
+    def bank_trade(self, trade_away=None, trade_for=None):
         for player in player_order:
             if player in self.game_state:
                 break
-        if self.trade_away_var.get() == '' or self.trade_for_var.get() == '':
-            print('trade option empty')
-            self.instruction_label.config(text=f'trade option empty')
-            return None
-        trade_away = self.trade_away_var.get()
-        trade_for = self.trade_for_var.get()
+        if trade_away is None and trade_for is None:
+            if self.trade_away_var.get() == '' or self.trade_for_var.get() == '':
+                print('trade option empty')
+                self.instruction_label.config(text=f'trade option empty')
+                return None
+            trade_away = self.trade_away_var.get()
+            trade_for = self.trade_for_var.get()
         if self.players[player][trade_away] < self.trade_rates[player][trade_away]:
             print(f'not enough {trade_away} for trade')
             self.instruction_label.config(text=f'not enough {trade_away} for trade')
@@ -342,9 +354,10 @@ class CatanSession(Tk):
         else:
             self.players[player][trade_away] -= self.trade_rates[player][trade_away]
             self.players[player][trade_for] += 1
-            self.instruction_label.config(text=f'exchanged {trade_away} for {trade_for}')
-            self.resource_data[player][trade_away].config(text=self.players[player][trade_away])
-            self.resource_data[player][trade_for].config(text=self.players[player][trade_for])
+            # self.instruction_label.config(text=f'exchanged {trade_away} for {trade_for}')
+            self.instruction(f'exchanged {trade_away} for {trade_for}')
+            self.resource_data[player][trade_away].set(self.players[player][trade_away])
+            self.resource_data[player][trade_for].set(self.players[player][trade_for])
 
     def buy_road(self, free=False):
         eligible = self.compile_eligible_road()
@@ -363,8 +376,9 @@ class CatanSession(Tk):
                     return None
             for k, v in build_options['road'].items():
                 self.players[player][k] -= v
-                self.resource_data[player][k].config(text=self.players[player][k])
-        self.instruction_label.config(text=f'{player} place road')
+                self.resource_data[player][k].set(self.players[player][k])
+        # self.instruction_label.config(text=f'{player} place road')
+        self.instruction(f'{player} place road')
         self.canvas.draw_road_placer(self.board, self, eligible=eligible)
         self.update()
         self.wait_build = True
@@ -384,8 +398,9 @@ class CatanSession(Tk):
                 return None
         for k, v in build_options['settlement'].items():
             self.players[player][k] -= v
-            self.resource_data[player][k].config(text=self.players[player][k])
-        self.instruction_label.config(text=f'{player} place settlement')
+            self.resource_data[player][k].set(self.players[player][k])
+        # self.instruction_label.config(text=f'{player} place settlement')
+        self.instruction(f'{player} place settlement')
         self.canvas.draw_buttons(self.board, self, eligible=eligible)
         self.update()
         self.wait_build = True
@@ -405,8 +420,9 @@ class CatanSession(Tk):
                 return None
         for k, v in build_options['city'].items():
             self.players[player][k] -= v
-            self.resource_data[player][k].config(text=self.players[player][k])
-        self.instruction_label.config(text=f'{player} place city')
+            self.resource_data[player][k].set(self.players[player][k])
+        # self.instruction_label.config(text=f'{player} place city')
+        self.instruction(f'{player} place city')
         self.canvas.draw_buttons(self.board, self, eligible=eligible)
         self.update()
         self.wait_build=True
@@ -425,21 +441,25 @@ class CatanSession(Tk):
                 return None
         for k, v in build_options['development'].items():
             self.players[player][k] -= v
-            self.resource_data[player][k].config(text=self.players[player][k])
+            self.resource_data[player][k].set(self.players[player][k])
         self.inactive_development[player].append(self.development_pool.pop(random.randrange(len(self.development_pool))))
-        self.instruction_label.config(text=f'{player} purchased development')
+        # self.instruction_label.config(text=f'{player} purchased development')
+        self.instruction(f'{player} purchased development')
         self.update()
     def use_plenty(self, player):
-        self.instruction_label.config(text=f'{player} take free resource')
+        # self.instruction_label.config(text=f'{player} take free resource')
+        self.instruction(f'{player} take free resource')
         self.canvas.draw_resource_buttons(self.board)
         self.update()
     def use_monopoly(self, player):
-        self.instruction_label.config(text=f'{player} choose resource to monopolize')
+        # self.instruction_label.config(text=f'{player} choose resource to monopolize')
+        self.instruction(f'{player} choose resource to monopolize')
         self.canvas.draw_resource_buttons(self.board)
         self.update()
     def use_development(self):
         def use_knight():
             self.players[player]['army'] += 1
+            self.resource_data[player]['army'].set(self.players[player]['army'])
             self.moving_robber()
         def use_road():
             self.wait_process=True
@@ -471,7 +491,7 @@ class CatanSession(Tk):
             self.instruction_label.config(text=f'no {development} card to use')
             return None
         self.players[player]['development'][development] -= 1
-        self.resource_data[player][development].config(text=self.players[player]['development'][development])
+        self.resource_data[player][development].set(self.players[player]['development'][development])
 
         locals()[f'use_{development}']()
 
@@ -480,17 +500,21 @@ class CatanSession(Tk):
         for player in player_order:
             if player in self.game_state:
                 break
-        self.instruction_label.config(text=f'{player} move robber')
+        # self.instruction_label.config(text=f'{player} move robber')
+        self.instruction(f'{player} move robber')
         self.canvas.draw_robber_buttons(self.board, self)
         self.update()
         self.wait_move_robber = True
+        if player in ai_players.keys():
+            print(player, 'is ai, calling robber ai')
+            self.robber_ai()
     def choose_resource(self, resource):
         for current_player in player_order:
             if current_player in self.game_state:
                 break
         if self.plenty:
             self.players[current_player][resource] += 1
-            self.resource_data[current_player][resource].config(text=self.players[current_player][resource])
+            self.resource_data[current_player][resource].set(self.players[current_player][resource])
             if len(self.process_list) > 0 and self.process_list.pop(0)=='plenty':
                 self.use_plenty(current_player)
             else:
@@ -505,13 +529,15 @@ class CatanSession(Tk):
                     resource_count = self.players[player][resource]
                     if resource_count > 0:
                         self.players[player][resource] = 0
-                        self.resource_data[player][resource].config(text=self.players[player][resource])
+                        self.resource_data[player][resource].set(self.players[player][resource])
                         self.players[current_player][resource] += resource_count
-                        self.resource_data[current_player][resource].config(text=self.players[current_player][resource])
+                        self.resource_data[current_player][resource].set(self.players[current_player][resource])
                         take_text += [f'{current_player} takes {resource_count} {resource} from {player}']
             self.monopoly = False
             self.wait_process = False
-            self.instruction_label.config(text='\n'.join(take_text))
+            # self.instruction_label.config(text='\n'.join(take_text))
+            if len(take_text)>0:
+                self.instruction(',\n'.join(take_text))
             self.canvas.delete('all')
             self.draw_board()
 
@@ -521,6 +547,7 @@ class CatanSession(Tk):
             if player in self.game_state:
                 break
         self.board.edges[j][i].road=player
+        self.tokens[player]['road'] -= 1
         player_last[player] = self.board.edges[j][i]
         self.canvas.delete('all')
         self.draw_board()
@@ -536,11 +563,15 @@ class CatanSession(Tk):
         if self.game_state[-1] == 'settlement':
             self.board.corners[j][i].settlement=player
             player_last[player] = self.board.corners[j][i]
+            self.tokens[player]['settlement'] -= 1
         elif self.board.corners[j][i].settlement is None:
             self.board.corners[j][i].settlement=player
+            self.tokens[player]['settlement'] -= 1
         else:
             self.board.corners[j][i].settlement=None
             self.board.corners[j][i].city=player
+            self.tokens[player]['settlement'] += 1
+            self.tokens[player]['city'] -= 1
         if self.board.corners[j][i].harbor is not None:
             if self.board.corners[j][i].harbor == 'x':
                 for resource in resource_types:
@@ -558,13 +589,13 @@ class CatanSession(Tk):
                 else:
                     print('resolving actions')
                     if self.game_state[-1]=='settlement' and not isinstance(player_last[player], CatanCorner):
-                        if auto_ai:
+                        if auto_ai or player in ai_players.key():
                             self.settlement_ai()
                             return True
                         print('place settlement first')
                         return False
                     elif self.game_state[-1]=='road' and not isinstance(player_last[player], CatanEdge):
-                        if auto_ai:
+                        if auto_ai or player in ai_players.keys():
                             self.road_ai()
                             return True
                         print('place road first')
@@ -579,11 +610,31 @@ class CatanSession(Tk):
                         print('resolve current process')
                         return False
                     elif self.game_state[-1]=='build':
+                        if self.wait_ai:
+                            self.build_ai()
+                            self.wait_ai=False
+                            return False
+                        return True
+                    elif self.game_state[-1]=='trade':
+                        if self.wait_ai:
+                            self.trade_ai()
+                            self.wait_ai=False
+                            return False
                         # self.build_ai()
                         return True
                     elif self.game_state[-1]=='dice':
+                        if self.wait_ai:
+                            self.knight_ai()
+                            self.wait_ai=False
+                            return False
                         self.dice = random.choice(die) + random.choice(die)
                         print(f'{player} rolled {self.dice}')
+                        return True
+                    elif self.game_state[-1]=='resolve_dice':
+                        if self.wait_ai:
+                            self.development_ai()
+                            self.wait_ai=False
+                            return False
                         return True
                     else:
                         return True
@@ -610,9 +661,10 @@ class CatanSession(Tk):
         if to_steal is not None:
             self.players[to_steal[0]][to_steal[1]] -= 1
             self.players[player][to_steal[1]] += 1
-            self.resource_data[to_steal[0]][to_steal[1]].config(text=self.players[to_steal[0]][to_steal[1]])
-            self.resource_data[player][to_steal[1]].config(text=self.players[player][to_steal[1]])
-            self.instruction_label.config(text=f'{player} steals 1 {to_steal[1]} from {to_steal[0]}')
+            self.resource_data[to_steal[0]][to_steal[1]].set(self.players[to_steal[0]][to_steal[1]])
+            self.resource_data[player][to_steal[1]].set(self.players[player][to_steal[1]])
+            # self.instruction_label.config(text=f'{player} steals 1 {to_steal[1]} from {to_steal[0]}')
+            self.instruction(f'{player} steals 1 {to_steal[1]} from {to_steal[0]}')
         # player_last[player] = self.board.edges[j][i]
         self.canvas.delete('all')
         self.draw_board()
@@ -649,7 +701,7 @@ class CatanSession(Tk):
         else:
             print('error')
         self.game_state.pop(-1)
-    def player_pip(self, player = None):
+    def player_pip(self, player=None):
         if player is None:
             for player in player_order:
                 if player in self.game_state:
@@ -663,7 +715,78 @@ class CatanSession(Tk):
                 for resource, pip in corner.resource_pips().items():
                     out[resource] += 2*pip
         return out
+    def development_ai(self):
+        for player in player_order:
+            if player in self.game_state:
+                break
+        if self.players[player]['development']['road'] > 0:
+            self.players[player]['development']['road'] -= 1
+            self.resource_data[player]['road'].set(self.players[player]['development']['road'])
+            self.road_ai(self.compile_eligible_road())
+            self.road_ai(self.compile_eligible_road())
+        if self.players[player]['development']['monopoly'] > 0:
+            max_gain = max([(resource, self.players[p][resource]) for resource in resource_types for p in player_order if p!=player], key=lambda x: x[1])
+            if max_gain[1] > len(player_order):
+                self.players[player]['development']['monopoly'] -= 1
+                self.resource_data[player]['monopoly'].set(self.players[player]['development']['monopoly'])
+                self.monopoly = True
+                self.choose_resource(max_gain[0])
+        for build_option in ['city', 'settlement', 'road']:
+            if self.players[player]['development']['plenty'] > 0:
+                if len(getattr(self, f'compile_eligible_{build_option}')()) > 0:
+                    budget = {k: min(self.players[player][k] - v, 0) for k, v in build_options[build_option].items()}
+                    if -2 <= reduce(int.__add__, list(budget.values())) < 0:
+                        self.players[player]['development']['plenty'] -= 1
+                        self.resource_data[player]['plenty'].set(self.players[player]['development']['plenty'])
 
+                        self.plenty = True
+                        self.wait_process = True
+                        self.process_list.append('plenty')
+                        for k, v in budget.items():
+                            if v == -2:
+                                self.choose_resource(k)
+                                self.choose_resource(k)
+                            elif v == -1:
+                                self.choose_resource(k)
+                                self.choose_resource(min([(r, p) for r, p in self.player_pip(player).items()], key=lambda x: x[1] + random.random())[0])
+                        return None
+    def knight_ai(self):
+        for player in player_order:
+            if player in self.game_state:
+                break
+        if self.players[player]['development']['knight']==0:
+            return None
+        for hex in self.board.hex_list:
+            if hex.robber and hex.resource!='desert':
+                for corner in hex.corners.values():
+                    if corner is not None and (corner.settlement == player or corner.city == player):
+                        self.players[player]['development']['knight'] -= 1
+                        self.resource_data[player]['knight'].set(self.players[player]['development']['knight'])
+                        self.players[player]['army'] += 1
+                        self.resource_data[player]['army'].set(self.players[player]['army'])
+                        self.moving_robber()
+                return None
+    def robber_ai(self):
+        def hex_score(hex):
+            if hex.robber or hex.resource=='desert':
+                return -1000
+            pips = hex.pips()
+            return reduce(int.__add__, [pips*(corner.settlement is not None and corner.settlement!=player) +\
+             2*pips*(corner.city is not None and corner.city!=player) - \
+            (100 * pips * (corner.settlement is not None and corner.settlement == player) + \
+             200 * pips * (corner.city is not None and corner.city == player))
+             for corner in hex.corners.values() if corner is not None])
+        for player in player_order:
+            if player in self.game_state:
+                break
+        for hex in self.board.hex_list:
+            if hex.robber:
+                a, b = hex.coor
+        i, j = max(self.board.hex_list, key=hex_score).coor
+        self.move_robber(i, j, a, b)
+    def city_ai(self, eligible):
+        coor_choice = max(eligible, key=lambda coor: self.board.corners[coor[1]][coor[0]].pips()+random.random())
+        self.corner_place(coor_choice[0], coor_choice[1])
     def settlement_ai(self, eligible=None):
         # for current_player in player_order:
         #     if current_player in self.game_state:
@@ -672,42 +795,123 @@ class CatanSession(Tk):
             settlement_choices = [(x, y) for y, row in self.canvas.buttons.items() for x, b in row.items() if b is not None]
         else:
             settlement_choices = eligible
-        coor_choice = max(settlement_choices, key=lambda coor: self.board.corners[coor[1]][coor[0]].pips())
+        coor_choice = max(settlement_choices, key=lambda coor: self.board.corners[coor[1]][coor[0]].pips()+random.random())
         self.corner_place(coor_choice[0], coor_choice[1])
     def road_ai(self, eligible=None):
-        if eligible is None:
-            road_choices = [(x, y) for y, row in self.canvas.edges.items() for x, b in row.items() if b is not None]
-        else:
-            road_choices = eligible
-        coor_choice = random.choice(road_choices)
-        self.road_place(coor_choice[0], coor_choice[1])
-    def build_ai(self):
         for current_player in player_order:
             if current_player in self.game_state:
                 break
         eligible_settlements = self.compile_eligible_settlement()
-        print('eligible_settlements', eligible_settlements)
-        if len(eligible_settlements) > 0:
+        if eligible is None:
+            road_choices = [(x, y) for y, row in self.canvas.edges.items() for x, b in row.items() if b is not None]
+        else:
+            road_choices = eligible
+        gainful_choices = []
+        for choice in road_choices:
+            self.board.edges[choice[1]][choice[0]].road = current_player
+            new = list(set(self.compile_eligible_settlement())-set(eligible_settlements))
+            if len(new) > 0:
+                gainful_choices.append((choice, self.board.corners[new[0][1]][new[0][0]].pips()))
+            self.board.edges[choice[1]][choice[0]].road = None
+        if len(gainful_choices) > 0:
+            coor_choice = max(gainful_choices, key=lambda x: x[1]+random.random())[0]
+        else:
+            coor_choice = random.choice(road_choices)
+        self.road_place(coor_choice[0], coor_choice[1])
+    def trade_ai(self):
+        def trade_weight(resource, required, trade_rates):
+            amount = self.players[current_player][resource]
+            if resource in required.keys():
+                amount -= required[resource]
+            amount -= trade_rates[resource]
+            if amount < 0:
+                return -100
+            else:
+                return amount + random.random()/2 + (4-trade_rates[resource])/4
+        def try_trade(build_option):
+            resource = max([resource for resource in resource_types], key=lambda x: trade_weight(x, build_options['city'], trade_rates))
+            if trade_weight(resource, build_options[build_option], trade_rates) > 0:
+                self.bank_trade(resource, [k for k, v in budget.items() if v<0][0])
+                return True
+            return False
+        self.wait_ai = False
+        for current_player in player_order:
+            if current_player in self.game_state:
+                break
+        trade_rates = self.trade_rates[current_player]
+        eligible_cities = self.compile_eligible_city()
+        budget = {k: self.players[current_player][k] - v for k, v in build_options['city'].items()}
+        if len(eligible_cities)>0:
+            lacking = reduce(int.__add__, [min(v, 0) for v in budget.values()])
+            if lacking == 0 or (lacking == -1 and try_trade('city')):
+                return None
+        eligible_settlements = self.compile_eligible_settlement()
+        budget = {k: self.players[current_player][k] - v for k, v in build_options['settlement'].items()}
+        if len(eligible_settlements)>0 and reduce(int.__add__, [min(v, 0) for v in budget.values()]) == -1:
+            lacking = reduce(int.__add__, [min(v, 0) for v in budget.values()])
+            if lacking == 0 or (lacking == -1 and try_trade('settlement')):
+                return None
+        eligible_roads = self.compile_eligible_road()
+        budget = {k: self.players[current_player][k] - v for k, v in build_options['road'].items()}
+        if len(eligible_roads)>0 and reduce(int.__add__, [min(v, 0) for v in budget.values()]) == -1:
+            lacking = reduce(int.__add__, [min(v, 0) for v in budget.values()])
+            if lacking == 0 or (lacking == -1 and try_trade('road')):
+                return None
+        budget = {k: self.players[current_player][k] - v for k, v in build_options['development'].items()}
+        if len(eligible_roads)>0 and reduce(int.__add__, [min(v, 0) for v in budget.values()]) == -1:
+            lacking = reduce(int.__add__, [min(v, 0) for v in budget.values()])
+            if lacking == 0 or (lacking == -1 and try_trade('development')):
+                return None
+
+    def build_ai(self):
+        self.wait_ai = False
+        for current_player in player_order:
+            if current_player in self.game_state:
+                break
+        eligible_cities = self.compile_eligible_city()
+        save_for_city = False
+        if self.tokens[current_player]['city'] > 0 and len(eligible_cities) > 0:
+            required = [min(self.players[current_player][k] - v, 0) for k, v in build_options['city'].items()]
+            if reduce(int.__add__, required) == 0:
+                for k, v in build_options['city'].items():
+                    self.players[current_player][k] -= v
+                    self.resource_data[current_player][k].set(self.players[current_player][k])
+                self.city_ai(eligible=eligible_cities)
+                print(f'{current_player} built city')
+            elif reduce(int.__add__, required) >= -1:
+                save_for_city= True
+                print(f'{current_player} saving up for city')
+        eligible_settlements = self.compile_eligible_settlement()
+        if self.tokens[current_player]['settlement'] > 0 and len(eligible_settlements) > 0:
             required = [self.players[current_player][k] >= v for k, v in build_options['settlement'].items()]
             if all(required):
                 for k, v in build_options['settlement'].items():
                     self.players[current_player][k] -= v
-                    self.resource_data[current_player][k].config(text=self.players[current_player][k])
+                    self.resource_data[current_player][k].set(self.players[current_player][k])
                 self.settlement_ai(eligible=eligible_settlements)
                 print(f'{current_player} built settlement')
             if reduce(lambda x, y: x + int(y), required, 0) == 3:
                 print(f'{current_player} saving up for settlement')
                 return None
-        else:
-            eligible_roads = self.compile_eligible_road()
-            if len(eligible_roads) > 0:
-                required = [self.players[current_player][k] >= v for k, v in build_options['road'].items()]
-                if all(required):
-                    for k, v in build_options['road'].items():
-                        self.players[current_player][k] -= v
-                        self.resource_data[current_player][k].config(text=self.players[current_player][k])
-                    self.road_ai(eligible=eligible_roads)
-                    print(f'{current_player} built road')
+        # else:
+        eligible_roads = self.compile_eligible_road()
+        if self.tokens[current_player]['road'] > 0 and len(eligible_roads) > 0:
+            required = [self.players[current_player][k] >= v for k, v in build_options['road'].items()]
+            if all(required):
+                for k, v in build_options['road'].items():
+                    self.players[current_player][k] -= v
+                    self.resource_data[current_player][k].set(self.players[current_player][k])
+                self.road_ai(eligible=eligible_roads)
+                print(f'{current_player} built road')
+        if not save_for_city and len(self.development_pool)>0:
+            required = [self.players[current_player][k] >= v for k, v in build_options['development'].items()]
+            if all(required):
+            #     for k, v in build_options['development'].items():
+            #         self.players[current_player][k] -= v
+            #         self.resource_data[current_player][k].set(self.players[current_player][k])
+                self.buy_development()
+                # print(f'{current_player} purchased development')
+
 
 
 # def button_function(y, x):
