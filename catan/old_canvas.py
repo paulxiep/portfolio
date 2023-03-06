@@ -20,7 +20,7 @@ class CatanCanvas(Canvas):
         draw = ImageDraw.Draw(img)
         draw.ellipse((2, 2, 8, 8), fill=(55, 55, 55))
         return img
-    def draw_resource_buttons(self, board, player, v=40):
+    def draw_resource_buttons(self, board, v=40):
         cos60 = 1 / 2
         sin60 = sqrt(3) / 2
         h_length = board.h_length
@@ -33,7 +33,7 @@ class CatanCanvas(Canvas):
                                    self.coor[1] + v * 1.5 * (y - 1)),
                                   board.hexes[y][x], v, x, y)
 
-                    self.tag_bind(self.resource_buttons[y][x], f'<Button-1>', self.choose_resource(board.hexes[y][x].resource, player))
+                    self.tag_bind(self.resource_buttons[y][x], f'<Button-1>', self.choose_resource(board.hexes[y][x].resource))
     def draw_resource_button(self, coor, hex, v, i, j):
         x, y = coor
         cos60 = 1/2
@@ -78,7 +78,7 @@ class CatanCanvas(Canvas):
         self.create_line(coor1[0], coor1[1], coor2[0], coor2[1], fill=self.player_color_code[edge.road], width=5, tags=['edge'])
     def draw_edge_button(self, coor1, coor2, i, j):
         self.edges[j][i] = self.create_line(coor1[0], coor1[1], coor2[0], coor2[1], fill='grey', width=5, tags=['edge'])
-    def draw_robber_buttons(self, board, player, v=40):
+    def draw_robber_buttons(self, board, session, v=40):
         cos60 = 1 / 2
         sin60 = sqrt(3) / 2
         h_length = board.h_length
@@ -95,7 +95,7 @@ class CatanCanvas(Canvas):
                                    self.coor[1] + v * 1.5 * (y - 1)),
                                   board.hexes[y][x], v, x, y)
 
-                    self.tag_bind(self.robber_buttons[y][x], f'<Button-1>', self.robber_move(player, (x, y), (a, b)))
+                    self.tag_bind(self.robber_buttons[y][x], f'<Button-1>', self.robber_move(x, y, a, b))
     def draw_board(self, board, v=40):
         cos60 = 1/2
         sin60 = sqrt(3)/2
@@ -171,7 +171,7 @@ class CatanCanvas(Canvas):
                         self.buttons[y][x]=self.create_image(self.coor[0] + 2 * v * sin60 * (
                                     x - 1 - (1 + d_length - 1 - abs(y/2 - d_length)) / 2),
                                           self.coor[1] + v * 1.5 * (y/2 - 1), image=self.corner_button_image)
-                    self.tag_bind(self.buttons[y][x], f'<Button-1>', self.corner_place(session.game_state[1], (x, y)))
+                    self.tag_bind(self.buttons[y][x], f'<Button-1>', self.corner_place(x, y))
 
     def draw_road_placer(self, board, session, eligible=None, ineligible=None, v=40):
         # print('draw_road_placer called')
@@ -203,27 +203,27 @@ class CatanCanvas(Canvas):
                                 b = self.coor[1] + v * 1.5 * ((y+1) / 2 - 1)
                                 self.draw_edge_button((a, b), (a+v*sin60, b-v*cos60), x, y)
                             # self.tag_bind(self.edges[y][x], f'<Button-1>', road_place(x, y, session))
-                        self.tag_bind(self.edges[y][x], f'<Button-1>', self.road_place(session.game_state[1], (x, y)))
+                        self.tag_bind(self.edges[y][x], f'<Button-1>', self.road_place(x, y))
             else:
                 for x in range(1, h_length + d_length + 1 - abs(d_length - y // 2 - 1 + 1)):
                     if (eligible is not None and (x, y) in eligible) or (ineligible is not None and (x, y) not in ineligible):
                         a = self.coor[0] + 2 * v * sin60 * (x - 1 - (1 + d_length - 1 - abs(y/2 - d_length)) / 2)
                         b = self.coor[1] + v * 1.5 * (y/2 - 1)
                         self.draw_edge_button((a, b), (a, b+v), x, y)
-                        self.tag_bind(self.edges[y][x], f'<Button-1>', self.road_place(session.game_state[1], (x, y)))
-    def corner_place(self, player, coor):
+                        self.tag_bind(self.edges[y][x], f'<Button-1>', self.road_place(x, y))
+    def corner_place(self, x, y):
         def place(event):
-            self.session.corner_place(player, coor)
+            self.session.corner_place(x, y)
         return lambda event: place(event)
-    def road_place(self, player, coor):
+    def road_place(self, x, y):
         def place(event):
-            self.session.road_place(player, coor)
+            self.session.road_place(x, y)
         return lambda event: place(event)
-    def robber_move(self, player, coor, robber_coor):
+    def robber_move(self, x, y, a, b):
         def move(event):
-            self.session.robber_move(player, coor, robber_coor)
+            self.session.move_robber(x, y, a, b)
         return lambda event: move(event)
-    def choose_resource(self, resource, player):
+    def choose_resource(self, resource):
         def move(event):
-            self.session.choose_resource(resource, player)
+            self.session.choose_resource(resource)
         return lambda event: move(event)
