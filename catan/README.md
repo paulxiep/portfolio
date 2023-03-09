@@ -8,7 +8,9 @@ A very basic AI with no forward thinking was then implemented.
 
 So all the engine, the app, and basic AI were written in 4 days, albeit as a spaghetti mess.
 
-With the 2nd major update I've refactored all the code and class structures. I broke the interactive app with it, but now I'm focusing on simulation session with AI players so I can generate data to train a basic reinforcement learning AI. The interactive app will be fixed in due time after some AI training is done. (but the working version with old code is still kept in old_app.py)
+With the 2nd major update I've refactored all the code and class structures. It's still not as modular as I'd like so I'll reviewing intertwining methods between CatanApp and Catan Session again.
+
+A basic log data extractor and CatBoost training code has also been written. For the coming days I'll be experimenting with AI training.
 
 So now I have this kind of structure.
 

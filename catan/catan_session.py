@@ -29,14 +29,23 @@ class CatanSession:
             self.board=board
         else:
             self.board = CatanHexBoard(board_type)
-        self.players = {**{player: CatanPlayer(player, color) for player, color, ai in players if not ai},
-                        **{player: CatanAI(None, player, color) for player, color, ai in players if ai}}
+        harbor_list = [x[0] for x in [((1, 2), (1, 1)), ((2, 1), (3, 2)), ((4, 3), (5, 4)),
+                                      ((6, 6), (6, 7)), ((5, 9), (4, 10)), ((3, 11), (2, 12)),
+                                      ((1, 12), (1, 11)), ((1, 9), (1, 8)), ((1, 5), (1, 4))]]
+
+        self.players = {**{player: CatanPlayer(player, color) for player, color, ai, _ in players if not ai},
+                        **{player: CatanAI(personality, player, color) for player, color, ai, personality in players if ai}}
         self.development_pool = development_cards.copy()
         self.game_over = False
         self.game_state_generator = self.game_states()
         self.game_state = []
         self.board.assign_resources()
         self.board.assign_numbers()
+
+        self.harbors = [corner.harbor for corner in self.board.corner_list if corner.coor in harbor_list]
+        self.resources = [hex.resource for hex in self.board.hex_list]
+        self.numbers = [hex.number for hex in self.board.hex_list]
+
         self.dice = 0
         self.pending_process = []
         self.plenty = False
@@ -181,11 +190,19 @@ class CatanSession:
                     self.players[player].resource[resource] = 0
                     self.players[current_player].resource[resource] += resource_count
                     take_text += [f'{current_player} takes {resource_count} {resource} from {player}']
-        self.instruction(take_text)
+        self.instruction(',\n'.join(take_text))
         self.monopoly = False
 
     def check_largest_army(self, player):
-        pass
+        if self.players[player].army > 2 and not self.players[player].largest_army:
+            for p in self.players.values():
+                if p.name != player and p.largest_army:
+                    if self.players[player].army>p.army:
+                        p.largest_army = False
+                        self.players[player].largest_army = True
+                        return None
+            # no one has largest army
+            self.players[player].largest_army = True
 
     def use_development(self, player, development=None):
         def use_knight():
@@ -237,21 +254,23 @@ class CatanSession:
 
 
     def buy(self, to_buy, player, free=False):
-        for resource, required in build_options[to_buy].items():
-            if self.players[player].resource[resource] < required:
-                print(f'not enough resource for {to_buy}')
-                return False
         if not isinstance(player, CatanAI):
             if not getattr(self, f'compile_eligible_{to_buy}')(self.players[player]):
                 print(f'no eligible {to_buy}')
                 return False
         if not free:
             for resource, required in build_options[to_buy].items():
+                if self.players[player].resource[resource] < required:
+                    print(f'not enough resource for {to_buy}')
+                    return False
+            for resource, required in build_options[to_buy].items():
                 self.players[player].resource[resource] -= required
         if to_buy == 'development':
             self.players[player].inactive_development.append(
                 self.development_pool.pop(random.randrange(len(self.development_pool))))
-        if isinstance(self.players[player], CatanAI):
+            if isinstance(self.players[player], CatanAI):
+                self.pending_process.append('place')
+        else:
             self.pending_process.append('place')
         print('should return True')
         return True

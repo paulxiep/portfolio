@@ -225,5 +225,5 @@ class CatanCanvas(Canvas):
         return lambda event: move(event)
     def choose_resource(self, resource, player):
         def move(event):
-            self.session.choose_resource(resource, player)
+            self.session.resource_choose(player, resource)
         return lambda event: move(event)

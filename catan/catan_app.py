@@ -2,6 +2,7 @@ from tkinter import *
 from catan_session import CatanSession
 from catan_canvas import CatanCanvas
 from catan_units.catan_ai import CatanAI
+from catan_units.ai_choices import sub_ais
 from catan_units.game_parameters import resource_types, development_cards, build_options, die
 
 import random
@@ -85,9 +86,11 @@ class CatanApp(CatanSession, Tk):
                 self.resource_rows[resource] = Label(self.table, text=resource)
                 self.resource_rows[resource].grid(row=j + 1, column=0)
             # else:
+        self.resource_rows['army'] = Label(self.table, text='army')
+        self.resource_rows['army'].grid(row=j+2, column=0)
         for k, development in enumerate(list(self.players.values())[0].development.keys()):
             self.resource_rows[resource] = Label(self.table, text=development)
-            self.resource_rows[resource].grid(row=j + 2 + k, column=0)
+            self.resource_rows[resource].grid(row=j + 3 + k, column=0)
         Label(self.table, text='points').grid(row=14, column=0)
         self.point_data = {}
         for i, player in enumerate(self.players.keys()):
@@ -103,9 +106,21 @@ class CatanApp(CatanSession, Tk):
                                                                    state='normal')
                     self.resource_spin[player][resource].grid(row=j + 1, column=i + 1)
                 # else:
+
+            self.resource_spin[player]['army'] = Label(self.table, text=0)
+            self.resource_spin[player]['army'].grid(row=j + 2, column=i + 1)
             for k, development in enumerate(self.players[player].development.keys()):
                 self.resource_spin[player][development] = Label(self.table, text=0)
-                self.resource_spin[player][development].grid(row=j + 2 + k, column=i + 1)
+                self.resource_spin[player][development].grid(row=j + 3 + k, column=i + 1)
+
+    def instruction(self, instruction):
+        print(instruction)
+        self.instruction_label.config(text=instruction)
+        try:
+            gTTS(text=instruction, lang='en').save('temp.mp3')
+            playsound.playsound('.\\temp.mp3')
+        except:
+            return None
 
     def draw_board(self):
         self.canvas.draw_board(self.board)
@@ -127,11 +142,15 @@ class CatanApp(CatanSession, Tk):
                     if self.game_state[2]=='settlement':
                         coor = player.sub_ais['first_settlement_ai'](self, player)
                         self.place('settlement')(player.name, coor)
+                        self.point_data[player.name].config(text=player.points)
+                        self.update()
                         # self.board.corners[coor[1]][coor[0]].settlement = self.game_state[1]
                 elif self.game_state[0] == 'setup_2':
                     if self.game_state[2]=='settlement':
                         coor = player.sub_ais['second_settlement_ai'](self, player)
                         self.place('settlement')(player.name, coor)
+                        self.point_data[player.name].config(text=player.points)
+                        self.update()
                         # self.board.corners[coor[1]][coor[0]].settlement = self.game_state[1]
                 if self.game_state[2]=='road':
                     coor = player.sub_ais['initial_road_ai'](self, player)
@@ -142,18 +161,32 @@ class CatanApp(CatanSession, Tk):
                     # print(player.resource)
                     trades=player.sub_ais['trade_ai'](self, player)
                     print(trades)
-                    for trade in trades:
-                        self.bank_trade(self.game_state[1], trade[0], trade[1])
+                    traded_away = []
+                    while len(trades)>0:
+                        for trade in trades:
+                            if trade[0] not in traded_away:
+                                self.bank_trade(self.game_state[1], trade[0], trade[1])
+                                traded_away.append(trade[0])
+                        trades = player.sub_ais['trade_ai'](self, player)
                 elif self.game_state[2]=='build':
                     builds = player.sub_ais['build_ai'](self, player)
                     print(builds)
-                    for build in builds:
-                        if self.buy(build[0], player.name):
-                            self.place(build[0])(player.name, build[1])
-                            self.canvas.delete('all')
-                            self.draw_board()
+                    while len(builds)>0:
+                        for build in builds:
+                            if self.buy(build[0], player.name):
+                                self.place(build[0])(player.name, build[1])
+                                if build[0] in ['settlement', 'city']:
+                                    self.point_data[player.name].config(text=player.points)
+                                    self.update()
+                                self.canvas.delete('all')
+                                self.draw_board()
+                        builds = player.sub_ais['build_ai'](self, player)
                 elif self.game_state[2] == 'dice':
-                    player.sub_ais['knight_ai'](self, player)
+                    if player.sub_ais['knight_ai'](self, player):
+                        self.use_development(player.name, 'knight')
+                elif self.game_state[2] == 'resolve_dice':
+                    for item in player.sub_ais['development_ai'](self, player):
+                        self.use_development(player.name, item)
                 self.canvas.delete('all')
                 self.draw_board()
                 self.update()
@@ -193,18 +226,23 @@ class CatanApp(CatanSession, Tk):
 
     def moving_robber(self, player):
         super().moving_robber(player)
+        self.resource_spin[player]['knight'].config(text=self.players[player].development['knight'])
+        self.resource_spin[player]['army'].config(text=self.players[player].army)
         if not isinstance(self.players[player], CatanAI):
             self.canvas.draw_robber_buttons(self.board, player)
-            self.update()
+        self.update()
 
-    def use_plenty(self, player):
+    def use_plenty(self, player, no_process=False):
         self.instruction(f'{player} take free resource')
-        self.pending_process.append('plenty')
+        if not no_process:
+            self.pending_process.append('plenty')
+            self.pending_process.append('plenty')
+            self.resource_spin[player]['plenty'].config(text=self.players[player].development['plenty'])
         self.canvas.draw_resource_buttons(self.board, player)
         self.update()
         if isinstance(self.players[player], CatanAI):
-            self.pending_process
-            resource1, resource2 = self.players[player].sub_ais['plenty_ai']
+            self.pending_process.pop()
+            resource1, resource2 = self.players[player].sub_ais['plenty_ai'](self, self.players[player])
             self.players[player].resource[resource2] += 1
             self.resource_data[player][resource2].set(self.players[player].resource[resource2])
             self.resource_choose(player, resource1)
@@ -213,19 +251,11 @@ class CatanApp(CatanSession, Tk):
         self.instruction(f'{player} choose resource to monopolize')
         self.pending_process.append('monopoly')
         self.canvas.draw_resource_buttons(self.board, player)
+        self.resource_spin[player]['monopoly'].config(text=self.players[player].development['monopoly'])
         self.update()
         if isinstance(self.players[player], CatanAI):
-            resource = self.players[player].sub_ais['monopoly_ai']
+            resource = self.players[player].sub_ais['monopoly_ai'](self, self.players[player])
             self.resource_choose(player, resource)
-
-    def instruction(self, instruction):
-        logging.info(instruction)
-        self.instruction_label.config(text=instruction)
-        # try:
-        #     gTTS(text=instruction, lang='en').save('temp.mp3')
-        #     playsound.playsound('.\\temp.mp3')
-        # except:
-        #     return None
 
     def create_turn_buttons(self, current_player):
         if self.game_state[-1]=='road':
@@ -342,6 +372,8 @@ class CatanApp(CatanSession, Tk):
             self.place('settlement')(player, coor)
         else:
             self.place('city')(player, coor)
+        self.point_data[player].config(text=self.players[player].points)
+        self.update()
         self.players[player].last_action = coor
         self.canvas.delete('all')
         self.draw_board()
@@ -360,9 +392,11 @@ class CatanApp(CatanSession, Tk):
 
 
     def robber_move(self, player, coor, robber_coor):
-        other, resource = super().robber_move(player, coor, robber_coor)
-        self.resource_data[player][resource].set(self.players[player].resource[resource])
-        self.resource_data[other][resource].set(self.players[other].resource[resource])
+        to_steal = super().robber_move(player, coor, robber_coor)
+        if to_steal is not None:
+            other, resource = to_steal
+            self.resource_data[player][resource].set(self.players[player].resource[resource])
+            self.resource_data[other][resource].set(self.players[other].resource[resource])
         self.pending_process.pop(0)
         self.canvas.delete('all')
         self.draw_board()
@@ -374,7 +408,7 @@ class CatanApp(CatanSession, Tk):
             self.resource_data[current_player][resource].set(self.players[current_player].resource[resource])
             if len(self.pending_process) > 1:
                 self.pending_process.pop(0)
-                self.use_plenty(current_player)
+                self.use_plenty(current_player, True)
             else:
                 self.pending_process.pop(0)
                 self.plenty=False
@@ -388,7 +422,7 @@ class CatanApp(CatanSession, Tk):
                     if resource_count > 0:
                         self.players[player].resource[resource] = 0
                         self.resource_data[player][resource].set(self.players[player].resource[resource])
-                        self.players[current_player][resource] += resource_count
+                        self.players[current_player].resource[resource] += resource_count
                         self.resource_data[current_player][resource].set(self.players[current_player].resource[resource])
                         take_text += [f'{current_player} takes {resource_count} {resource} from {player}']
             self.monopoly = False
@@ -402,6 +436,11 @@ class CatanApp(CatanSession, Tk):
 if __name__ == '__main__':
     player = ['white', 'blue', 'orange']
     color = ['white', 'blue', 'orange']
-    ai = [True, True, False]
-    root = CatanApp(list(zip(player, color, ai)))
+    ai = [True, True, True]
+    personality = {sub_ai: 'basis' for sub_ai in sub_ais}
+    personality['road_ai'] = 'primitive_ml'
+    personality['initial_road_ai'] = 'primitive_ml'
+    personality['trade_ai'] = 'primitive_ml'
+    personalities = [personality, personality, None]
+    root = CatanApp(list(zip(player, color, ai, personalities)))
     root.mainloop()

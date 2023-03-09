@@ -8,6 +8,7 @@ from itertools import groupby
 from functools import reduce
 import random
 import logging
+import os
 
 def setup_logger(name, log_file, level=logging.INFO, format='state'):
     """To setup as many loggers as you want"""
@@ -30,7 +31,17 @@ class CatanSimulation(CatanSession):
         # self.action_logger = setup_logger('action_logger', actionlogfile)
         # self.run_simulation()
         # CatanApp(players, board=self.board).mainloop()
-
+        harbor_list = [x[0] for x in [((1, 2), (1, 1)), ((2, 1), (3, 2)), ((4, 3), (5, 4)),
+                                      ((6, 6), (6, 7)), ((5, 9), (4, 10)), ((3, 11), (2, 12)),
+                                      ((1, 12), (1, 11)), ((1, 9), (1, 8)), ((1, 5), (1, 4))]]
+        # print(harbor_list)
+        self.record_state(self.harbors)
+        self.record_state(self.resources)
+        self.record_state(self.numbers)
+        self.actionlogfile = actionlogfile
+        self.statelogfile = statelogfile
+        self.optionlogfile = optionlogfile
+        self.remove_log = False
     def record_state(self, log):
         self.state_logger.info(log)
 
@@ -63,10 +74,11 @@ class CatanSimulation(CatanSession):
                 else:
                     self.record_option(False)
                 if current_player.sub_ais['knight_ai'](self, current_player):
-                    self.record_option([hex.coor for hex in self.board.hex_list if hex.resource!='desert' and not hex.robber])
+                    # self.record_option([hex.coor for hex in self.board.hex_list if hex.resource!='desert' and not hex.robber])
                     self.use_development(current_player.name, 'knight')
             elif self.game_state[2] == 'resolve_dice':
                 self.dice = random.randrange(1, 7) + random.randrange(1, 7)
+                self.instruction(f'{current_player.name} rolled {self.dice}')
                 if self.dice != 7:
                     collect = {player: {resource: 0 for resource in resource_types} for player in self.players.keys()}
                     for corner in self.board.corner_list:
@@ -128,6 +140,11 @@ class CatanSimulation(CatanSession):
                     coor = current_player.sub_ais['first_settlement_ai'](self, current_player)
                 else:
                     coor = current_player.sub_ais['second_settlement_ai'](self, current_player)
+                    to_collect = {resource: 0 for resource in resource_types}
+                    for hex in self.board.corners[coor[1]][coor[0]].hexes.values():
+                        if hex is not None and hex.resource != 'desert':
+                            to_collect[hex.resource] += 1
+                            current_player.resource[hex.resource] += 1
                 self.instruction(f'{current_player.name} placed settlement at {coor}')
                 self.place('settlement')(current_player.name, coor)
             elif self.game_state[2] == 'road':
@@ -136,12 +153,17 @@ class CatanSimulation(CatanSession):
                 coor = current_player.sub_ais['initial_road_ai'](self, current_player)
                 self.instruction(f'{current_player.name} placed road at {coor}')
                 self.place('road')(current_player.name, coor)
-            elif self.game_state[2] == 'collect_resources':
-                pass
+            elif self.game_state[2] == 'collect_resource':
+                self.record_option([])
 
-            if self.game_state[0] == 'turn_500':
+            if self.game_state[0] == 'turn_26':
                 self.game_over = True
                 self.record_state(f'time out - no winner')
+                self.state_logger.removeHandler(self.state_logger.handlers[0])
+                self.option_logger.removeHandler(self.option_logger.handlers[0])
+                self.action_logger.removeHandler(self.action_logger.handlers[0])
+                self.remove_log = True
+
             for player in self.players.keys():
                 if self.players[player].points >= 10:
                     self.game_over = True
@@ -157,7 +179,10 @@ class CatanSimulation(CatanSession):
                 #     for edge in self.board.edge_list:
                 #         if edge.road == player:
                 #             self.record_state(f'{player} has road at {edge.coor}')
-
+        if self.remove_log:
+            os.remove(self.actionlogfile)
+            os.remove(self.statelogfile)
+            os.remove(self.optionlogfile)
 
 
 

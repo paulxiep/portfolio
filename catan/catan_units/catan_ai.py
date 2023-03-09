@@ -4,22 +4,39 @@ from functools import reduce
 from .ai_choices import ai_choices
 from .catan_player import *
 from .game_parameters import *
+from .compiled_parameters import *
+from catboost import CatBoostClassifier
 
 
 class CatanSubAI:
     def __init__(self, personality='basis', weight=None):
         self.personality = personality
-        if self.personality == 'ml':
-            assert weight is not None
-            self.weight = weight
 
     def __call__(self, session, player):
         if self.personality == 'basis':
             answer = self.basis_call(session, player)
         if self.personality == 'random':
             answer = self.random_call(session, player)
+        if self.personality == 'primitive_ml':
+            answer = self.primitive_ml_call(session, player)
         player.last_action = answer
         return answer
+
+    def make_state_data(self, session, player):
+        static_data = session.harbors + session.resources + session.numbers
+        corners = reduce(list.__add__, [[corner.settlement, corner.city] for corner in session.board.corner_list])
+        edges = [edge.road for edge in session.board.edge_list]
+        hexes = [int(hex.robber) for hex in session.board.hex_list]
+        player_list = list(session.players.keys())
+        player_index = player_list.index(player.name)
+        player_dict = {player.name: 'self', player_list[player_index-2]: 'left', player_list[player_index-1]: 'right'}
+        board_data = list(map(lambda x: 'none' if x is None else player_dict[x], corners + edges))
+        return static_data + board_data + hexes + reduce(list.__add__, [list(session.players[value].resource.values()) + \
+                         list(session.players[value].development.values()) + \
+                         list(session.players[value].tokens.values()) + \
+                         list(session.players[value].trade_rates.values()) for value in player_dict.keys()])
+
+
 
     def basis_call(self, session, player):
         # to be implemented in subclasses
@@ -127,10 +144,10 @@ class RobberAI(CatanSubAI):
             if hex.robber or hex.resource == 'desert':
                 return -10000
             pips = hex.pips()
-            return reduce(int.__add__, [pips * (corner.settlement is not None and corner.settlement != player) + \
-                                        2 * pips * (corner.city is not None and corner.city != player) - \
-                                        (100 * pips * (corner.settlement is not None and corner.settlement == player) + \
-                                         200 * pips * (corner.city is not None and corner.city == player))
+            return reduce(int.__add__, [pips * (corner.settlement is not None and corner.settlement != player.name) + \
+                                        2 * pips * (corner.city is not None and corner.city != player.name) - \
+                                        (100 * pips * (corner.settlement is not None and corner.settlement == player.name) + \
+                                         200 * pips * (corner.city is not None and corner.city == player.name))
                                         for corner in hex.corners.values() if corner is not None])
 
         return max(session.board.hex_list, key=hex_score).coor
@@ -140,8 +157,8 @@ class RobberAI(CatanSubAI):
                 return -10000
             pips = hex.pips()
             return reduce(float.__add__, [random.random() - \
-                                        (100 * pips * (corner.settlement is not None and corner.settlement == player) + \
-                                         200 * pips * (corner.city is not None and corner.city == player))
+                                        (100 * pips * (corner.settlement is not None and corner.settlement == player.name) + \
+                                         200 * pips * (corner.city is not None and corner.city == player.name))
                                         for corner in hex.corners.values() if corner is not None])
 
         return max(session.board.hex_list, key=hex_score).coor
@@ -149,6 +166,12 @@ class RobberAI(CatanSubAI):
 
 
 class RoadAI(CatanSubAI):
+    def __init__(self, personality='basis', weight=None):
+        super().__init__(personality, weight)
+        if self.personality == 'primitive_ml':
+            self.model = CatBoostClassifier()
+            self.model.load_model('road_primitive_ml')
+
     def basis_call(self, session, player):
         eligible_settlements = self.compile_eligible_settlement(session, player)
         road_choices = self.compile_eligible_road(session, player)
@@ -177,6 +200,36 @@ class RoadAI(CatanSubAI):
         return coor_choice
     def random_call(self, session, player):
         return random.choice(self.compile_eligible_road(session, player))
+    def primitive_ml_call(self, session, player):
+        eligible_settlements = self.compile_eligible_settlement(session, player)
+        road_choices = self.compile_eligible_road(session, player)
+        gainful_choices = []
+        secondary = []
+        for choice in road_choices:
+            secondary.append(session.board.edges[choice[1]][choice[0]])
+
+            session.board.edges[choice[1]][choice[0]].road = player
+            new = list(set(self.compile_eligible_settlement(session, player)) - set(eligible_settlements))
+            if len(new) > 0:
+                gainful_choices.append((choice, session.board.corners[new[0][1]][new[0][0]].pips_plus() + random.random()))
+            session.board.edges[choice[1]][choice[0]].road = None
+        if len(gainful_choices) > 0:
+            coor_choice = max(gainful_choices, key=lambda x: x[1] + random.random())[0]
+        else:
+            ineligible_settlements = self.compile_ineligible_settlement(session)
+            try:
+                coor_choice = max(secondary, key=lambda x: self.potential_settlement_weight(max(reduce(list.__add__, [
+                    [corner for corner in edge.corners.values() if
+                     corner is not None and corner.coor not in ineligible_settlements] for edge in x.edges.values() if
+                    edge is not None and edge.road is None]), key=self.potential_settlement_weight))).coor
+            except:
+                state_data = self.make_state_data(session, player)
+                coor_choice = max([(coor, self.model.predict_proba(state_data + [edge_dict[coor]])[1]) for coor in road_choices], key=lambda x:x[1])[0]
+
+        return coor_choice
+    # def primitive_ml_call(self, session, player):
+    #     state_data = self.make_state_data(session, player)
+    #     return max([(coor, self.model.predict_proba(state_data + [edge_dict[coor]])[1]) for coor in self.compile_eligible_road(session, player)], key=lambda x:x[1])[0]
 
 class SettlementAI(CatanSubAI):
     def basis_call(self, session, player):
@@ -197,6 +250,11 @@ class CityAI(CatanSubAI):
 
 
 class TradeAI(CatanSubAI):
+    def __init__(self, personality='basis', weight=None):
+        super().__init__(personality, weight)
+        if self.personality == 'primitive_ml':
+            self.model = CatBoostClassifier()
+            self.model.load_model('trade_primitive_ml')
     def basis_call(self, session, player):
         def trade_weight(resource, required, trade_rates):
             amount = player.resource[resource]
@@ -241,8 +299,27 @@ class TradeAI(CatanSubAI):
             return [(choice, random.choice([resource for resource in resource_types if resource!= choice]))]
         else:
             return []
+    def primitive_ml_call(self, session, player):
+        state_data = self.make_state_data(session, player)
+        trade_aways = []
+        for resource, rate in player.trade_rates.items():
+            if player.resource[resource] >= rate:
+                trade_aways.append(resource)
+        trade_options = [['none', 'none']] + [[trade_away, resource] for trade_away in trade_aways for resource in player.trade_rates.keys() if resource!=trade_away]
+        best_option = max([(trade_option, self.model.predict_proba(state_data + trade_option)[1]) for trade_option in
+                    trade_options], key=lambda x: x[1])
+        if best_option[1] >= 0.5 and best_option[0]!=['none', 'none']:
+            return [best_option[0]]
+        else:
+            return []
+
 
 class BuildAI(CatanSubAI):
+    def __init__(self, personality='basis', weight=None):
+        super().__init__(personality, weight)
+        if self.personality == 'primitive_ml':
+            self.model = CatBoostClassifier()
+            self.model.load_model('build_primitive_ml')
     def basis_call(self, session, player):
         eligible_cities = self.compile_eligible_city(session, player)
         save_for_city = False
@@ -307,6 +384,33 @@ class BuildAI(CatanSubAI):
                 return [(choice, None)]
         else:
             return []
+
+    def primitive_ml_call(self, session, player):
+        state_data = self.make_state_data(session, player)
+        choices = []
+        if all([player.resource[k] >= v for k, v in build_options['city'].items()])\
+            and len(self.compile_eligible_city(session, player)) > 0:
+            choices.append('city')
+        if all([player.resource[k] >= v for k, v in build_options['settlement'].items()])\
+            and len(self.compile_eligible_settlement(session, player)) > 0:
+            choices.append('settlement')
+        if all([player.resource[k] >= v for k, v in build_options['road'].items()])\
+            and len(self.compile_eligible_road(session, player)) > 0:
+            choices.append('road')
+        if all([player.resource[k] >= v for k, v in build_options['development'].items()])\
+            and len(self.compile_eligible_development(session, player)) > 0:
+            choices.append('development')
+        if len(choices) <= 0:
+            return []
+        else:
+            best_choice = max([(choice, self.model.predict_proba(state_data + [choice])[1]) for choice in (['none'] + choices)], key=lambda x: x[1])
+            if best_choice[1] >= 0.4 and best_choice[0]!='none':
+                if best_choice[0] != 'development':
+                    return [(best_choice[0], getattr(self, f'compile_eligible_{best_choice[0]}')(session, player))]
+                else:
+                    return [('development', None)]
+            else:
+                return []
 
 class SetUpAI(CatanSubAI):
     @staticmethod
