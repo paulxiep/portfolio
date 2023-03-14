@@ -2,18 +2,17 @@ from functools import reduce
 from random import randrange
 from .hex_geometry import *
 
+'''
+The __repr__ changes all the time based on my debugging needs at each point
+'''
+
 class CatanEdge(Edge):
     def __init__(self, coor=None, d_length=3):
         super().__init__(coor, d_length)
         self.road = None
 
     def __repr__(self):
-        # return str(self.coor)
         return f'edge-{self.coor}-{self.road}'
-        # if self.road:
-        #     return 'R'
-        # else:
-        #     return 'X'
 
 
 class CatanCorner(Corner):
@@ -33,6 +32,13 @@ class CatanCorner(Corner):
                 out[elem.resource] += self.hex_pips(elem.number)
         return out
 
+    def active_resource_pips(self):
+        out = {resource: 0 for resource in ['ore', 'brick', 'wool', 'grain', 'lumber']}
+        for elem in self.hexes.values():
+            if elem is not None and elem.number > 0 and not elem.robber:
+                out[elem.resource] += self.hex_pips(elem.number)
+        return out
+
     def pips(self):
         return reduce(int.__add__, [self.hex_pips(elem.number) for elem in list(self.hexes.values()) if elem is not None],
                    0)
@@ -42,13 +48,6 @@ class CatanCorner(Corner):
 
     def __repr__(self):
         return f'corner-{self.coor}-{self.settlement}-{self.city}-{self.harbor}'
-        # number = '-pips-' + str(self.pips())
-        # if self.settlement:
-        #     return str(self.settlement) + number
-        # elif self.city:
-        #     return str(self.city) + number
-        # else:
-        #     return number
 
 
 class CatanHex(Hex):
@@ -64,15 +63,13 @@ class CatanHex(Hex):
 
     def __repr__(self):
         return f'hex-{self.coor}-{self.resource}-{self.number}' + '-robber' * self.robber
-        # return str(self.coor)
-        # if not self.robber:
-        #     return self.resource[0].upper() + str(self.number).zfill(2)
-        # else:
-        #     return self.resource[0].upper() + '00'
 
 
 class CatanHexBoard(HexBoard):
     def __init__(self, max_players=4):
+        '''
+        the 6-player board is missing harbor placements. I don't bother yet since I don't have the physical version.
+        '''
         self.resource_types = ['ore', 'brick', 'wool', 'grain', 'lumber', 'desert']
         if max_players == 4:
             super().__init__(3, 3)
@@ -95,11 +92,8 @@ class CatanHexBoard(HexBoard):
             self.resource_count = dict(zip(self.resource_types, [5, 5, 6, 6, 6, 2]))
             self.numbers = reduce(list.__add__,
                                   map(lambda x: [x, x, x] if abs(x - 7) < 5 else [x, x], list(range(2, 7)) + list(range(8, 13))))
-        # self.players = ['orange', 'blue', 'white']
         self.resources = reduce(list.__add__, [[resource] * repeat for resource, repeat in self.resource_count.items()])
         self.robber = None
-        # self.assign_resources()
-        # self.assign_numbers()
 
     def assign_resources(self):
         resources = self.resources.copy()
@@ -107,12 +101,17 @@ class CatanHexBoard(HexBoard):
             h.resource = resources.pop(randrange(len(resources)))
 
     def assign_numbers(self):
+        '''
+        randomly assign numbers, reassigning as needed if board is ineligible (adjacent red numbers)
+        '''
         def insert_numbers():
             numbers = self.numbers.copy()
             for h in self.hex_list:
                 if h.resource != 'desert':
                     h.number = numbers.pop(randrange(len(numbers)))
+                    h.robber = False
                 else:
+                    h.number = 0
                     h.robber = True
                     self.robber = h.coor
 

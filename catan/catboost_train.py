@@ -4,11 +4,11 @@ from functools import reduce
 from sklearn.model_selection import train_test_split
 from catboost import CatBoostClassifier
 
-ai = 'trade'
+ai = 'road'
 
 if __name__ == '__main__'():
     # for trade ai, uncomment the last part
-    categorical_columns = list(range(0, 28, 1)) + list(range(47, 47+199, 1)) + [47+199+60] + [47+199+61]
+    categorical_columns = list(range(0, 28, 1)) + list(range(47, 47+199, 1)) + [47+199+60] #+ [47+199+61]
 
     x=[]
     y=[]

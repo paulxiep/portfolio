@@ -10,6 +10,7 @@ import random
 import logging
 import os
 
+
 def setup_logger(name, log_file, level=logging.INFO, format='state'):
     """To setup as many loggers as you want"""
 
@@ -20,21 +21,20 @@ def setup_logger(name, log_file, level=logging.INFO, format='state'):
     logger.addHandler(handler)
 
     return logger
-# action_logger = setup_logger('action_logger', 'log.txt')
-# states_logger = setup_logger('states_logger', 'states.txt')
-# logger.basicConfig()
+
+
 class CatanSimulation(CatanSession):
-    def __init__(self, players, board_type=4, actionlogfile='action_log.txt', statelogfile='states_log.txt', optionlogfile='option_log.txt'):
+    '''
+    has no implementation for trades between players yet.
+
+    trade and build phases are still restricted to 1 action per turn as that was the original AI design
+    this will need to change after Phase 3 of development
+    '''
+    def __init__(self, players, board_type=4, actionlogfile='action_log.txt', statelogfile='states_log.txt',
+                 optionlogfile='option_log.txt'):
         CatanSession.__init__(self, players, board_type, actionlogfile=actionlogfile)
         self.state_logger = setup_logger(statelogfile, statelogfile)
         self.option_logger = setup_logger(optionlogfile, optionlogfile, format='option')
-        # self.action_logger = setup_logger('action_logger', actionlogfile)
-        # self.run_simulation()
-        # CatanApp(players, board=self.board).mainloop()
-        harbor_list = [x[0] for x in [((1, 2), (1, 1)), ((2, 1), (3, 2)), ((4, 3), (5, 4)),
-                                      ((6, 6), (6, 7)), ((5, 9), (4, 10)), ((3, 11), (2, 12)),
-                                      ((1, 12), (1, 11)), ((1, 9), (1, 8)), ((1, 5), (1, 4))]]
-        # print(harbor_list)
         self.record_state(self.harbors)
         self.record_state(self.resources)
         self.record_state(self.numbers)
@@ -42,6 +42,7 @@ class CatanSimulation(CatanSession):
         self.statelogfile = statelogfile
         self.optionlogfile = optionlogfile
         self.remove_log = False
+
     def record_state(self, log):
         self.state_logger.info(log)
 
@@ -59,9 +60,11 @@ class CatanSimulation(CatanSession):
             self.record_state([hex.robber for hex in self.board.hex_list])
             for player in self.players.values():
                 self.record_state(reduce(list.__add__, [list(player.resource.values()),
-                                   list(player.development.values()),
-                                   list(player.tokens.values()),
-                                   list(player.trade_rates.values())]))
+                                                        list(player.development.values()),
+                                                        list(player.tokens.values()),
+                                                        list(player.trade_rates.values()),
+                                                        [player.points, player.army, len(player.settlements),
+                                                         len(player.cities), len(player.roads)]]))
             current_player = self.players[self.game_state[1]]
             if self.game_state[2] == 'dice':
                 while len(current_player.inactive_development) > 0:
@@ -74,7 +77,6 @@ class CatanSimulation(CatanSession):
                 else:
                     self.record_option(False)
                 if current_player.sub_ais['knight_ai'](self, current_player):
-                    # self.record_option([hex.coor for hex in self.board.hex_list if hex.resource!='desert' and not hex.robber])
                     self.use_development(current_player.name, 'knight')
             elif self.game_state[2] == 'resolve_dice':
                 self.dice = random.randrange(1, 7) + random.randrange(1, 7)
@@ -115,19 +117,25 @@ class CatanSimulation(CatanSession):
                         for player in to_discard.keys()])))
                     self.instruction(to_discard_text)
                     self.moving_robber(current_player.name)
-                self.record_option([current_player.development[dev]>0 for dev in ['road', 'plenty', 'monopoly']])
+                self.record_option([current_player.development[dev] > 0 for dev in ['road', 'plenty', 'monopoly']])
                 for item in current_player.sub_ais['development_ai'](self, current_player):
                     self.use_development(current_player.name, item)
             elif self.game_state[2] == 'trade':
-                self.record_option(reduce(list.__add__, map(lambda x: [(x, y) for y in current_player.trade_rates.keys() if y != x], [trade_away for trade_away, rate
-                                    in current_player.trade_rates.items() if current_player.resource[trade_away]>=rate]), []))
-                trades=current_player.sub_ais['trade_ai'](self, current_player)
+                self.record_option(reduce(list.__add__,
+                                          map(lambda x: [(x, y) for y in current_player.trade_rates.keys() if y != x],
+                                              [trade_away for trade_away, rate
+                                               in current_player.trade_rates.items() if
+                                               current_player.resource[trade_away] >= rate]), []))
+                trades = current_player.sub_ais['bank_trade_ai'](self, current_player)
                 for trade in trades:
                     self.bank_trade(self.game_state[1], trade[0], trade[1])
             elif self.game_state[2] == 'build':
-                self.record_option([(key, reduce(bool.__and__, [current_player.resource[resource]>=build_price[resource] for resource in build_price]), getattr(self, f'compile_eligible_{key}')(current_player)) for key, build_price in build_options.items()])
+                self.record_option([(key, reduce(bool.__and__,
+                                                 [current_player.resource[resource] >= build_price[resource] for
+                                                  resource in build_price]),
+                                     getattr(self, f'compile_eligible_{key}')(current_player)) for key, build_price in
+                                    build_options.items()])
                 builds = current_player.sub_ais['build_ai'](self, current_player)
-                # print(builds)
                 for build in builds:
                     self.instruction(f'{current_player.name} buys {build[0]}')
                     if self.buy(build[0], current_player.name):
@@ -169,20 +177,7 @@ class CatanSimulation(CatanSession):
                     self.game_over = True
                     self.instruction(f'{player} wins')
                     self.record_state(f'winner is {player}')
-                # for player in self.players.keys():
-                #     self.record_state(self.players[player])
-                #     for corner in self.board.corner_list:
-                #         if corner.settlement == player:
-                #             self.record_state(f'{player} has settlement at {corner.coor}')
-                #         if corner.city == player:
-                #             self.record_state(f'{player} has city at {corner.coor}')
-                #     for edge in self.board.edge_list:
-                #         if edge.road == player:
-                #             self.record_state(f'{player} has road at {edge.coor}')
         if self.remove_log:
             os.remove(self.actionlogfile)
             os.remove(self.statelogfile)
             os.remove(self.optionlogfile)
-
-
-

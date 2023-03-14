@@ -1,3 +1,44 @@
+def generate_slices(options):
+    return {'first_settlement': {
+                    'white': 0,
+                    'blue': 2,
+                    'orange': 4
+                },
+                 'second_settlement': {
+                    'white': 12,
+                    'blue': 9,
+                    'orange': 6
+                 },
+                 'initial_road': {
+                    'white': slice(1, 15, 13),
+                    'blue': slice(3, 12, 8),
+                    'orange': slice(5, 9, 3)
+                 },
+                 'knight': {
+                    'white': slice(15, len(options), 12),
+                    'blue': slice(19, len(options), 12),
+                    'orange': slice(23, len(options), 12)
+                },
+                 'development': {
+                    'white': slice(16, len(options), 12),
+                    'blue': slice(20, len(options), 12),
+                    'orange': slice(24, len(options), 12)
+                },
+                 'trade': {
+                    'white': slice(17, len(options), 12),
+                    'blue': slice(21, len(options), 12),
+                    'orange': slice(25, len(options), 12)
+                },
+                 'build':{
+                    'white': slice(18, len(options), 12),
+                    'blue': slice(22, len(options), 12),
+                    'orange': slice(26, len(options), 12)
+                }}
+
+seating = {'white': {'blue': 'left', 'orange': 'right', 'white': 'self'},
+          'blue': {'orange': 'left', 'white': 'right', 'blue': 'self'},
+          'orange': {'white': 'left', 'blue': 'right', 'orange': 'self'}}
+
 edge_dict = {(1, 1): 0,
              (2, 1): 1,
              (3, 1): 2,

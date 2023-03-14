@@ -2,25 +2,57 @@
 
 Catan or Settlers of Catan is a popular classic board game. I only just in February 2023 started playing it. I found some academic papers on Catan strategy and algorithm and I wanted to see how well I can make one too.
 
-I've written the underlying engine of generic hex board and catan hex board with hexes, edges, and corners, and their topographic information. Then I wrote a basic visualization an interactive UI in tkinter of the board and the app for play session.
+1st phase: basic engine build
 
-A very basic AI with no forward thinking was then implemented.
+    - Underlying engine hex geometry, topographic connections, and generic hex board
+    - CatanHexBoard with CatanHex, CatanEdge, CatanCorner
+    - tkinter Canvas drawing of the board
+    - tkinter app for play session
+    - very basic AI that can play the game
+    - written in 4 days, but was a spaghetti mess
+    - still accessible in old_app.py, though I'm unsure if I've since made some dependencies incompatible
 
-So all the engine, the app, and basic AI were written in 4 days, albeit as a spaghetti mess.
+2nd phase: pure ML AI training and experimentation
 
-With the 2nd major update I've refactored all the code and class structures. It's still not as modular as I'd like so I'll reviewing intertwining methods between CatanApp and Catan Session again.
+    - Refactored all the engine and class structures
+    - Separated CatanSession and CatanApp, separated AI from the app
+    - Added CatanSimulation as another subclass of CatanSession, focused on AI game simulation, without interactive UI
+    - Added all necessary loggings of game state data
+    - log_data_extractor to convert game log to ML training data
+    - catboost_training as an example of training script. The actual training was done in jupyter notebook for better manual interaction.
+    - Experimented with pure ML AI for 3 sub-ais, focusing on road placement ai
+    - Pure ML AI of this stage was implemented by combining game state dataframe with eligible potential move and predicting what move would most likely result in a win.
+    - Concluded that pure ML AI has potential, but to generate quality data efficiently, a better basis (rule-based) AI is needed
+    - Only random AI (one aspect at a time, for example, if I want to train a road AI, I put all other AIs as basis, and the road as random), only the random moves that managed to win within 25 turns were used as data, the other games were discarded. Since the basis AI is still weak, it results in too many discarded games.
+    - Also since I've made some AIs score-based instead of hard if-else logic, I also introduced many scaling factors that can be tuned. The next ML training will focus on tuning these scaling factors for the (new) basis AIs.
 
-A basic log data extractor and CatBoost training code has also been written. For the coming days I'll be experimenting with AI training.
+3rd phase: yet to come, will first focus on improving rule-based AI, followed by scaling factors tuning with simulation data.
 
-So now I have this kind of structure.
+Current project structure
 
-- hex_geometry.py: contains Geometry base class, and then Edge, Corner, Hex, and HexBoard class for generic purpose hex board. The main purpose of this layer is the implementation of edge-corner-hex connection in hexagonal space.
-- catan_hex.py: contains CatanEdge, CatanCorner, CatanHex, and CatanHexBoard, which adds Catan data such as resource, number, settlement, etc. to base class.
-- catan_player.py: contains necessary player information such as number of tokens left, resources, development cards, etc. It is implemented as a dataclass.
-- catan_ai.py: is implemented as a subclass of CatanPlayer to add 'ai personality' and ai call for automatic play. The CatanAI itself is composed of many CatanSubAI to be called for different decisions.
-- catan_canvas.py: contains tkinter Canvas drawing implementation of CatanHexBoard
-- catan_session.py: is the main game engine that stores necessary data and implements game mechanisms. It is not used on its own but will be subclassed.
-- catan_app.py: is the main interactive app and a subclass of both CatanSession and Tk.
-- catan_simulation.py: is another subclass of catan session that'll play the whole AI game with one click and log the necessary information for AI training.
+    - hex_geometry.py: contains Geometry base class, and then Edge, Corner, Hex, and HexBoard class for generic purpose hex board. The main purpose of this layer is the implementation of edge-corner-hex connection in hexagonal space.
+    - catan_hex.py: contains CatanEdge, CatanCorner, CatanHex, and CatanHexBoard, which adds Catan data such as resource, number, settlement, etc. to base class.
+    - catan_player.py: contains necessary player information such as number of tokens left, resources, development cards, etc. It is implemented as a dataclass.
+    - catan_ai.py: is implemented as a subclass of CatanPlayer to add 'ai personality' and ai call for automatic play. The CatanAI itself is composed of many CatanSubAI to be called for different decisions.
+    - ai_utils.py: contain some utility functions that are called by CatanSubAI
+    - catan_canvas.py: contains tkinter Canvas drawing implementation of CatanHexBoard
+    - catan_session.py: is the main game engine that stores necessary data and implements game mechanisms. It is not used on its own but will be subclassed.
+    - catan_app.py: is the main interactive app and a subclass of both CatanSession and Tk.
+  
+The following files are currently not maintained
 
-More comments and cleaning will be done after the main planned functionalities and engines are done.
+    - catan_simulation.py: is another subclass of catan session that'll play the whole AI game with one click and log the necessary information for AI training.
+    - simulate.py: entry point for catan_simulation
+    - log_data_extractor.py: is used to convert game logs into data frames for ML training
+    - create_ai_data.py: contains some functions called by log_data_extractor to generate training data specific to each CatanSubAI
+    - catboost_train.py: is simply a demo code. I do the actual training in jupyter notebook.
+    - old_app.py: the app from the 1st stage
+    - old_canvas.py: the canvas for the 1st stage
+
+Unimplemented game features
+
+    - manual discard on a 7-dice roll (currently random)
+    - manual selection of whom to rob on a robber move (currently random)
+    - points from longest road is not yet implemented
+
+<developed in Python 3.8>

@@ -1,10 +1,12 @@
 from dataclasses import dataclass, field
 from typing import List
-from .catan_hex import CatanCorner, CatanEdge
 from .game_parameters import *
 
 @dataclass
 class CatanPlayer:
+    '''
+    only need to enter name and color. The rest are supposed to be given default values.
+    '''
     name: str
     color: str
     resource: dict = field(default_factory=lambda: {'resource': 0,
@@ -23,9 +25,9 @@ class CatanPlayer:
     tokens: dict = field(default_factory=lambda:{'settlement': 5, 'city': 4, 'road': 15})
     trade_rates: dict = field(default_factory=lambda:{resource: 4 for resource in resource_types})
 
-    settlements: List[CatanCorner] = field(default_factory=list)
-    cities: List[CatanCorner] = field(default_factory=list)
-    roads: List[CatanEdge] = field(default_factory=list)
+    settlements: List = field(default_factory=list)
+    cities: List = field(default_factory=list)
+    roads: List = field(default_factory=list)
     inactive_development: List[str] = field(default_factory=list)
     points: int = 0
     army: int = 0
