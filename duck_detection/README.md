@@ -3,7 +3,7 @@
 I meant to use this project to show I can work with images, 
 but the task turned out to be too easy 
 (and I don't have much more data to improve it further - 
-only 127 train and 30 validaiton images were used). 
+only 127 train and 30 validation images were used). 
 
 Tech-wise I only just used most of yolov7 code as is. 
 
