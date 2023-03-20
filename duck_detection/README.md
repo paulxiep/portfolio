@@ -11,7 +11,7 @@ Nevertheless, I uploaded the simple data converter from labelstudio's json forma
 
 Then the results from model prediction can be found in the 2 videos below.
 
-[![Result 1](https://github.com/paulxiep/portfolio/duck_detection/resources/preview1.jpg)](https://youtu.be/HWkqUjSKzt0)
+[![Result 1](https://github.com/paulxiep/portfolio/blob/master/duck_detection/resources/preview1.jpg)](https://youtu.be/HWkqUjSKzt0)
 
-[![Result 2](https://github.com/paulxiep/portfolio/duck_detection/resources/preview2.jpg)](https://youtu.be/QwTQXMsdiM8)
+[![Result 2](https://github.com/paulxiep/portfolio/blob/master/duck_detection/resources/preview2.jpg)](https://youtu.be/QwTQXMsdiM8)
 
