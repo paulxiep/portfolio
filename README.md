@@ -2,9 +2,17 @@
 
 Even though this repository is called 'portfolio', it has evolved to be more like a playground for my experiments.
 
-Currently the most developed project is 'Catan'. 
+Skills aimed to demonstrate/practice with each project are:
 
-Information about development phases can be found below, 
+    1. catan: Advanced object-oriented programming and software design, practical AI programming.
+    2. cities_skylines_transport_ridership: Basic data visualization using Seaborn.
+    3. duck_detection: Basic object detection and json data manipulation.
+    4. geospatial: Geospatial Data Science, still only a practice ground. I have yet to find a dataset I like to work with and make something fruitful out of it.
+
+
+Currently the most developed project is 'Catan'. The rest are 1-day projects (2, 3) or practice range (4).
+
+Information about development phases can be found below,
 and more info can be found on the project's own readme.
 
 ### Catan
