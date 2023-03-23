@@ -3,6 +3,7 @@ from catan_session import CatanSession
 from catan_canvas import CatanCanvas
 # from catan_units.catan_hex import *
 from catan_units.catan_ai import CatanAI
+from catan_units.ai_utils import path_to_settlement
 from catan_units.ai_choices import sub_ais
 from catan_units.game_parameters import resource_types, development_cards, build_options, die
 
@@ -18,12 +19,13 @@ logging.basicConfig(level=logging.INFO)
 
 class CatanApp(CatanSession, Tk):
     def __init__(self, players, board_type=4, board=None, *args, **kwargs):
+        self.log=False
         Tk.__init__(self, *args, **kwargs)
         CatanSession.__init__(self, players, board_type, board)
         self.title('Catan')
         self.geometry('1100x600')
         self.canvas_frame = Frame(self, width=500, height=600)
-        self.canvas = CatanCanvas(self.canvas_frame, self, dict([(player, color) for player, color, _, _ in players]), width=500, height=600)
+        self.canvas = CatanCanvas(self.canvas_frame, self, dict([(player, color) for player, color, _, _, _ in players]), width=500, height=600)
         self.canvas.place(x=0, y=0)
         self.draw_board()
         self.canvas_frame.grid(row=0, column=0)
@@ -44,8 +46,10 @@ class CatanApp(CatanSession, Tk):
         self.continue_var = BooleanVar(False)
         self.continue_button = Button(self.generic_ui_frame, text='Proceed', command=self.advance_state)
         self.continue_button.place(x=300, y=20)
+        self.back_button = Button(self.generic_ui_frame, text='Back', command=self.revert_state)
+        self.back_button.place(x=200, y=20)
         self.randomize_board_button = Button(self.generic_ui_frame, text='Randomize', command=self.randomize_board)
-        self.randomize_board_button.place(x=200, y=20)
+        self.randomize_board_button.place(x=100, y=20)
         self.quit_button = Button(self.generic_ui_frame, text='Exit', command=self.exit)
         self.quit_button.place(x=400, y=20)
         self.table = Frame(self.turn_ui_frame, width=300)
@@ -118,14 +122,17 @@ class CatanApp(CatanSession, Tk):
     def instruction(self, instruction):
         print(instruction)
         self.instruction_label.config(text=instruction)
-        try:
-            gTTS(text=instruction, lang='en').save('temp.mp3')
-            playsound.playsound('.\\temp.mp3')
-        except:
-            pass
+        # try:
+        #     gTTS(text=instruction, lang='en').save('temp.mp3')
+        #     playsound.playsound('.\\temp.mp3')
+        # except:
+        #     pass
 
     def draw_board(self):
         self.canvas.draw_board(self.board)
+
+    def revert_state(self):
+        pass
 
     def randomize_board(self):
         self.board.assign_resources()
@@ -165,7 +172,6 @@ class CatanApp(CatanSession, Tk):
                         options = player.sub_ais['player_trade_ai'](self, player)
 
                     trades=player.sub_ais['bank_trade_ai'](self, player)
-                    print(trades)
                     traded_away = []
                     while len(trades)>0:
                         for trade in trades:
@@ -248,6 +254,16 @@ class CatanApp(CatanSession, Tk):
         self.largest_army_data.config(text=largest_army)
         self.update()
 
+    def check_longest_road(self, current_player, last, coor):
+        super().check_longest_road(current_player, last, coor)
+        longest_road = 'none'
+        for p in self.players.values():
+            self.point_data[p.name].config(text=p.points)
+            if p.longest_road:
+                longest_road = p.name
+        self.longest_road_data.config(text=longest_road)
+        self.update()
+
     def use_plenty(self, player, no_process=False):
         self.instruction(f'{player} take free resource')
         if not no_process:
@@ -310,6 +326,8 @@ class CatanApp(CatanSession, Tk):
             self.instruction(f'{current_player} collects {to_collect_text}')
         elif self.game_state[-1] == 'dice':
             self.instruction(f'{current_player} throws dice')
+            # potential = sorted([corner for corner in self.board.corner_list if corner.coor not in self.compile_ineligible_settlement()], key=lambda x: x.pips(), reverse=True)
+            # print(list(map(lambda x: (x.coor, x.pips(), path_to_settlement(x, current_player, self.board)), potential)))
         elif self.game_state[-1] == 'resolve_dice' and self.dice!=7:
             collect = {player: {resource: 0 for resource in resource_types} for player in self.players.keys()}
             for corner in self.board.corner_list:
@@ -411,7 +429,7 @@ class CatanApp(CatanSession, Tk):
                 print(f"{current_player} exchanged {trade_away} for {player}'s {trade_for}")
         new_options = []
         for player in self.players.keys():
-            if player != current_player and isinstance(player, CatanAI):
+            if player != current_player and isinstance(self.players[player], CatanAI):
                 new_options += self.players[player].sub_ais['player_trade_ai'](self, self.players[player], self.players[current_player])
         self.trade_list = new_options
         self.reset_player_trade_options(new_options)
@@ -492,6 +510,9 @@ if __name__ == '__main__':
     color = ['blue', 'red', 'white', 'orange']
     ai = [True, True, True, False]
     personality = {sub_ai: 'basis' for sub_ai in sub_ais}
+    personality['road_ai'] = 'basis_v2'
+    personality['strategy_ai'] = 'basis_v2'
+    personality['build_ai'] = 'basis_v2'
     personalities = [personality, personality, personality, personality]
-    root = CatanApp(list(zip(player, color, ai, personalities)))
+    root = CatanApp(list(zip(player, color, ai, personalities, [{}, {}, {}, {}])))
     root.mainloop()

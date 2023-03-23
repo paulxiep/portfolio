@@ -2,6 +2,8 @@
 
 Catan or Settlers of Catan is a popular classic board game. I only just in February 2023 started playing it. I found some academic papers on Catan strategy and algorithm and I wanted to see how well I can make one too.
 
+Currently the project is in Phase 3. As it is in the early part of a phase, the code won't be clean. This is the same as when forking a new branch for new feature implementation, but this is a portfolio, not production, so I just develop in the main branch so you can see new updates sooner.
+
 1st phase: basic engine build
 
     - Underlying engine hex geometry, topographic connections, and generic hex board
@@ -26,7 +28,11 @@ Catan or Settlers of Catan is a popular classic board game. I only just in Febru
     - Only random AI (one aspect at a time, for example, if I want to train a road AI, I put all other AIs as basis, and the road as random), only the random moves that managed to win within 25 turns were used as data, the other games were discarded. Since the basis AI is still weak, it results in too many discarded games.
     - Also since I've made some AIs score-based instead of hard if-else logic, I also introduced many scaling factors that can be tuned. The next ML training will focus on tuning these scaling factors for the (new) basis AIs.
 
-3rd phase: yet to come, will first focus on improving rule-based AI, followed by scaling factors tuning with simulation data.
+3rd phase: will first focus on improving rule-based AI, followed by scaling factors tuning with simulation data.
+
+    - 3 sub ais now have basis_v2 implementation. More will come later in the phase
+    - scaling factor tuning code was implemented and ran for 4 settlement weight scaling factors.
+    - longest road has been implemented, with flaws. It will be perfected later in the pipeline.
 
 Current project structure
 
@@ -38,10 +44,11 @@ Current project structure
     - catan_canvas.py: contains tkinter Canvas drawing implementation of CatanHexBoard
     - catan_session.py: is the main game engine that stores necessary data and implements game mechanisms. It is not used on its own but will be subclassed.
     - catan_app.py: is the main interactive app and a subclass of both CatanSession and Tk.
-  
+    - catan_simulation.py: is another subclass of catan session that'll play the whole AI game with one click and log the necessary information for AI training.
+    - scalings_tuning.py: for tuning scaling factors introduced at the end of phase 2    
+
 The following files are currently not maintained
 
-    - catan_simulation.py: is another subclass of catan session that'll play the whole AI game with one click and log the necessary information for AI training.
     - simulate.py: entry point for catan_simulation
     - log_data_extractor.py: is used to convert game logs into data frames for ML training
     - create_ai_data.py: contains some functions called by log_data_extractor to generate training data specific to each CatanSubAI
@@ -53,6 +60,6 @@ Unimplemented game features
 
     - manual discard on a 7-dice roll (currently random)
     - manual selection of whom to rob on a robber move (currently random)
-    - points from longest road is not yet implemented
+    - longest road calculation is still wrong in certain conditions
 
 <developed in Python 3.8>

@@ -12,7 +12,7 @@ Skills aimed to demonstrate/practice with each project are:
 
 Currently the most developed project is 'Catan'. The rest are 1-day projects (2, 3) or practice range (4).
 
-Information about development phases can be found below,
+Information about Catan development phases can be found below,
 and more info can be found on the project's own readme.
 
 ### Catan
@@ -42,4 +42,8 @@ and more info can be found on the project's own readme.
     - Only random AI (one aspect at a time, for example, if I want to train a road AI, I put all other AIs as basis, and the road as random), only the random moves that managed to win within 25 turns were used as data, the other games were discarded. Since the basis AI is still weak, it results in too many discarded games.
     - Also since I've made some AIs score-based instead of hard if-else logic, I also introduced many scaling factors that can be tuned. The next ML training will focus on tuning these scaling factors for the (new) basis AIs.
 
-3rd phase: yet to come, will first focus on improving rule-based AI, followed by scaling factors tuning with simulation data.
+3rd phase: will first focus on improving rule-based AI, followed by scaling factors tuning with simulation data.
+
+    - 3 sub ais now have basis_v2 implementation. More will come later in the phase
+    - scaling factor tuning code was implemented and ran for 4 settlement weight scaling factors.
+    - longest road has been implemented, with flaws. It will be perfected later in the pipeline.

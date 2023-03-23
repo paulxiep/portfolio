@@ -142,14 +142,18 @@ class HexBoard:
         :param h_length: number of tiles in the top row
         :param d_length: number of tiles on one side edge (assuming vertical symmetry)
         '''
+        if not hasattr(self, 'hex_class'):
+            self.hex_class = Hex
+            self.edge_class = Edge
+            self.corner_class = Corner
         self.h_length = h_length
         self.d_length = d_length
         self.generate_elements()
         self.shift_coors()
-        for j in self.edges.keys():
-            if j % 2 == 0:
-                self.edges[j] = {k: self.edges[j][k] for k in
-                                 list(self.hexes[j // 2].keys()) + [len(self.hexes[j // 2].keys()) + 1]}
+        # for j in self.edges.keys():
+        #     if j % 2 == 0:
+        #         self.edges[j] = {k: self.edges[j][k] for k in
+        #                          list(self.hexes[j // 2].keys()) + [len(self.hexes[j // 2].keys()) + 1]}
         self.hex_list = reduce(list.__add__, [list(v.values()) for v in self.hexes.values()])
         self.edge_list = reduce(list.__add__, [list(v.values()) for v in self.edges.values()])
         self.corner_list = reduce(list.__add__, [list(v.values()) for v in self.corners.values()])
@@ -157,21 +161,36 @@ class HexBoard:
             corner.board = self
         self.assign_adjacent()
 
+    def row_edge_count(self, j):
+        if j % 2 == 0:
+            return range(self.h_length * 2 + (self.d_length - 1 - abs(self.d_length * 2 - 1 - j) // 2) * 2)
+        else:
+            return range(self.h_length + self.d_length - 1 - abs(self.d_length - j//2 - 1) + 1)
+
     def generate_elements(self):
         '''
         generates actual hexes, edges, and corners elements of the hex board
         '''
+
         h_length = self.h_length
         d_length = self.d_length
         self.hexes = dict(
-            map(lambda x: (x, {y: Hex((y, x)) for y in range(h_length + d_length - 1 - abs(d_length - x - 1))}),
+            map(lambda x: (x, {y: self.hex_class((y, x)) for y in range(h_length + d_length - 1 - abs(d_length - x - 1))}),
                 range(2 * d_length - 1)))
+
         self.edges = dict(map(lambda x: (
-            x, {y: Edge((y, x), self.d_length) for y in
-                range(h_length * 2 + (d_length - 1 - abs(d_length * 2 - 1 - x) // 2) * 2)}),
+            x, {y: self.edge_class((y, x), self.d_length) for y in
+                self.row_edge_count(x)}),
                               range(d_length * 4 - 1)))
+        # if y % 2 == 1:
+        #     self.edges[y] = {x: self.edges[y][x] for x in
+        #                      list(self.hexes[y // 2].keys()) + [len(self.hexes[y // 2].keys())]}
+        # self.edges = dict(map(lambda x: (
+        #     x, {y: Edge((y, x), self.d_length) for y in
+        #         range(h_length * 2 + (d_length - 1 - abs(d_length * 2 - 1 - x) // 2) * 2)}),
+        #                       range(d_length * 4 - 1)))
         self.corners = dict(map(lambda x: (
-            x, {y: Corner((y, x)) for y in range(h_length + d_length - int(abs((d_length * 4 - 1) / 2 - x) + 1) // 2)}),
+            x, {y: self.corner_class((y, x)) for y in range(h_length + d_length - int(abs((d_length * 4 - 1) / 2 - x) + 1) // 2)}),
                                 range(d_length * 4)))
 
     def shift_coors(self):

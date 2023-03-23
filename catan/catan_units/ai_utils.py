@@ -70,3 +70,17 @@ def random_weight(*args):
     weight for potentially anything
     '''
     return random.random()
+
+def path_to_settlement(settlement, player, board):
+    def not_blocked(corner, player):
+        if corner.settlement is None:
+            return corner.city is None or corner.city == player
+        else:
+            return corner.settlement == player
+    player_roads = [edge for edge in board.edge_list if edge.road==player]
+    player_corners = set([corner.coor for road in player_roads for corner in road.corners.values() if not_blocked(corner, player)])
+    player_corners = [board.corners[coor[1]][coor[0]] for coor in player_corners]
+    paths = [corner.road_path(settlement, player) for corner in player_corners]
+    paths = min([path for path in paths if path[0] < 1000] + [(1000, [])], key=lambda x: x[0])
+    return paths
+

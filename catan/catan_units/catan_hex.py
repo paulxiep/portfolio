@@ -22,6 +22,51 @@ class CatanCorner(Corner):
         self.city = None
         self.harbor = None
 
+    def road_path(self, other, player, accu=[], road_path=[], ori=None):
+        '''
+        find shortest path to build road between 2 corners
+        '''
+
+        def not_blocked(corner, player):
+            if corner.settlement is None:
+                return corner.city is None or corner.city == player
+            else:
+                return corner.settlement == player
+
+        def new_ori(self, ori):
+            if ori is not None:
+                return ori
+            else:
+                return self.coor
+
+        if self.coor == other.coor:
+            return len(accu), road_path
+        else:
+            dist = min(
+                [corner.road_path(other, player, accu + [self.coor], road_path + [edge.coor], new_ori(self, ori)) for edge in self.edges.values() if
+                 edge is not None and edge.road is None for corner in edge.corners.values() if
+                 corner is not None and corner.coor != self.coor and not_blocked(corner, player) and corner.coor not in accu] + [(1000, [])], key=lambda x: x[0])
+            return dist
+
+    def longest_road(self, player, visited=[]):
+        def not_blocked(corner, player):
+            # print(player)
+            if corner.settlement is None:
+                return corner.city is None or corner.city == player
+            else:
+                return corner.settlement == player
+        new_visited = visited.copy() + [self.coor]
+        branches = []
+        for edge in self.edges.values():
+            if edge is not None and edge.road==player:
+                for c in edge.corners.values():
+                    if c.coor not in new_visited:
+                        if not_blocked(c, player):
+                            branches.append(1 + c.longest_road(player, new_visited.copy()))
+                        else:
+                            branches.append(1)
+        return max(branches + [0])
+
     def hex_pips(self, number):
         return (6 - abs(7 - number)) * (number != 0)
 
@@ -71,6 +116,9 @@ class CatanHexBoard(HexBoard):
         the 6-player board is missing harbor placements. I don't bother yet since I don't have the physical version.
         '''
         self.resource_types = ['ore', 'brick', 'wool', 'grain', 'lumber', 'desert']
+        self.hex_class = CatanHex
+        self.edge_class = CatanEdge
+        self.corner_class = CatanCorner
         if max_players == 4:
             super().__init__(3, 3)
             self.resource_count = dict(zip(self.resource_types, [3, 3, 4, 4, 4, 1]))
@@ -128,18 +176,18 @@ class CatanHexBoard(HexBoard):
 
         insert_numbers()
         while not validate_board():
-            print('board invalidated')
+            # print('board invalidated')
             insert_numbers()
 
-    def generate_elements(self):
-        h_length = self.h_length
-        d_length = self.d_length
-        self.hexes = dict(
-            map(lambda x: (x, {y: CatanHex((y, x)) for y in range(h_length + d_length - 1 - abs(d_length - x - 1))}),
-                range(2 * d_length - 1)))
-        self.edges = dict(map(lambda x: (
-            x,
-            {y: CatanEdge((y, x), self.d_length) for y in range(h_length * 2 + (d_length - 1 - abs(d_length * 2 - 1 - x) // 2) * 2)}),
-                              range(d_length * 4 - 1)))
-        self.corners = dict(map(lambda x: (x, {y: CatanCorner((y, x)) for y in range(
-            h_length + d_length - int(abs((d_length * 4 - 1) / 2 - x) + 1) // 2)}), range(d_length * 4)))
+    # def generate_elements(self):
+    #     h_length = self.h_length
+    #     d_length = self.d_length
+    #     self.hexes = dict(
+    #         map(lambda x: (x, {y: CatanHex((y, x)) for y in range(h_length + d_length - 1 - abs(d_length - x - 1))}),
+    #             range(2 * d_length - 1)))
+    #     self.edges = dict(map(lambda x: (
+    #         x,
+    #         {y: CatanEdge((y, x), self.d_length) for y in range(h_length * 2 + (d_length - 1 - abs(d_length * 2 - 1 - x) // 2) * 2)}),
+    #                           range(d_length * 4 - 1)))
+    #     self.corners = dict(map(lambda x: (x, {y: CatanCorner((y, x)) for y in range(
+    #         h_length + d_length - int(abs((d_length * 4 - 1) / 2 - x) + 1) // 2)}), range(d_length * 4)))

@@ -34,7 +34,7 @@ class CatanSession:
         harbor_list = [x[0] for x in [((1, 2), (1, 1)), ((2, 1), (3, 2)), ((4, 3), (5, 4)),
                                       ((6, 6), (6, 7)), ((5, 9), (4, 10)), ((3, 11), (2, 12)),
                                       ((1, 12), (1, 11)), ((1, 9), (1, 8)), ((1, 5), (1, 4))]]
-        self.players = {player: self.generate_player(personality, player, color, ai) for player, color, ai, personality
+        self.players = {player: self.generate_player(personality, player, color, ai, scalings) for player, color, ai, personality, scalings
                         in players}
         self.development_pool = development_cards.copy()
         self.game_over = False
@@ -52,11 +52,12 @@ class CatanSession:
         self.plenty = False
         self.monopoly = False
         self.road = False
-        self.action_logger = setup_logger(actionlogfile, actionlogfile)
+        if self.log:
+            self.action_logger = setup_logger(actionlogfile, actionlogfile)
 
-    def generate_player(self, personality, player, color, ai):
+    def generate_player(self, personality, player, color, ai, scalings):
         if ai:
-            return CatanAI(personality, player, color)
+            return CatanAI(player, color, personality=personality, scalings=scalings)
         else:
             return CatanPlayer(player, color)
 
@@ -64,7 +65,22 @@ class CatanSession:
         '''
         for logging actions taken in a simulation game
         '''
-        self.action_logger.info(instruction)
+        if self.log:
+            self.action_logger.info(instruction)
+
+    '''
+    This commented section is for future plan of logging game state data as DataFrame instead of text,
+    and for future inclusion of Back function on the app.
+    '''
+    # def make_state_data(self):
+    #     corners = reduce(list.__add__, [[corner.settlement, corner.city] for corner in self.board.corner_list])
+    #     edges = [edge.road for edge in self.board.edge_list]
+    #     hexes = [[int(hex.robber) for hex in self.board.hex_list].index(1)]
+    #     player_list = list(self.players.keys())
+    #     player_index = player_list.index(self.name)
+    #
+    # def record_state(self):
+    #     pass
 
     def game_states(self):
         '''
@@ -146,6 +162,33 @@ class CatanSession:
         return [corner.coor for corner in self.board.corner_list if
                 corner.coor not in self.compile_ineligible_settlement()]
 
+    def player_trade(self, current_player, options=None):
+        def perform_trade(player, trade_away, trade_for):
+            self.players[current_player].resource[trade_away] -= 1
+            self.players[player].resource[trade_away] += 1
+            self.players[current_player].resource[trade_for] += 1
+            self.players[player].resource[trade_for] -= 1
+        if options is None:
+            if self.player_trade_var.get() == '':
+                print('no player trade option chosen')
+                return None
+            else:
+                player, trade = tuple(self.player_trade_var.get().split(': '))
+                trade_away, trade_for = tuple(trade.split(' for '))
+                perform_trade(player, trade_away, trade_for)
+                self.instruction(f"{current_player} exchanged {trade_away} for {player}'s {trade_for}")
+        else:
+            for player, trade_away, trade_for in options:
+                perform_trade(player, trade_away, trade_for)
+                self.instruction(f"{current_player} exchanged {trade_away} for {player}'s {trade_for}")
+        new_options = []
+        for player in self.players.keys():
+            if player != current_player and isinstance(self.players[player], CatanAI):
+                new_options += self.players[player].sub_ais['player_trade_ai'](self, self.players[player],
+                                                                               self.players[current_player])
+        self.trade_list = new_options
+
+
     def bank_trade(self, player, trade_away=None, trade_for=None):
         if trade_away is None and trade_for is None:
             if self.trade_away_var.get() == '' or self.trade_for_var.get() == '':
@@ -166,7 +209,7 @@ class CatanSession:
 
     def use_plenty(self, player):
         temp = self.players[player].sub_ais['plenty_ai'](self, self.players[player])
-        print(temp)
+        # print(temp)
         try:
             resource1, resource2 = temp
         except:
@@ -211,6 +254,87 @@ class CatanSession:
             # no one has largest army
             self.players[player].largest_army = True
             self.players[player].points += 2
+
+    def check_longest_road(self, current_player, last, coor):
+        # current_player = self.players[current_player]
+        def not_blocked(corner):
+            if corner.settlement is None:
+                return corner.city is None or corner.city == current_player
+            else:
+                return corner.settlement == current_player
+        if last == 'road':
+            edge_type = self.board.edges[coor[1]][coor[0]].type
+            tops={}
+            bottoms={}
+            for k, v in self.board.edges[coor[1]][coor[0]].edges.items():
+                if 'top' in k and v is not None and v.road==current_player and not_blocked(v.corners['bottom']):
+                    tops[k] = v
+                elif 'bottom' in k and v is not None and v.road==current_player and not_blocked(v.corners['top']):
+                    bottoms[k] = v
+            from_top, from_bottom = 0, 0
+            self.board.edges[coor[1]][coor[0]].road = None #temporary, need to set it back
+            if len(tops.keys()) > 0:
+                if edge_type == '/':
+                    try:
+                        from_top = tops['top_left'].corners['bottom'].longest_road(current_player)
+                    except:
+                        from_top = tops['top_right'].corners['top'].longest_road(current_player)
+                elif edge_type == '\\':
+                    try:
+                        from_top = tops['top_left'].corners['top'].longest_road(current_player)
+                    except:
+                        from_top = tops['top_right'].corners['bottom'].longest_road(current_player)
+                elif edge_type == '|':
+                    try:
+                        from_top = tops['top_left'].corners['bottom'].longest_road(current_player)
+                    except:
+                        from_top = tops['top_right'].corners['bottom'].longest_road(current_player)
+            if len(bottoms.keys()) > 0:
+                if edge_type == '/':
+                    try:
+                        from_bottom = bottoms['bottom_left'].corners['bottom'].longest_road(current_player)
+                    except:
+                        from_bottom = bottoms['bottom_right'].corners['top'].longest_road(current_player)
+                elif edge_type == '\\':
+                    try:
+                        from_bottom = bottoms['bottom_left'].corners['top'].longest_road(current_player)
+                    except:
+                        from_bottom = bottoms['bottom_right'].corners['bottom'].longest_road(current_player)
+                elif edge_type == '|':
+                    try:
+                        from_bottom = bottoms['bottom_left'].corners['top'].longest_road(current_player)
+                    except:
+                        from_bottom = bottoms['bottom_right'].corners['top'].longest_road(current_player)
+            self.board.edges[coor[1]][coor[0]].road = current_player
+            length = from_top + 1 + from_bottom
+            # print(length, from_top, from_bottom)
+            # length, road = self.board.edges[coor[1]][coor[0]].longest_connected_road()
+            # print(length, road)
+            current_player = self.players[current_player]
+            if length > 4:
+                # if current_player.longest_road and length>current_player.roads:
+                #     current_player.roads = road
+                # else:
+                for player in self.players.values():
+                    if player.name != current_player.name and player.longest_road:
+                        if length > player.longest_road:
+                            player.longest_road = False
+                            player.points -= 2
+                            current_player.points += 2
+                            current_player.longest_road = length
+                        else:
+                            return None
+                # no one has longest road or longest road is already current player's
+                if not current_player.longest_road:
+                    current_player.longest_road = length
+                    current_player.points += 2
+                elif current_player.longest_road < length:
+                    current_player.longest_road = length
+                print({player.name: player.longest_road for player in self.players.values()})
+
+        else:
+            pass
+
 
     def use_development(self, player, development=None):
         def use_knight():
@@ -288,12 +412,14 @@ class CatanSession:
             self.board.edges[j][i].road = player
             self.players[player].tokens['road'] -= 1
             self.players[player].roads.append(coor)
+            self.check_longest_road(player, 'road', coor)
 
         def settlement_place(player, coor):
             i, j = coor
             assert self.board.corners[j][i].settlement is None
             self.board.corners[j][i].settlement = player
             self.players[player].tokens['settlement'] -= 1
+            self.players[player].settlements.append(coor)
             if self.board.corners[j][i].harbor is not None:
                 if self.board.corners[j][i].harbor == 'x':
                     for resource in resource_types:
@@ -301,28 +427,32 @@ class CatanSession:
                 else:
                     self.players[player].trade_rates[self.board.corners[j][i].harbor] = 2
             self.players[player].points += 1
-            self.players[player].settlements.append(coor)
+            # self.players[player].settlements.append(coor)
+            self.check_longest_road(player, 'settlement', coor)
 
         def city_place(player, coor):
             i, j = coor
             assert self.board.corners[j][i].settlement == player
+            self.players[player].settlements.remove(coor)
+            self.players[player].cities.append(coor)
             self.board.corners[j][i].settlement = None
             self.board.corners[j][i].city = player
             self.players[player].tokens['settlement'] += 1
             self.players[player].tokens['city'] -= 1
             self.players[player].points += 1
-            self.players[player].settlements.remove(coor)
-            self.players[player].cities.append(coor)
+            # self.players[player].settlements.remove(coor)
+            # self.players[player].cities.append(coor)
 
         def development_place(player, coor):
             # dummy function, used by AI
             pass
 
         self.pending_process.pop(0)
+
         return locals()[f'{to_place}_place']
 
     def robber_move(self, player, coor, robber_coor):
-        print(player, coor, robber_coor)
+        # print(player, coor, robber_coor)
 
         def has_settlement(i, j):
             out = []

@@ -1,5 +1,5 @@
 import itertools
-
+# from dataclasses import dataclass
 from utils.compiled_parameters import *
 
 from .ai_choices import ai_choices
@@ -7,9 +7,9 @@ from .ai_utils import *
 from .catan_player import *
 from .game_parameters import *
 
-
+# @dataclass(init=False)
 class CatanAI(CatanPlayer):
-    def __init__(self, personality=None, *args, scalings={}):
+    def __init__(self, *args, personality=None, scalings={}):
         '''
         :param personality:
             if None, will be randomized from available personalities
@@ -31,6 +31,7 @@ class CatanAI(CatanPlayer):
                         self.personalities.items()}
         self.priorities = []
         self.strategy = None
+        self.target = []
 
 
 class CatanSubAI:
@@ -49,10 +50,12 @@ class CatanSubAI:
         self.personality = personality
         self.pips_scaling = 1
         self.random_scaling = scalings.get('random', 1 / 4)
-        self.diversity_scaling = scalings.get('diversity', 4)
-        self.distance_scaling = scalings.get('distance', 1 / 6)
+        self.diversity_scaling = scalings.get('diversity', 9)
+        self.initial_distance_scaling = scalings.get('initial_distance', 1 / 5)
         self.generic_harbor_scaling = scalings.get('generic_harbor', 1 / 6)
         self.resource_harbor_scaling = scalings.get('resource_harbor', 1 / 4)
+        self.smoothing_scaling = scalings.get('smoothing', 2)
+        self.gain_distance_scaling = scalings.get('gain_distance', 1)
 
     def __call__(self, session, player, *args):
         '''
@@ -176,6 +179,12 @@ class MonopolyAI(CatanSubAI):
     def random_call(self, session, player):
         return random.choice(resource_types)
 
+    def basis_v2_call(self, session, player):
+        '''
+        should consider self gain and situational gain in addition to v1's fixation on disruption
+        '''
+        pass
+
 
 class DevelopmentAI(CatanSubAI):
     def basis_call(self, session, player):
@@ -200,6 +209,11 @@ class DevelopmentAI(CatanSubAI):
         return random.choice(
             [[dev] * int(player.development[dev] > 0) for dev in ['road', 'plenty', 'monopoly']] + [[]])
 
+    def basis_v2_call(self, session, player):
+        '''
+        see if situational awareness can be incorporated
+        '''
+        pass
 
 class KnightAI(CatanSubAI):
     def basis_call(self, session, player):
@@ -219,6 +233,12 @@ class KnightAI(CatanSubAI):
             return False
         else:
             return True
+
+    def basis_v2_call(self, session, player):
+        '''
+        if playing knight(s) would give the last 2 points, do so
+        '''
+        pass
 
 
 class RobberAI(CatanSubAI):
@@ -248,6 +268,13 @@ class RobberAI(CatanSubAI):
                                           for corner in hex.corners.values() if corner is not None])
 
         return max(session.board.hex_list, key=hex_score).coor
+
+    def basis_v2_call(self, session, player):
+        '''
+        also consider who to rob (for potential resource)
+        and also prioritize high-point players
+        '''
+        pass
 
 
 class RoadAI(CatanSubAI):
@@ -290,6 +317,18 @@ class RoadAI(CatanSubAI):
 
     def random_call(self, session, player):
         return random.choice(self.compile_eligible_road(session, player))
+
+    def basis_v2_call(self, session, player):
+        '''
+        should beeline to corner coor in self.target
+        if no strategy, then along with creating own opportunities, blockade should be considered
+        '''
+        if len(player.target) > 0 and player.target[0] in self.compile_eligible_road(session, player):
+            # print('picking road from predetermined target')
+            return player.target.pop(0)
+        else:
+            print('reverting road placement to basis')
+            return self.basis_call(session, player)
 
 
 class SettlementAI(CatanSubAI):
@@ -361,7 +400,14 @@ class PlayerTradeAI(CatanSubAI):
                     if lacking[trade_for] == 0:
                         lacking.pop(trade_for)
                     trades.append((trade_with, trade_away, trade_for))
+                    break
             return trades
+
+    def basis_v2_call(self, session, player, trade_with=None):
+        '''
+        should be reluctant to trade with high-point players
+        '''
+        pass
 
 
 class BankTradeAI(CatanSubAI):
@@ -424,6 +470,12 @@ class BankTradeAI(CatanSubAI):
         else:
             return []
 
+    def basis_v2_call(self, session, player):
+        '''
+        should come up with a way to define how single-minded the AI should be in pursuing strategy
+        '''
+        pass
+
 
 class BuildAI(CatanSubAI):
     def basis_call(self, session, player):
@@ -477,15 +529,34 @@ class BuildAI(CatanSubAI):
         else:
             return []
 
+    def basis_v2_call(self, session, player):
+        '''
+        should not build settlement that compromises strategy
+        '''
+        if len(self.compile_eligible_city(session, player)) > 0:
+            if all([player.resource[k]>=v for k, v in build_options['city'].items()]):
+                return [('city', player.sub_ais['city_ai'](session, player))]
+        i = 0
+        for priority in player.priorities:
+            if all([player.resource[k]>=v for k, v in build_options[priority].items()]):
+                if priority == ['development'] and (i<1 or reduce(int.__add__, [player.resource[k] for k in resource_types])>7):
+                    return [('development', None)]
+                else:
+                    if len(getattr(self, f'compile_eligible_{priority}')(session, player))>0:
+                        return [(priority, player.sub_ais[f'{priority}_ai'](session, player))]
+            i += 1
+        return []
+
 
 class StrategyAI(CatanSubAI):
     def basis_call(self, session, player):
         priorities = []
         player_pips = session.player_pips(player)
         active_player_pips = session.active_player_pips(player)
-        if reduce(int.__add__, player_pips.values(), 0) - \
-                reduce(int.__add__, active_player_pips.values(), 0) > 4:
-            print('robber on hex, should buy development')
+        if reduce(int.__add__, active_player_pips.values(), 0) / \
+                reduce(int.__add__, player_pips.values(), 0) \
+                 < 0.8:
+            # print('robber on hex, should buy development')
             priorities += ['development']
         eligible_cities = self.compile_eligible_city(session, player)
         if len(self.compile_eligible_settlement(session, player)) < 1:
@@ -500,8 +571,61 @@ class StrategyAI(CatanSubAI):
             priorities += ['development']
         if 'city' not in priorities:
             priorities += ['city']
-        print(player.name, 'priorities', priorities)
+        # print(player.name, 'priorities', priorities)
         player.priorities = priorities
+
+    def basis_v2_call(self, session, player):
+        '''
+        should modify both priorities and strategy and target
+        target should be coor of potential settlement (corner) to aim for
+
+        reasons to aim for settlement
+        1. securing favorable spot
+        2. securing favorable port
+        3. preventing blockade
+
+        if strategy has at least 1 coor,
+        priorities should reflect the builds needed to secure the spot(s)
+        '''
+
+        player_pips = session.player_pips(player)
+        active_player_pips = session.active_player_pips(player)
+        if player.tokens['settlement'] > 0:
+            potential_settlement = [corner for corner in session.board.corner_list if corner.coor not in session.compile_ineligible_settlement()]#, key=lambda x: x.pips(), reverse=True)
+            if len(potential_settlement) > 0:
+                potential_target = max(list(map(lambda x: (x.coor,
+                                                              self.settlement_weight(['pips', 'generic_harbor', 'resource_harbor', 'diversity', 'random'], x, player_pips),
+                                                              path_to_settlement(x, player.name, session.board)), potential_settlement)), key=lambda x: x[1]/(self.smoothing_scaling+x[2][0]))
+                # print(player.name, potential_target)
+                if potential_target[1]/(self.smoothing_scaling+potential_target[2][0]) > self.gain_distance_scaling:
+                    low_gain_road = False
+                else:
+                    low_gain_road = True
+                player.target = potential_target[2][1]
+            else:
+                player.target = []
+        else:
+            player.target = []
+        eligible_settlements = self.compile_eligible_settlement(session, player)
+        priorities = ['road'] * len(player.target) + ['settlement'] * int(len(player.target)>0 or len(eligible_settlements)>0)
+        if (len(player.target) == 0 and len(eligible_settlements) == 0) or low_gain_road:
+            added_cities = min(player.tokens['city'], len(player.settlements)//2)
+            priorities = ['city'] * added_cities  + priorities
+        else:
+            added_cities = 0
+
+        if reduce(int.__add__, active_player_pips.values(), 0) / \
+                reduce(int.__add__, player_pips.values(), 0) \
+                < 0.75:
+            # print('robber on hex, should buy development')
+            priorities = ['development'] + priorities
+        else:
+            priorities = priorities + ['development']
+
+        priorities += min(player.tokens['city'] - added_cities, (len(player.settlements)+1) // 2) * ['city']
+        # print(player.name, 'priorities', priorities)
+        player.priorities = priorities
+
 
 
 class SetUpAI(CatanSubAI):
@@ -530,6 +654,13 @@ class FirstSettlementAI(SetUpAI, SettlementAI):
                                                                        session.board.corners[coor[1]][coor[0]]))
         return placement_choice
 
+    def basis_v2_call(self, session, player):
+        '''
+        if last to turn, should decide 2 settlements at once,
+        and leave the better starting resources for 2nd pick
+        '''
+        pass
+
 
 class SecondSettlementAI(SetUpAI, SettlementAI):
     def basis_call(self, session, player):
@@ -543,8 +674,14 @@ class SecondSettlementAI(SetUpAI, SettlementAI):
                                    session.board.corners[coor[1]][coor[0]], player_pips) \
                                                 + session.board.corners[player.settlements[0][1]][
                                                     player.settlements[0][0]].distance(
-                                   session.board.corners[coor[1]][coor[0]]) * self.distance_scaling)
+                                   session.board.corners[coor[1]][coor[0]]) * self.initial_distance_scaling)
         return placement_choice
+
+    def basis_v2_call(self, session, player):
+        '''
+        potentially, prioritize brick and lumber for early expansion
+        '''
+        pass
 
 
 class InitialRoadAI(SetUpAI, RoadAI):

@@ -30,11 +30,13 @@ class CatanSimulation(CatanSession):
     trade and build phases are still restricted to 1 action per turn as that was the original AI design
     this will need to change after Phase 3 of development
     '''
-    def __init__(self, players, board_type=4, actionlogfile='action_log.txt', statelogfile='states_log.txt',
+    def __init__(self, players, board_type=4, log=False, actionlogfile='action_log.txt', statelogfile='states_log.txt',
                  optionlogfile='option_log.txt'):
+        self.log = log
         CatanSession.__init__(self, players, board_type, actionlogfile=actionlogfile)
-        self.state_logger = setup_logger(statelogfile, statelogfile)
-        self.option_logger = setup_logger(optionlogfile, optionlogfile, format='option')
+        if self.log:
+            self.state_logger = setup_logger(statelogfile, statelogfile)
+            self.option_logger = setup_logger(optionlogfile, optionlogfile, format='option')
         self.record_state(self.harbors)
         self.record_state(self.resources)
         self.record_state(self.numbers)
@@ -44,10 +46,13 @@ class CatanSimulation(CatanSession):
         self.remove_log = False
 
     def record_state(self, log):
-        self.state_logger.info(log)
+        if self.log:
+            self.state_logger.info(log)
 
     def record_option(self, options):
-        self.option_logger.info(options)
+        if self.log:
+            self.option_logger.info(options)
+        # pass
 
     def run_simulation(self):
         while not self.game_over:
@@ -64,7 +69,7 @@ class CatanSimulation(CatanSession):
                                                         list(player.tokens.values()),
                                                         list(player.trade_rates.values()),
                                                         [player.points, player.army, len(player.settlements),
-                                                         len(player.cities), len(player.roads)]]))
+                                                         len(player.cities), len(player.roads), int(player.largest_army), int(player.longest_road)]]))
             current_player = self.players[self.game_state[1]]
             if self.game_state[2] == 'dice':
                 while len(current_player.inactive_development) > 0:
@@ -121,20 +126,31 @@ class CatanSimulation(CatanSession):
                 for item in current_player.sub_ais['development_ai'](self, current_player):
                     self.use_development(current_player.name, item)
             elif self.game_state[2] == 'trade':
-                self.record_option(reduce(list.__add__,
-                                          map(lambda x: [(x, y) for y in current_player.trade_rates.keys() if y != x],
-                                              [trade_away for trade_away, rate
-                                               in current_player.trade_rates.items() if
-                                               current_player.resource[trade_away] >= rate]), []))
+                self.trade_list = []
+                for player in self.players.values():
+                    if isinstance(player, CatanAI):
+                        player.sub_ais['strategy_ai'](self, player)
+                    if player.name != current_player.name and isinstance(player, CatanAI):
+                        self.trade_list += player.sub_ais['player_trade_ai'](self, player, current_player)
+                options = current_player.sub_ais['player_trade_ai'](self, current_player)
+                while len(options) > 0:
+                    self.player_trade(current_player.name, options)
+                    options = current_player.sub_ais['player_trade_ai'](self, current_player)
+
+                # self.record_option(reduce(list.__add__,
+                #                           map(lambda x: [(x, y) for y in current_player.trade_rates.keys() if y != x],
+                #                               [trade_away for trade_away, rate
+                #                                in current_player.trade_rates.items() if
+                #                                current_player.resource[trade_away] >= rate]), []))
                 trades = current_player.sub_ais['bank_trade_ai'](self, current_player)
                 for trade in trades:
                     self.bank_trade(self.game_state[1], trade[0], trade[1])
             elif self.game_state[2] == 'build':
-                self.record_option([(key, reduce(bool.__and__,
-                                                 [current_player.resource[resource] >= build_price[resource] for
-                                                  resource in build_price]),
-                                     getattr(self, f'compile_eligible_{key}')(current_player)) for key, build_price in
-                                    build_options.items()])
+                # self.record_option([(key, reduce(bool.__and__,
+                #                                  [current_player.resource[resource] >= build_price[resource] for
+                #                                   resource in build_price]),
+                #                      getattr(self, f'compile_eligible_{key}')(current_player)) for key, build_price in
+                #                     build_options.items()])
                 builds = current_player.sub_ais['build_ai'](self, current_player)
                 for build in builds:
                     self.instruction(f'{current_player.name} buys {build[0]}')
@@ -167,9 +183,10 @@ class CatanSimulation(CatanSession):
             if self.game_state[0] == 'turn_26':
                 self.game_over = True
                 self.record_state(f'time out - no winner')
-                self.state_logger.removeHandler(self.state_logger.handlers[0])
-                self.option_logger.removeHandler(self.option_logger.handlers[0])
-                self.action_logger.removeHandler(self.action_logger.handlers[0])
+                if self.log:
+                    self.state_logger.removeHandler(self.state_logger.handlers[0])
+                    self.option_logger.removeHandler(self.option_logger.handlers[0])
+                    self.action_logger.removeHandler(self.action_logger.handlers[0])
                 self.remove_log = True
 
             for player in self.players.keys():
@@ -177,7 +194,13 @@ class CatanSimulation(CatanSession):
                     self.game_over = True
                     self.instruction(f'{player} wins')
                     self.record_state(f'winner is {player}')
-        if self.remove_log:
+        if self.log and self.remove_log:
             os.remove(self.actionlogfile)
             os.remove(self.statelogfile)
             os.remove(self.optionlogfile)
+        if self.remove_log:
+            return 'no winner'
+        else:
+            for player in self.players.keys():
+                if self.players[player].points >= 10:
+                    return player
