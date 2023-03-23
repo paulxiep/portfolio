@@ -33,6 +33,8 @@ Currently the project is in Phase 3. As it is in the early part of a phase, the 
     - 3 sub ais now have basis_v2 implementation. More will come later in the phase
     - scaling factor tuning code was implemented and ran for 4 settlement weight scaling factors.
     - longest road has been implemented, with flaws. It will be perfected later in the pipeline.
+    - AI with basis_v2 vs 3 basis AI was able to win 50% of the time (baseline is 25% in a 4 player game)
+    - basis_v2 AI with new scalings vs 3 basis_v2 with old scalings was able to win 33% of the time.
 
 Current project structure
 
