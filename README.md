@@ -8,9 +8,9 @@ Skills aimed to demonstrate/practice with each project are:
     2. cities_skylines_transport_ridership: Basic data visualization using Seaborn.
     3. duck_detection: Basic object detection and json data manipulation.
     4. geospatial: Geospatial Data Science, still only a practice ground. I have yet to find a dataset I like to work with and make something fruitful out of it.
+    5. 7 wonders: Same as catan but with focus on reinforcement learning.
 
-
-Currently the most developed project is 'Catan'. The rest are 1-day projects (2, 3) or practice range (4).
+Currently the most developed project is 'Catan'. The rest are 1-day projects (2, 3) or practice range (4). 7 wonders is still in very early stage.
 
 Information about Catan development phases can be found below,
 and more info can be found on the project's own readme.
