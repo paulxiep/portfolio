@@ -1,0 +1,477 @@
+[
+  {
+    "name": "Alexandria",
+    "sides": {
+      "A": {
+        "initialResource": "G",
+        "stages": [
+          {
+            "requirements": {
+              "resources": "SS"
+            },
+            "effects": {
+              "points": 3
+            }
+          },
+          {
+            "requirements": {
+              "resources": "OO"
+            },
+            "effects": {
+              "production": {
+                "resources": "W/S/O/B",
+                "isSellable": false
+              }
+            }
+          },
+          {
+            "requirements": {
+              "resources": "PL"
+            },
+            "effects": {
+              "points": 7
+            }
+          }
+        ],
+        "image": "alexandriaA.png"
+      },
+      "B": {
+        "initialResource": "G",
+        "stages": [
+          {
+            "requirements": {
+              "resources": "BB"
+            },
+            "effects": {
+              "production": {
+                "resources": "W/S/O/B",
+                "isSellable": false
+              }
+            }
+          },
+          {
+            "requirements": {
+              "resources": "OOO"
+            },
+            "effects": {
+              "production": {
+                "resources": "G/P/L",
+                "isSellable": false
+              }
+            }
+          },
+          {
+            "requirements": {
+              "resources": "WWWW"
+            },
+            "effects": {
+              "points": 7
+            }
+          }
+        ],
+        "image": "alexandriaB.png"
+      }
+    }
+  },
+  {
+    "name": "Babylon",
+    "sides": {
+      "A": {
+        "initialResource": "W",
+        "stages": [
+          {
+            "requirements": {
+              "resources": "BB"
+            },
+            "effects": {
+              "points": 3
+            }
+          },
+          {
+            "requirements": {
+              "resources": "OOL"
+            },
+            "effects": {
+              "science": "any"
+            }
+          },
+          {
+            "requirements": {
+              "resources": "WWWW"
+            },
+            "effects": {
+              "points": 7
+            }
+          }
+        ],
+        "image": "babylonA.png"
+      },
+      "B": {
+        "initialResource": "W",
+        "stages": [
+          {
+            "requirements": {
+              "resources": "BL"
+            },
+            "effects": {
+              "points": 3
+            }
+          },
+          {
+            "requirements": {
+              "resources": "SS"
+            },
+            "effects": {
+              "action": "PLAY_LAST_CARD"
+            }
+          },
+          {
+            "requirements": {
+              "resources": "BBBG"
+            },
+            "effects": {
+              "science": "any"
+            }
+          }
+        ],
+        "image": "babylonB.png"
+      }
+    }
+  },
+  {
+    "name": "Ephesos",
+    "sides": {
+      "A": {
+        "initialResource": "P",
+        "stages": [
+          {
+            "requirements": {
+              "resources": "BB"
+            },
+            "effects": {
+              "points": 3
+            }
+          },
+          {
+            "requirements": {
+              "resources": "WW"
+            },
+            "effects": {
+              "gold": 9
+            }
+          },
+          {
+            "requirements": {
+              "resources": "OOG"
+            },
+            "effects": {
+              "points": 7
+            }
+          }
+        ],
+        "image": "ephesosA.png"
+      },
+      "B": {
+        "initialResource": "P",
+        "stages": [
+          {
+            "requirements": {
+              "resources": "SS"
+            },
+            "effects": {
+              "gold": 4,
+              "points": 2
+            }
+          },
+          {
+            "requirements": {
+              "resources": "WW"
+            },
+            "effects": {
+              "gold": 4,
+              "points": 3
+            }
+          },
+          {
+            "requirements": {
+              "resources": "OOL"
+            },
+            "effects": {
+              "gold": 4,
+              "points": 5
+            }
+          }
+        ],
+        "image": "ephesosB.png"
+      }
+    }
+  },
+  {
+    "name": "Gizah",
+    "sides": {
+      "A": {
+        "initialResource": "S",
+        "stages": [
+          {
+            "requirements": {
+              "resources": "WW"
+            },
+            "effects": {
+              "points": 3
+            }
+          },
+          {
+            "requirements": {
+              "resources": "BBL"
+            },
+            "effects": {
+              "points": 5
+            }
+          },
+          {
+            "requirements": {
+              "resources": "SSSS"
+            },
+            "effects": {
+              "points": 7
+            }
+          }
+        ],
+        "image": "gizahA.png"
+      },
+      "B": {
+        "initialResource": "S",
+        "stages": [
+          {
+            "requirements": {
+              "resources": "WW"
+            },
+            "effects": {
+              "points": 3
+            }
+          },
+          {
+            "requirements": {
+              "resources": "SSS"
+            },
+            "effects": {
+              "points": 5
+            }
+          },
+          {
+            "requirements": {
+              "resources": "BBB"
+            },
+            "effects": {
+              "points": 5
+            }
+          },
+          {
+            "requirements": {
+              "resources": "SSSSP"
+            },
+            "effects": {
+              "points": 7
+            }
+          }
+        ],
+        "image": "gizahB.png"
+      }
+    }
+  },
+  {
+    "name": "Halikarnassus",
+    "sides": {
+      "A": {
+        "initialResource": "L",
+        "stages": [
+          {
+            "requirements": {
+              "resources": "OO"
+            },
+            "effects": {
+              "points": 3
+            }
+          },
+          {
+            "requirements": {
+              "resources": "GP"
+            },
+            "effects": {
+              "action": "PLAY_DISCARDED"
+            }
+          },
+          {
+            "requirements": {
+              "resources": "SSS"
+            },
+            "effects": {
+              "points": 7
+            }
+          }
+        ],
+        "image": "halikarnassusA.png"
+      },
+      "B": {
+        "initialResource": "L",
+        "stages": [
+          {
+            "requirements": {
+              "resources": "BB"
+            },
+            "effects": {
+              "points": 2,
+              "action": "PLAY_DISCARDED"
+            }
+          },
+          {
+            "requirements": {
+              "resources": "GP"
+            },
+            "effects": {
+              "points": 1,
+              "action": "PLAY_DISCARDED"
+            }
+          },
+          {
+            "requirements": {
+              "resources": "WWW"
+            },
+            "effects": {
+              "action": "PLAY_DISCARDED"
+            }
+          }
+        ],
+        "image": "halikarnassusB.png"
+      }
+    }
+  },
+  {
+    "name": "Olympia",
+    "sides": {
+      "A": {
+        "initialResource": "B",
+        "stages": [
+          {
+            "requirements": {
+              "resources": "SS"
+            },
+            "effects": {
+              "points": 3
+            }
+          },
+          {
+            "requirements": {
+              "resources": "WW"
+            },
+            "effects": {
+              "action": "FIRST_FREE_PER_COLOR"
+            }
+          },
+          {
+            "requirements": {
+              "resources": "BBB"
+            },
+            "effects": {
+              "points": 7
+            }
+          }
+        ],
+        "image": "olympiaA.png"
+      },
+      "B": {
+        "initialResource": "B",
+        "stages": [
+          {
+            "requirements": {
+              "resources": "OO"
+            },
+            "effects": {
+              "points": 2,
+              "action": "FIRST_FREE_PER_AGE"
+            }
+          },
+          {
+            "requirements": {
+              "resources": "BBB"
+            },
+            "effects": {
+              "points": 3,
+              "action": "LAST_FREE_PER_AGE"
+            }
+          },
+          {
+            "requirements": {
+              "resources": "GPL"
+            },
+            "effects": {
+              "points": 5
+            }
+          }
+        ],
+        "image": "olympiaB.png"
+      }
+    }
+  },
+  {
+    "name": "Rhodos",
+    "sides": {
+      "A": {
+        "initialResource": "O",
+        "stages": [
+          {
+            "requirements": {
+              "resources": "WW"
+            },
+            "effects": {
+              "points": 3
+            }
+          },
+          {
+            "requirements": {
+              "resources": "BBB"
+            },
+            "effects": {
+              "military": 2
+            }
+          },
+          {
+            "requirements": {
+              "resources": "OOOO"
+            },
+            "effects": {
+              "points": 7
+            }
+          }
+        ],
+        "image": "rhodosA.png"
+      },
+      "B": {
+        "initialResource": "O",
+        "stages": [
+          {
+            "requirements": {
+              "resources": "SSS"
+            },
+            "effects": {
+              "gold": 3,
+              "military": 1,
+              "points": 3
+            }
+          },
+          {
+            "requirements": {
+              "resources": "OOOO"
+            },
+            "effects": {
+              "gold": 4,
+              "military": 1,
+              "points": 4
+            }
+          }
+        ],
+        "image": "rhodosB.png"
+      }
+    }
+  }
+]
