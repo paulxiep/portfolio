@@ -26,7 +26,8 @@ Wonder json and change information were obtained from the same source.
 
 Structure of the current project (again, it's in very early stage):
 
-    - elements.py: Card, Wonder, Board, and Player class as dataclasses
+    - elements.py: Stage, Card, Wonder, Board, and Player class as dataclasses
     - game.py: Game class as base game session class, will be subclassed into app and simulation as in Catan project
+    - effects.py: Effect class and subclasses for implementing card/wonder effects
 
 *no component so far is final

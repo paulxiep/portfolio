@@ -1,12 +1,23 @@
 from dataclasses import dataclass, field
 from gymnasium.spaces import Sequence, Dict
 from typing import Optional, List
+from effects import *
+import random
+
+@dataclass
+class Stage:
+    requirements: dict
+    effect: Effect
+
+    @classmethod
+    def from_dict(cls, stage):
+        return Stage(stage['requirements'], Effect.from_dict(stage['effects']))
 
 @dataclass
 class Card:
     name: str
     color: str
-    effect: dict
+    effect: Effect
     requirements: dict = field(default_factory=lambda: {})
     chain_parent: Optional[str] = None
     chain_children: list = field(default_factory=lambda: [])
@@ -16,6 +27,14 @@ class Wonder:
     name: str
     resource: str
     stages: list
+
+    @classmethod
+    def from_dict(cls, wonder_json):
+        name = wonder_json['name']
+        side = wonder_json['sides'][random.choice(['A', 'B'])]
+        resource = side['initialResource']
+        stages = side['stages']
+        return Wonder(name, resource, [Stage.from_dict(stage) for stage in stages])
 
 @dataclass
 class Board:
