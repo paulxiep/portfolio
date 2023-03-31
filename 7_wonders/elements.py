@@ -1,26 +1,53 @@
-from dataclasses import dataclass, field
-from gymnasium.spaces import Sequence, Dict
-from typing import Optional, List
-from effects import *
 import random
+from dataclasses import dataclass, field
+from typing import Optional, List
+
+from effects import Effect
+
+
+class BuildOption:
+    @staticmethod
+    def translate_requirements(requirements):
+        if requirements is None:
+            return {}
+        elif requirements.get('resources', False):
+            out = {}
+            for r in requirements['resources'].replace('C', 'B'):
+                out[r] = out.get(r, 0) + 1
+            return out
+        else:
+            return {'C': requirements['gold']}
+
 
 @dataclass
-class Stage:
+class Stage(BuildOption):
     requirements: dict
-    effect: Effect
+    effects: List[Effect]
 
     @classmethod
     def from_dict(cls, stage):
-        return Stage(stage['requirements'], Effect.from_dict(stage['effects']))
+        return Stage(cls.translate_requirements(stage['requirements']),
+                     [Effect.from_dict({k: v}) for k, v in stage['effects'].items()])
+
 
 @dataclass
-class Card:
+class Card(BuildOption):
     name: str
     color: str
     effect: Effect
     requirements: dict = field(default_factory=lambda: {})
     chain_parent: Optional[str] = None
     chain_children: list = field(default_factory=lambda: [])
+
+    @classmethod
+    def from_dict(cls, card):
+        return Card(card['name'],
+                    card['color'],
+                    Effect.from_dict(card['effect']),
+                    cls.translate_requirements(card.get('requirements', None)),
+                    card.get('chainParent', None),
+                    card.get('chainChildren', []))
+
 
 @dataclass
 class Wonder:
@@ -35,6 +62,7 @@ class Wonder:
         resource = side['initialResource']
         stages = side['stages']
         return Wonder(name, resource, [Stage.from_dict(stage) for stage in stages])
+
 
 @dataclass
 class Board:
@@ -60,6 +88,7 @@ class Board:
     def build_wonder(self):
         pass
 
+
 @dataclass
 class Player:
     board: Optional[Board] = None
@@ -71,4 +100,3 @@ class Player:
 
     def make_obs(self, action=None):
         pass
-
