@@ -2,6 +2,7 @@ import json
 import random
 from functools import reduce
 from elements import Card, Wonder
+from effects import *
 from gymnasium import Env
 from gymnasium.spaces import MultiBinary, Box, Tuple, Discrete, MultiDiscrete
 from gymnasium.spaces.utils import flatten_space
@@ -57,31 +58,29 @@ class Game(Env):
         else:
             return {'C': requirements['gold']}
 
-    @staticmethod
-    def get_wonder(wonder_json, side=None):
-        name = wonder_json['name']
-        side = wonder_json['sides'][random.choice(['A', 'B'])]
-        resource = side['initialResource']
-        stages = side['stages']
-        return Wonder(name, resource, stages)
-
     def get_wonders(self):
         with open('v2_wonders.json', 'r') as f:
             wonders = json.load(f)
-        self.wonders = [self.get_wonder(wonders.pop(random.randrange(len(wonders)))) \
+        self.wonders = [Wonder.from_dict(wonders.pop(random.randrange(len(wonders)))) \
                         for _ in range(self.players)]
 
     def build_deck(self):
+        def upper_first(string):
+            return string[0].upper() + string[1:]
         with open('v2_cards.json', 'r') as f:
             cards = json.load(f)
         for i in range(1, 4):
-            self.cards[i] = reduce(list.__add__, [[Card(card['name'], card['color'], card['effect'],
+            self.cards[i] = reduce(list.__add__, [[Card(card['name'], card['color'],
+                                                        Effect.from_dict(card['effect']),
+                                                        # globals()[upper_first(list(card['effect'].keys())[0])].from_dict(card['effect']),
                                   self.translate_requirements(card.get('requirements', None)),
                                   card.get('chainParent', None),
                                   card.get('chainChildren', []))] \
                                  * card['countPerNbPlayer'][str(self.players)] \
                                  for card in cards[f'age{i}']['cards']]) + (i==3) * \
-                                    random.sample([Card(card['name'], card['color'], card['effect'],
+                                    random.sample([Card(card['name'], card['color'],
+                                                        Effect.from_dict(card['effect']),
+                                                        # globals()[upper_first(list(card['effect'].keys())[0])].from_dict(card['effect']),
                                   self.translate_requirements(card.get('requirements', None)),
                                   card.get('chainParent', None),
                                   card.get('chainChildren', [])) for card in cards['guildCards']], self.players+2)
