@@ -7,13 +7,13 @@ from gymnasium import Env
 from gymnasium.spaces import MultiBinary, Box, Tuple, Discrete
 from gymnasium.spaces.utils import flatten_space
 
-from elements import Card, Wonder
+from elements import Card, Wonder, Player, Board
 
 
 class Game(Env):
     def __init__(self, players):
         super().__init__()
-        self.players = players
+        self.n_players = players
         self.cards = {1: [], 2: [], 3: []}
         # choose from among 80 cards, pay left and/or right, choose what to do with card
         self.action_space = Tuple((Discrete(80), Box(np.zeros(2), np.ones(2)), Discrete(3)))
@@ -52,16 +52,24 @@ class Game(Env):
         with open('v2_wonders.json', 'r') as f:
             wonders = json.load(f)
         self.wonders = [Wonder.from_dict(wonders.pop(random.randrange(len(wonders)))) \
-                        for _ in range(self.players)]
+                        for _ in range(self.n_players)]
+        random.shuffle(self.wonders)
 
     def build_deck(self):
-        def upper_first(string):
-            return string[0].upper() + string[1:]
-
         with open('v2_cards.json', 'r') as f:
             cards = json.load(f)
         for i in range(1, 4):
             self.cards[i] = reduce(list.__add__, [[Card.from_dict(card)] \
-                                                  * card['countPerNbPlayer'][str(self.players)] \
+                                                  * card['countPerNbPlayer'][str(self.n_players)] \
                                                   for card in cards[f'age{i}']['cards']]) + (i == 3) * \
-                            random.sample([Card.from_dict(card) for card in cards['guildCards']], self.players + 2)
+                            random.sample([Card.from_dict(card) for card in cards['guildCards']], self.n_players + 2)
+            # random.shuffle(self.cards[i])
+
+    def create_players(self):
+        self.players = [Player() for _ in range(self.n_players)]
+        for i, player in enumerate(self.players):
+            player.board = Board()
+            player.board.wonder_to_build = self.wonders[i].stages
+        for i in range(self.n_players):
+            self.players[i].left = self.players[i - 1].board
+            self.players[i].right = self.players[i - (self.n_players - 1)].board

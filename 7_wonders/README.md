@@ -18,11 +18,12 @@ Then I edited the json to change it to 2nd edition based on information from
 
 Wonder json and change information were obtained from the same source.
 
-1st phase: basic engine build (more to come)
+1st phase: basic engine build (more to come - wonders will be ignored in the 1st phase)
 
     - Created base elements class and Game class
     - Made Game class a Gymnasium Env class
     - Defined action and observation space.
+    - Implemented Effect on Board
 
 Structure of the current project (again, it's in very early stage):
 

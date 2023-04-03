@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from typing import Optional, List
 
 from effects import Effect
+from src.constants import *
 
 
 class BuildOption:
@@ -48,6 +49,8 @@ class Card(BuildOption):
                     card.get('chainParent', None),
                     card.get('chainChildren', []))
 
+    def apply(self, board, left, right):
+        self.effect.apply(board, left, right, self.name)
 
 @dataclass
 class Wonder:
@@ -67,27 +70,24 @@ class Wonder:
 @dataclass
 class Board:
     # decided to make new resource type for each choice type
-    production: dict = field(default_factory=lambda: {})
-    sellable: dict = field(default_factory=lambda: {})
+    production: dict = field(default_factory=lambda: {r: 0 for r in resources + choice_resources})
+    sellable: dict = field(default_factory=lambda: {r: 0 for r in resources + choice_resources})
     chains: list = field(default_factory=lambda: [])
     coins: int = 3
     army: int = 0
     points: int = 0
-    discount: list = field(default_factory=lambda: [])
+    discount: list = field(default_factory=lambda: [0, 0, 0])
     science: dict = field(default_factory=lambda: {'wheel': 0, 'compass': 0, 'tablet': 0, 'any': 0})
-    guilds: list = field(default_factory=lambda: [])
+    guilds: dict = field(default_factory=lambda: {g: False for g in guilds})
     colors: list = field(default_factory=lambda: {'brown': 0, 'grey': 0, 'yellow': 0,
                                                   'blue': 0, 'green': 0, 'red': 0,
                                                   'purple': 0})
     wonder_to_build: list = field(default_factory=lambda: [])
     wonder_built: int = 0
 
-    def place_card(self, card):
-        pass
-
-    def build_wonder(self):
-        pass
-
+    def apply_card(self, card, left, right):
+        self.colors[card.color.lower()] += 1
+        card.apply(self, left, right)
 
 @dataclass
 class Player:
@@ -100,3 +100,6 @@ class Player:
 
     def make_obs(self, action=None):
         pass
+
+    def apply_card(self, card):
+        self.board.apply_card(card, self.left, self.right)
