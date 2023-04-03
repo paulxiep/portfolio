@@ -24,7 +24,8 @@ class Game(Env):
                              Box(np.zeros(4), np.ones(4)),  # science
                              MultiBinary(24),  # chain
                              MultiBinary(3),  # discount
-                             MultiBinary(10),  # guilds
+                             MultiBinary(15),  # guilds
+                             MultiBinary(5),  # wonder_effects
                              MultiBinary(42)  # wonder_choice
                              ))
         self.observation_space = Tuple((MultiBinary(80), board_space, board_space, board_space,

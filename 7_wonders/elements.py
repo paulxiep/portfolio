@@ -79,6 +79,8 @@ class Board:
     discount: list = field(default_factory=lambda: [0, 0, 0])
     science: dict = field(default_factory=lambda: {'wheel': 0, 'compass': 0, 'tablet': 0, 'any': 0})
     guilds: dict = field(default_factory=lambda: {g: False for g in guilds})
+    effects: list = field(default_factory=lambda: [])
+    wonder_effects: dict = field(default_factory=lambda: {a: False for a in action})
     colors: list = field(default_factory=lambda: {'brown': 0, 'grey': 0, 'yellow': 0,
                                                   'blue': 0, 'green': 0, 'red': 0,
                                                   'purple': 0})
@@ -88,6 +90,11 @@ class Board:
     def apply_card(self, card, left, right):
         self.colors[card.color.lower()] += 1
         card.apply(self, left, right)
+
+    def build_wonder(self):
+        self.wonder_built += 1
+        for effect in self.wonder_to_build.pop(0).effects:
+            effect.apply(self)
 
 @dataclass
 class Player:
@@ -103,3 +110,6 @@ class Player:
 
     def apply_card(self, card):
         self.board.apply_card(card, self.left, self.right)
+
+    def build_wonder(self):
+        self.board.build_wonder()

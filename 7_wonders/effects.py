@@ -109,8 +109,12 @@ class PerBoardElement(Effect):
                         board.coins += locals()[b.lower()].colors[c.lower()] * self.gold
         if self.points > 0:
             board.guilds[name.lower()] = True
+            board.effects.append(self)
 
 
 @dataclass
 class Action(Effect, str):
     x: str
+
+    def apply(self, board, *args):
+        board.wonder_effects[self.lower()] = True
