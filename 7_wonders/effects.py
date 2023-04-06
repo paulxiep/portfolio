@@ -22,6 +22,11 @@ class Effect:
         return globals()[key[0].upper() + key[1:]](**value) if isinstance(value, dict) \
             else globals()[key[0].upper() + key[1:]](value)
 
+    def apply(self, *args):
+        '''
+        to be defined in subclasses
+        '''
+        raise NotImplementedError
 
 @dataclass(init=False)
 class Production(Effect):
@@ -101,7 +106,7 @@ class PerBoardElement(Effect):
                 if b == 'SELF':
                     b = 'board'
                 if self.type == 'BUILT_WONDER_STAGES':
-                    board.coins += locals()[b.lower()].wonders_built * self.gold
+                    board.coins += locals()[b.lower()].wonder_built * self.gold
                 elif self.type == 'COMPLETED_WONDER':
                     board.coins += (len(locals()[b.lower()].wonder_to_build) == 0) * self.gold
                 elif self.type == 'CARD':
@@ -111,10 +116,21 @@ class PerBoardElement(Effect):
             board.guilds[name.lower()] = True
             board.effects.append(self)
 
+    def apply_final(self, board, left, right):
+        for b in self.boards:
+            if b == 'SELF':
+                b = 'board'
+            if self.type == 'BUILT_WONDER_STAGES':
+                board.coins += locals()[b.lower()].wonder_built * self.points
+            elif self.type == 'COMPLETED_WONDER':
+                board.coins += (len(locals()[b.lower()].wonder_to_build) == 0) * self.points
+            elif self.type == 'CARD':
+                for c in self.colors:
+                    board.coins += locals()[b.lower()].colors[c.lower()] * self.points
 
 @dataclass
 class Action(Effect, str):
     x: str
 
     def apply(self, board, *args):
-        board.wonder_effects[self.lower()] = True
+        board.wonder_effects[self.x] = True

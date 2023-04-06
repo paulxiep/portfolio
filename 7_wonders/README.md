@@ -24,11 +24,15 @@ Wonder json and change information were obtained from the same source.
     - Made Game class a Gymnasium Env class
     - Defined action and observation space.
     - Implemented Effect on Board
+    - Implemented gameplay and DQNPlayer, can now simulate gameplay and results
+    - next up is the training code to test if the basic DQNPlayer can learn the game
 
 Structure of the current project (again, it's in very early stage):
 
     - elements.py: Stage, Card, Wonder, Board, and Player class as dataclasses
     - game.py: Game class as base game session class, will be subclassed into app and simulation as in Catan project
     - effects.py: Effect class and subclasses for implementing card/wonder effects
+    - utils.py: squash_idle function to squash idle turns in memory, used for preparing training data
+    - model.py: NN model inside the DQNPlayer
 
 *no component so far is final
