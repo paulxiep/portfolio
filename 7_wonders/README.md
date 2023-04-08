@@ -2,13 +2,13 @@
 
 7 Wonders is another (and 2nd) popular classic board game that I've decided to include in my repository. I started playing it in Mar 2023.
 
-Currently the project is in (very early stage of) Phase 1. I'm building the basic game engine.
+The project has reached the end of phase 1, with some planned features pushed to future updates.
 
-It is decided this project will use Gymnasium's library for proper reinforcement learning from the get-go.
+This project used Gymnasium's library for proper reinforcement learning environment from the get-go, even if I haven't used most of its features yet.
 
-The game elements consist of cards and boards, then the game play will involve around implementing card effects and card purchase. 
+The game elements consist of cards and boards, and the game play revolves around implementing card effects and card purchase. 
 
-I'll see if I can use UI other than tkinter.
+I'll see if I can use UI other than tkinter. That'll come in phase 2.
 
 I've obtained card list for the 1st edition from 
 [1st edition card list](https://github.com/joffrey-bion/seven-wonders/blob/main/sw-engine/src/main/resources/org/luxons/sevenwonders/engine/data/cards.json)
@@ -18,21 +18,26 @@ Then I edited the json to change it to 2nd edition based on information from
 
 Wonder json and change information were obtained from the same source.
 
-1st phase: basic engine build (more to come - wonders will be ignored in the 1st phase)
+1st phase: basic engine build, Deep-Q learning of card selection
 
-    - Created base elements class and Game class
-    - Made Game class a Gymnasium Env class
+    - Created base elements classes and Game class as a Gymnasium Env class.
     - Defined action and observation space.
     - Implemented Effect on Board
-    - Implemented gameplay and DQNPlayer, can now simulate gameplay and results
-    - next up is the training code to test if the basic DQNPlayer can learn the game
+    - Implemented gameplay and DQNPlayer, enabling simulation of gameplay and results
+    - Implemented Deep-Q learning on card choosing phase of turns. 
+    - The weights trained with random hyperparameters on some 5000 games already outperforms random player by 2-3 points on 300 games average.
+    - The play head was implemented but was removed and will be pushed to phase 2.
 
-Structure of the current project (again, it's in very early stage):
+2nd phase: interface and app for human players to join the play, potentially Policy Gradient or Actor-Critic.
 
-    - elements.py: Stage, Card, Wonder, Board, and Player class as dataclasses
-    - game.py: Game class as base game session class, will be subclassed into app and simulation as in Catan project
+    - not to be done in short-term plan yet
+
+Structure of the current project:
+
+    - elements.py: Stage, Card, Wonder, Board, and Player class as dataclasses. DQPlayer is also here for now.
+    - game.py: Game class as base game session class, will be subclassed into app as in Catan project
     - effects.py: Effect class and subclasses for implementing card/wonder effects
-    - utils.py: squash_idle function to squash idle turns in memory, used for preparing training data
-    - model.py: NN model inside the DQNPlayer
-
-*no component so far is final
+    - src/utils.py: squash_idle function to squash idle turns in memory, used for preparing training data
+    - src/model.py: NN model inside the DQPlayer
+    - src/constants.py: for storing various game constants and dicts
+    - dq_trainer.py: Class for implementing training loop of DQPlayer.

@@ -4,6 +4,9 @@ from typing import Optional, List
 
 @dataclass
 class Effect:
+    '''
+    Entry point to all Effect subclass is through Effect's from_dict
+    '''
     @staticmethod
     def translate_production(resources):
         resources = resources.replace('C', 'B')
@@ -17,6 +20,10 @@ class Effect:
 
     @classmethod
     def from_dict(cls, e_dict):
+        '''
+        used to parse card and wonder effects from json
+        returns relevant subclass instance of Effect
+        '''
         for key, value in e_dict.items():
             break
         return globals()[key[0].upper() + key[1:]](**value) if isinstance(value, dict) \
@@ -27,6 +34,7 @@ class Effect:
         to be defined in subclasses
         '''
         raise NotImplementedError
+
 
 @dataclass(init=False)
 class Production(Effect):
@@ -56,7 +64,7 @@ class Discount(Effect):
         else:
             if self.providers == 'LEFT_PLAYER':
                 board.discount[0] = 1
-            else:
+            elif self.providers == 'RIGHT_PLAYER':
                 board.discount[1] = 1
 
 
@@ -99,8 +107,14 @@ class PerBoardElement(Effect):
     gold: Optional[int] = 0
     points: Optional[int] = 0
     colors: Optional[List[str]] = field(default_factory=lambda: [])
+    '''
+    For guild cards and some commerce cards
+    '''
 
     def apply(self, board, left, right, name):
+        '''
+        add coins at moment of play
+        '''
         if self.gold > 0:
             for b in self.boards:
                 if b == 'SELF':
@@ -117,20 +131,27 @@ class PerBoardElement(Effect):
             board.effects.append(self)
 
     def apply_final(self, board, left, right):
+        '''
+        add points at game end
+        '''
         for b in self.boards:
             if b == 'SELF':
                 b = 'board'
             if self.type == 'BUILT_WONDER_STAGES':
-                board.coins += locals()[b.lower()].wonder_built * self.points
+                board.points += locals()[b.lower()].wonder_built * self.points
             elif self.type == 'COMPLETED_WONDER':
-                board.coins += (len(locals()[b.lower()].wonder_to_build) == 0) * self.points
+                board.points += (len(locals()[b.lower()].wonder_to_build) == 0) * self.points
             elif self.type == 'CARD':
                 for c in self.colors:
-                    board.coins += locals()[b.lower()].colors[c.lower()] * self.points
+                    board.points += locals()[b.lower()].colors[c.lower()] * self.points
+
 
 @dataclass
 class Action(Effect, str):
     x: str
+    '''
+    Strictly for wonder stages
+    '''
 
     def apply(self, board, *args):
         board.wonder_effects[self.x] = True

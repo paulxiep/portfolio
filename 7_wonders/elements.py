@@ -9,10 +9,13 @@ from gymnasium import Env
 
 from effects import Effect
 from src.constants import *
-from src.model import DeepQNetwork
+from src.model import DQNetwork
 
 
 class BuildOption:
+    '''
+    to share requirement parsing method between cards and wonder stages
+    '''
     @staticmethod
     def translate_requirements(requirements):
         if requirements is None:
@@ -30,6 +33,9 @@ class BuildOption:
 class Stage(BuildOption):
     requirements: dict
     effects: List[Effect]
+    '''
+    for wonder stage
+    '''
 
     @classmethod
     def from_dict(cls, stage):
@@ -150,7 +156,8 @@ class Board:
 
     @staticmethod
     def calculate_science_set(science_set):
-        return 7 * min([science_set[s] for s in sciences]) + reduce(int.__add__, [science_set[s]**2 for s in sciences])
+        return 7 * min([science_set[s] for s in sciences]) + reduce(int.__add__,
+                                                                    [science_set[s] ** 2 for s in sciences])
 
     def calculate_science(self):
         def add_wildcard(tup):
@@ -161,6 +168,7 @@ class Board:
                 for s in tup[1]:
                     static[s] += 1
             return static
+
         if self.science['any'] == 0:
             return self.calculate_science_set(self.science)
         else:
@@ -169,6 +177,7 @@ class Board:
             if len(any_set) > 1:
                 any_set = list(product(*any_set))
             return max(map(self.calculate_science_set, map(add_wildcard, product(static_set, any_set))))
+
 
 @dataclass
 class Player:
@@ -245,22 +254,24 @@ class Player:
     def calculate_science(self):
         return self.board.calculate_science()
 
+
 @dataclass(init=False)
-class DQNPlayer(Player):
+class DQPlayer(Player):
     env: Env = field(compare=False, default=None)
-    gamma: float = 0.9
+    model = None
 
     def __init__(
             self,
             *args,
-            env,
-            gamma=0.9,
+            env=None,
+            model=None
     ):
         super().__init__(*args)
         self.env = env
-        self.gamma = gamma
-        self.model = DeepQNetwork(env.action_space)
-        self.target_model = DeepQNetwork(env.observation_space, env.action_space)
+        if model is None:
+            self.model = DQNetwork({'choose': 80, 'play': 3})
+        else:
+            self.model = model
 
     @staticmethod
     def match_payment(cost, out):
@@ -271,7 +282,8 @@ class DQNPlayer(Player):
             if out[0] == 0:
                 out = out[0] + 0.01, out[1]
             x = x[0] + 1, x[1] + 1
-            return abs(x[0]/x[1] - out[0]/out[1]) + abs(x[1]/x[0] - out[1]/out[0])
+            return abs(x[0] / x[1] - out[0] / out[1]) + abs(x[1] / x[0] - out[1] / out[0])
+
         return min(cost, key=lambda x: match_ratio(x, out))
 
     def prepare_obs(self):
@@ -295,7 +307,7 @@ class DQNPlayer(Player):
         if cur_action == 3:
             return 'idle'
         else:
-            out_action = np.zeros(4)
+            out_action = np.zeros(3)
             np.add.at(out_action, [cur_action], 1)
             return np.concatenate((
                 cards,
@@ -305,50 +317,84 @@ class DQNPlayer(Player):
                 np.array([self.env.nth / 21]),
                 out_action,
                 np.array([int(self.env.nth in range(7, 14))])
-            ))
+            )).astype(float)
 
-    def select_action(self, obs, training=False):
+    def select_action(self, obs, explore=False):
+        def random_nonzero(value):
+            if value == 0:
+                return value
+            else:
+                return random.random()
+
+        def remove_zero(value):
+            if value == 0:
+                return -999
+            else:
+                return value
+
         if self.env.nth not in [6, 13, 20] or self.board.wonder_effects['PLAY_LAST_CARD']:
-            if self.env.action == 0 or (self.env.action == 3 and self.board.wonder_effects['PLAY_DISCARDED']):
+            if self.env.action == 0 or (self.env.action == 3 and self.board.wonder_effects['PLAY_DISCARDED'] and len(
+                    self.env.discarded) > 0):
                 out = self.model(obs, 'choose', mask=obs[:80]).numpy()
-                if not training:
-                    return np.argmax(out[0])
+                if not explore or random.random() < 0.1:
+                    iarg = np.argmax(np.vectorize(remove_zero)(out[0]))
                 else:
-                    return np.random.choice(range(80), p=out[0])
+                    iarg = np.argmax(np.vectorize(random_nonzero)(out[0]))
+                return iarg, out[0][iarg], obs[:80]
+                # return np.random.choice(range(80), p=out[0])
             elif self.env.action == 1 and \
                     not (self.env.nth in [0, 7, 14] and self.board.wonder_effects['FIRST_FREE_PER_AGE']) and \
                     not (self.env.nth in [5, 12, 19] and self.board.wonder_effects['LAST_FREE_PER_AGE']) and \
-                    not (self.board.wonder_effects['FIRST_FREE_PER_COLOR'] and self.board.colors[self.chosen.color.lower()]==0):
+                    not (self.board.wonder_effects['FIRST_FREE_PER_COLOR'] and self.board.colors[
+                        self.chosen.color.lower()] == 0):
                 mask = np.ones(3)
                 if not self.buildable(self.chosen.requirements, self.chosen.name)[0]:
                     mask[0] = 0
-                if self.board.wonder_id[0] == 99 or not self.buildable(self.board.wonder_to_build[0].requirements, None)[0]:
+                if self.board.wonder_id[0] == 99 or not \
+                        self.buildable(self.board.wonder_to_build[0].requirements, None)[0]:
                     mask[1] = 0
-                out = self.model(obs, 'play', mask=mask).numpy()
-                if not training:
-                    return np.argmax(out[0])
-                else:
-                    return np.random.choice(range(3), p=out[0])
+                # if mask[0] == 1 or mask[1] == 1:
+                #     mask[2] = 0
+                if mask[0] == 1 and mask[1] == 1:
+                    if random.random() < 0.8:
+                        return 0, None, None
+                    else:
+                        return 1, None, None
+                if mask[0]:
+                    return 0, None, None
+                if mask[1]:
+                    return 1, None, None
+                return 2, None, None
+                # out = self.model(obs, 'play', mask=mask).numpy()
+                # if not explore or random.random() < 0.1:
+                #     iarg = np.argmax(np.vectorize(remove_zero)(out[0]))
+                # else:
+                #     iarg = np.argmax(np.vectorize(random_nonzero)(out[0]))
+                # return iarg, out[0][iarg], mask
+                # return np.random.choice(range(3), p=out[0])
             elif self.env.action == 2 and \
                     not (self.env.nth in [0, 7, 14] and self.board.wonder_effects['FIRST_FREE_PER_AGE']) and \
                     not (self.env.nth in [5, 12, 19] and self.board.wonder_effects['LAST_FREE_PER_AGE']) and \
-                    not (self.board.wonder_effects['FIRST_FREE_PER_COLOR'] and self.board.colors[self.chosen.color.lower()]==0):
-                if self.action == 0:  #card
+                    not (self.board.wonder_effects['FIRST_FREE_PER_COLOR'] and self.board.colors[
+                        self.chosen.color.lower()] == 0):
+
+                if self.action == 0:  # card
                     cost = self.buildable(self.chosen.requirements, self.chosen.name)[1]
-                elif self.action == 1:  #wonder
+                elif self.action == 1:  # wonder
                     cost = self.buildable(self.board.wonder_to_build[0].requirements, None)[1]
                 else:  # discard for 3 coins
-                    return 'idle'
+                    return 'idle', None, None
                 if cost[0]:
-                    return np.array([0, 0, 0])
+                    return [0, 0, 0], None, None
                 else:
                     cost = cost[1]
-                    if cost[0]==0 and cost[1]==0:
+                    if cost[0] == 0 and cost[1] == 0:
                         # cost is coin
-                        return np.array([0, 0, cost[2]/20])
-                    out = self.model(obs, 'pay')[0].numpy()
-                    return np.array(list(self.match_payment(cost, out)) + [0])/20
+                        return [0, 0, cost[2] / 20], None, None
+                    return (np.array(list(random.choice(cost)) + [0]) / 20).tolist(), None, None
+                    # out = self.model(obs, 'pay')[0].numpy()
+                    # return np.array(list(self.match_payment(cost, out)) + [0])/20
             else:
-                return 'idle'
+                return 'idle', None, None
         else:
-            return 'idle'
+            return 'idle', None, None
