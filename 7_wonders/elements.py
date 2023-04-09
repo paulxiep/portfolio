@@ -337,6 +337,7 @@ class DQPlayer(Player):
                     self.env.discarded) > 0):
                 out = self.model(obs, 'choose', mask=obs[:80]).numpy()
                 if not explore or random.random() < 0.1:
+                    # print(out[0])
                     iarg = np.argmax(np.vectorize(remove_zero)(out[0]))
                 else:
                     iarg = np.argmax(np.vectorize(random_nonzero)(out[0]))

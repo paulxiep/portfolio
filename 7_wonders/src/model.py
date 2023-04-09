@@ -15,10 +15,10 @@ class FullyConnected(Model):
         self.fc0 = Dense(hidden_size * 4, activation='relu')
         self.fc1 = Dense(hidden_size * 2, activation='relu')
         self.fc2 = Dense(hidden_size, activation='relu')
-        # self.fc3 = Dense(hidden_size // 2, activation='relu')
+        self.fc3 = Dense(hidden_size, activation='relu')
 
     def call(self, input):
-        return self.fc2(self.fc1(self.fc0(input)))
+        return self.fc3(self.fc2(self.fc1(self.fc0(input))))
 
 
 class DQHead(Model):

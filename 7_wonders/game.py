@@ -206,7 +206,7 @@ class Game(Env):
                             if action_n[i][0] == 0 and action_n[i][1] == 0:
                                 self.players[i].board.coins -= int(round(action_n[i][2] * 20))
                             else:
-                                self.players[i].board.coins -= int(round((action_n[i][0] + action_n[i][1]) * 20))
+                                self.players[i].board.coins -= int(round((action_n[i][0]) * 20) + round((action_n[i][1]) * 20))
                                 self.players[i].left.coins += int(round(action_n[i][0] * 20))
                                 self.players[i].right.coins += int(round(action_n[i][1] * 20))
                             if self.players[i].action == 0:

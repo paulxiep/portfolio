@@ -15,7 +15,7 @@ class DQTrainer:
     class for training DQPlayer
     '''
 
-    def __init__(self, gamma=0.99):
+    def __init__(self, gamma=1.):
         self.model = DQNetwork({'choose': 80, 'play': 3}, hidden_size=256)
         self.target_model = DQNetwork({'choose': 80, 'play': 3}, hidden_size=256)
         self.partial_model = {'choose': Sequential([self.model.fc, self.model.head])}
@@ -26,7 +26,7 @@ class DQTrainer:
         # self.partial_model['play'].build([1, 484])
         self.gamma = gamma
         self.mse = tf.keras.losses.MeanSquaredError()
-        self.optimizer = Adam(0.05)
+        self.optimizer = Adam(0.001)
         wandb.init(project='reinforcement-learning')
 
     def load_weights(self, path):
