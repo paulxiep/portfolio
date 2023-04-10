@@ -27,7 +27,6 @@ Wonder json and change information were obtained from the same source.
     - Implemented Effect on Board
     - Implemented gameplay and DQNPlayer, enabling simulation of gameplay and results
     - Implemented Deep-Q learning on card choosing phase of turns. 
-    - The weights trained with random hyperparameters on some 5000 games already outperforms random player by 2-3 points on 300 games average.
     - The play head was implemented but was removed and will be pushed to phase 2.
 
 2nd phase: interface and app for human players to join the play, potentially Policy Gradient or Actor-Critic.
