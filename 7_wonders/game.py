@@ -73,15 +73,10 @@ class Game(Env):
         for i in range(self.n_players):
             choose = squash_idle(list(pd.DataFrame(self.memory)[i]))
             chooses.append(choose)
-            # plays.append(play)
         points = []
         for i, choose in enumerate(chooses):
-            points.append(choose[-1][3])
-            # pd.DataFrame(play[-2:]).to_csv(f'games/game_{self.id}_player_{i}.csv', header=False, index=None)
-        # print(points)
+            points.append(choose[-1][5])
         return np.array(points)
-        # pd.DataFrame(reduce(list.__add__, chooses)).to_csv(f'games/game_{self.id}_choose.csv', header=False, index=None)
-        # pd.DataFrame(reduce(list.__add__, plays)).to_csv(f'games/game_{self.id}_play.csv', header=False, index=None)
 
     def run_and_return(self):
         '''
@@ -89,29 +84,28 @@ class Game(Env):
         '''
         self.collect(True)
         chooses = []
-        # plays = []
         for i in range(self.n_players):
             choose = squash_idle(list(pd.DataFrame(self.memory)[i]))
             chooses.append(choose)
-            # plays.append(play)
         return chooses
 
-    def end(self):
+    def end(self, reward_n):
         '''
         calculate reward (points) at game end
         '''
         obs_n = ['idle'] * self.n_players
         done_n = [1] * self.n_players
         info_n = None
-        reward_n = []
+        reward_n_out = reward_n.copy()
         for i in range(self.n_players):
             self.players[i].calculate_guilds()
-            reward_n.append(
-                self.players[i].calculate_science() +
+            own_points = (
                 self.players[i].board.coins // 3 +
-                self.players[i].board.points
+                self.players[i].board.points +
+                self.players[i].calculate_science()
             )
-        return obs_n, reward_n, done_n, info_n, 21, 0
+            reward_n_out[i] += own_points
+        return obs_n, reward_n_out, done_n, info_n, 21, 0
 
     def collect(self, training):
         '''
@@ -124,7 +118,9 @@ class Game(Env):
                 zip(*map(lambda i: self.players[i].select_action(obs_n[i], training), range(self.n_players))))
             next_obs_n, reward_n, done_n, info_n, nth, action = self.step(action_n)
             self.memory.append(
-                [(obs_n[i], action_n[i], next_obs_n[i], reward_n[i], done_n[i], raw_n[i], mask_n[i], nth, action) for i
+                [(obs_n[i], action_n[i], next_obs_n[i], reward_n[i], done_n[i],
+                  self.players[i].board.coins // 3 + self.players[i].board.points + self.players[i].calculate_science(),
+                  self.players[i].calculate_science(), mask_n[i], nth, action) for i
                  in range(self.n_players)])
             obs_n = next_obs_n
             done = bool(done_n[0])
@@ -143,6 +139,9 @@ class Game(Env):
 
     def step(self, action_n):
         nth, naction = self.nth, self.action
+        reward_n = [0] * self.n_players
+        done_n = [0] * self.n_players
+        info_n = None
         if False:  # self.nth == 20 and self.action == 3:
             pass  # return self.end()
         elif self.action == 0:
@@ -151,12 +150,15 @@ class Game(Env):
             for i in range(self.n_players):
                 if self.nth not in [6, 13, 20] or self.players[i].board.wonder_effects['PLAY_LAST_CARD']:
                     chosen = {v: k for k, v in card_dict.items()}[action_n[i]]
+                    # print(chosen, action_n[i], [card.name for card in self.players[i].hand])
                     for cid in range(len(self.players[i].hand)):
                         if self.players[i].hand[cid].name == chosen:
                             self.players[i].chosen = self.players[i].hand.pop(cid)
                             break
+                    # print(self.nth, i, [c.name for c in self.players[i].hand])
             for i in range(self.n_players):
                 if self.nth not in [6, 13, 20] or self.players[i].board.wonder_effects['PLAY_LAST_CARD']:
+                    # self.players[i].cards = self.players[i].hand.copy()
                     obs_n.append(self.players[i].prepare_obs())
                 else:
                     obs_n.append('idle')
@@ -170,7 +172,8 @@ class Game(Env):
                             (self.players[i].board.wonder_effects['FIRST_FREE_PER_COLOR'] and
                              self.players[i].board.colors[self.players[i].chosen.color.lower()] == 0):
                         # obs_n.append('idle')
-                        pass
+                        self.players[i].action = action_n[i]
+                        # pass
                     else:
                         self.players[i].action = action_n[i]
                         if action_n[i] == 2:
@@ -179,12 +182,14 @@ class Game(Env):
             for i in range(self.n_players):
                 if self.nth not in [6, 13, 20] or self.players[i].board.wonder_effects['PLAY_LAST_CARD']:
                     if (self.nth in [0, 7, 14] and self.players[i].board.wonder_effects['FIRST_FREE_PER_AGE']) or \
-                            (self.nth in [5, 12, 19] and self.players[i].board.wonder_effects['LAST_FREE_PER_AGE']) or \
-                            (self.players[i].board.wonder_effects['FIRST_FREE_PER_COLOR'] and
-                             self.players[i].board.colors[self.players[i].chosen.color.lower()] == 0):
+                            (self.nth in [5, 12, 19] and self.players[i].board.wonder_effects['LAST_FREE_PER_AGE']): #or \
+                            # (self.players[i].board.wonder_effects['FIRST_FREE_PER_COLOR'] and
+                            #  self.players[i].board.colors[self.players[i].chosen.color.lower()] == 0):
                         obs_n.append('idle')
                     else:
-                        if action_n[i] == 2:
+                        if action_n[i] == 2 or (action_n[i] == 0 and
+                                                (self.players[i].board.wonder_effects['FIRST_FREE_PER_COLOR'] and
+                                                self.players[i].board.colors[self.players[i].chosen.color.lower()] == 0)):
                             obs_n.append('idle')
                         else:
                             obs_n.append(self.players[i].prepare_obs())
@@ -195,10 +200,10 @@ class Game(Env):
             obs_n = []
             for i in range(self.n_players):
                 if self.nth not in [6, 13, 20] or self.players[i].board.wonder_effects['PLAY_LAST_CARD']:
-                    if ((self.nth in [0, 7, 14] and self.players[i].board.wonder_effects['FIRST_FREE_PER_AGE']) or \
-                            (self.nth in [5, 12, 19] and self.players[i].board.wonder_effects['LAST_FREE_PER_AGE']) or \
-                            (self.players[i].board.wonder_effects['FIRST_FREE_PER_COLOR'] and
-                             self.players[i].board.colors[self.players[i].chosen.color.lower()] == 0)):
+                    if (self.nth in [0, 7, 14] and self.players[i].board.wonder_effects['FIRST_FREE_PER_AGE']) or \
+                            (self.nth in [5, 12, 19] and self.players[i].board.wonder_effects['LAST_FREE_PER_AGE']): #or \
+                            # (self.players[i].board.wonder_effects['FIRST_FREE_PER_COLOR'] and
+                            #  self.players[i].board.colors[self.players[i].chosen.color.lower()] == 0)):
                         # obs_n.append('idle')
                         pass
                     else:
@@ -221,15 +226,17 @@ class Game(Env):
                                 self.players[i].cards = self.discarded
 
                 if (self.nth in [0, 7, 14] and self.players[i].board.wonder_effects['FIRST_FREE_PER_AGE']) or \
-                        (self.nth in [5, 12, 19] and self.players[i].board.wonder_effects['LAST_FREE_PER_AGE']) or \
-                        (self.players[i].board.wonder_effects['FIRST_FREE_PER_COLOR'] and self.players[i].board.colors[
-                            self.players[i].chosen.color.lower()] == 0):
+                        (self.nth in [5, 12, 19] and self.players[i].board.wonder_effects['LAST_FREE_PER_AGE']): #or \
+                        # (self.players[i].board.wonder_effects['FIRST_FREE_PER_COLOR'] and self.players[i].board.colors[
+                        #     self.players[i].chosen.color.lower()] == 0 and self.players[i].action == 0):
                     self.players[i].apply_card(self.players[i].chosen)
 
             if self.nth in [6, 13, 20]:  # discard at end of era
                 for i in range(self.n_players):
+                    # print(len(self.players[i].hand))
                     for card in self.players[i].hand:
                         self.discarded.append(card)
+
             for i in range(self.n_players):
                 if self.nth not in [6, 13, 20] or self.players[i].board.wonder_effects['PLAY_LAST_CARD']:
                     if ((self.nth in [0, 7, 14] and self.players[i].board.wonder_effects['FIRST_FREE_PER_AGE']) or \
@@ -261,7 +268,7 @@ class Game(Env):
                                     self.players[i].chosen = self.players[i].cards.pop(cid)
                                     break
                             self.players[i].apply_card(self.players[i].chosen)
-            if self.nth not in [6, 13, 20]:  # not end of era
+            if self.nth not in [5, 6, 12, 13, 19, 20]:  # not end of era
                 if self.nth in range(7, 14):  # pass counter clockwise
                     buffer_from = self.players[-1].hand.copy()
                     for i in range(self.n_players):
@@ -277,14 +284,13 @@ class Game(Env):
                         else:
                             self.players[i].hand = buffer.copy()
                         self.players[i].cards = self.players[i].hand.copy()
-            else:  # end of era
+            elif self.nth in [6, 13, 20]:  # end of era
                 for i in range(self.n_players):
                     for opponent in [self.players[i - 1], self.players[i - (self.n_players - 1)]]:
                         if self.players[i].board.army < opponent.board.army:
                             self.players[i].board.points -= 1
                         elif self.players[i].board.army > opponent.board.army:
                             self.players[i].board.points += 1 + (self.era - 1) * 2
-
                 if self.nth == 20:  # end of game
                     pass
                 else:  # start next era
@@ -295,6 +301,10 @@ class Game(Env):
                     for i in range(self.n_players):
                         self.players[i].hand = self.cards[self.era][(i * 7): ((i + 1) * 7)].copy()
                         self.players[i].cards = self.cards[self.era][(i * 7): ((i + 1) * 7)].copy()
+            else: # if play last card
+                for i in range(self.n_players):
+                    self.players[i].cards = self.players[i].hand.copy()
+
 
             self.nth += 1
             self.action = 0
@@ -304,13 +314,14 @@ class Game(Env):
             else:
                 for i in range(self.n_players):
                     obs_n.append(self.players[i].prepare_obs())
-
-        reward_n = [0] * self.n_players
-        done_n = [0] * self.n_players
-        info_n = None
+            reward_n = []
+            for i in range(self.n_players):
+                new_science = self.players[i].board.calculate_science()-self.players[i].board.science_points
+                self.players[i].board.science_points += new_science
+                reward_n.append(new_science)
 
         if nth == 20 and naction == 3:
-            return self.end()
+            return self.end(reward_n)
         return obs_n, reward_n, done_n, info_n, nth, naction
 
     def get_wonders(self):
@@ -332,7 +343,6 @@ class Game(Env):
             random.shuffle(self.cards[i])
 
     def assign_players(self):
-        # self.players = [DQPlayer(env=self) for _ in range(self.n_players)]
         for player in self.players:
             player.env = self
         for i, player in enumerate(self.players):

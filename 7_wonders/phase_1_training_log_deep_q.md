@@ -1,4 +1,41 @@
-# Training log of Phase 1 (Deep Q players)
+# Training log of Phase 1 (Deep Q Network)
+
+# Latest Generation
+
+After testing the training results extensively with the previous generation,
+the DQPlayer and how it is called has been redesigned.
+
+Instead of calling the model only for the card choosing step, 
+the model call now combines 'choose' and 'play' steps. The action space size is now 240 instead of 80.
+
+Seeing the previous generation's struggle with science points, 
+the code now combines the training of normal player and science-biased player.
+The science player obtains double the reward points for any science points scored.
+
+Game.collect() and DQTrainer.gather_batch() now generate batches with 2 different reward regimes.
+Both player types are then trained simultaneously using exact same experience with different rewards.
+
+The training loop now also utilizes experience replay, and only plays a new game once every 5 iterations.
+
+Results of this latest generation will be updated as it is obtained.
+
+## Common paramaters over all rounds
+
+    - 1024-1024-512 hidden nodes (3 layers)
+    - Gamma 1.0
+    - Batch size 32.
+    - Target model gets updated every 500 iterations (100 games)
+    - 4-6 players per game, at least 1 each of each training player as 'focused' player.
+    - Each training player seat is buffered by 1-2 other players (which may also use training weights, but are all 'unfocused').
+    - Focused player takes 90+% greedy actions (90 + 10% of unfocused player greedy moves).
+
+## Round 1
+
+    - Learning rate 0.0003.
+    - Unfocused player makes 10% greedy moves.
+
+
+# Previous Generation
 
 The Deep Q network was trained over 60000 games, divided into 3 round, 20000 games each.
 
@@ -65,7 +102,7 @@ The Deep Q network was trained over 60000 games, divided into 3 round, 20000 gam
 	- 3 vs 1s: 45.94 vs 38.45
 	- 3 vs 2s: 44.66 vs 39.53
 
-## Potential improvements
+## Potential improvements (of Previous Generation)
 
     - Model for 'play' step (card-wonder-discard)
     - Somehow have to make the model figure out how to play science. Rewards probably need to be redesigned for that purpose.

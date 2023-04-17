@@ -9,13 +9,13 @@ from gymnasium import Env
 
 from effects import Effect
 from src.constants import *
-from src.model import DQNetwork
 
 
 class BuildOption:
     '''
     to share requirement parsing method between cards and wonder stages
     '''
+
     @staticmethod
     def translate_requirements(requirements):
         if requirements is None:
@@ -105,10 +105,11 @@ class Board:
     wonder_built: int = 0
     wonder_name: str = None
     wonder_id: List[int] = field(default_factory=lambda: [])
-    built: list = field(default_factory=lambda: [])
+    built: dict = field(default_factory=lambda: {})
+    science_points: int = 0
 
     def apply_card(self, card, left, right):
-        self.built.append(card.name)
+        self.built[card.name] = True
         self.colors[card.color.lower()] += 1
         card.apply(self, left, right)
 
@@ -162,11 +163,8 @@ class Board:
     def calculate_science(self):
         def add_wildcard(tup):
             static = tup[0].copy()
-            if isinstance(tup[1], str):
-                static[tup[1]] += 1
-            else:
-                for s in tup[1]:
-                    static[s] += 1
+            for s in tup[1]:
+                static[s] += 1
             return static
 
         if self.science['any'] == 0:
@@ -176,6 +174,8 @@ class Board:
             any_set = self.science['any'] * [sciences]
             if len(any_set) > 1:
                 any_set = list(product(*any_set))
+            else:
+                any_set = [(s,) for s in sciences]
             return max(map(self.calculate_science_set, map(add_wildcard, product(static_set, any_set))))
 
 
@@ -199,7 +199,6 @@ class Player:
         if name is not None:
             if name in self.board.chains:
                 return True, (True, None)
-
         production_choices = self.board.production_choices()
         if 'C' in cost.keys():
             if self.board.coins >= cost['C']:
@@ -256,22 +255,25 @@ class Player:
 
 
 @dataclass(init=False)
-class DQPlayer(Player):
+class AIPlayer(Player):
     env: Env = field(compare=False, default=None)
     model = None
+    explore = None
 
     def __init__(
             self,
             *args,
             env=None,
-            model=None
+            model=None,
+            explore=None
     ):
         super().__init__(*args)
         self.env = env
-        if model is None:
-            self.model = DQNetwork({'choose': 80, 'play': 3})
+        self.model = model
+        if explore is None:
+            self.explore = random.choice([True, True, True, False])
         else:
-            self.model = model
+            self.explore = explore
 
     @staticmethod
     def match_payment(cost, out):
@@ -319,6 +321,60 @@ class DQPlayer(Player):
                 np.array([int(self.env.nth in range(7, 14))])
             )).astype(float)
 
+    def generate_mask(self, card_array):
+        reverse_card_dict = {v: k for k, v in card_dict.items()}
+
+        def buildable(card_id_plus, free_color=False):
+            card_id_plus = int(card_id_plus)
+            if card_id_plus == 0:
+                return 0
+            card_name = reverse_card_dict[card_id_plus - 1]
+            for card in self.cards:
+                if card.name == card_name:
+                    if (not free_color) or self.board.colors[card.color.lower()] > 0:
+                        return int(
+                            not self.board.built.get(card.name, False) and self.buildable(card.requirements, card.name)[
+                                0])
+                    else:
+                        return 2
+
+        if self.board.wonder_id[0] == 99 or not \
+                self.buildable(self.board.wonder_to_build[0].requirements, None)[0]:
+            wonder_buildable = 0
+        else:
+            wonder_buildable = 1
+        discard_chance = 1
+        if (self.env.nth in [0, 7, 14] and self.board.wonder_effects['FIRST_FREE_PER_AGE']) or \
+                (self.env.nth in [5, 12, 19] and self.board.wonder_effects['LAST_FREE_PER_AGE']):
+            wonder_buildable = 0
+            discard_chance = 0
+            card_mask = card_array
+        elif self.board.wonder_effects['FIRST_FREE_PER_COLOR']:
+            card_mask = np.vectorize(lambda x: buildable(x, True))(np.arange(80)
+                                                                   * card_array.astype(bool)
+                                                                   + card_array.astype(bool))
+        else:
+            card_mask = np.vectorize(lambda x: buildable(x, False))(
+                np.arange(80) * card_array.astype(bool) + card_array.astype(bool))
+        wonder_mask = wonder_buildable * card_array
+        if not self.board.wonder_effects['FIRST_FREE_PER_COLOR']:
+            return np.concatenate((card_mask, wonder_mask, card_array * discard_chance))
+        else:
+            return np.concatenate(
+                (card_mask.astype(bool).astype(int), wonder_mask, card_array - (card_mask == 2).astype(int)))
+
+
+@dataclass(init=False)
+class DQPlayer(AIPlayer):
+    play = None
+
+    def __init__(
+            self,
+            **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.play = None
+
     def select_action(self, obs, explore=False):
         def random_nonzero(value):
             if value == 0:
@@ -328,59 +384,60 @@ class DQPlayer(Player):
 
         def remove_zero(value):
             if value == 0:
-                return -999
+                return -999999
             else:
                 return value
 
         if self.env.nth not in [6, 13, 20] or self.board.wonder_effects['PLAY_LAST_CARD']:
             if self.env.action == 0 or (self.env.action == 3 and self.board.wonder_effects['PLAY_DISCARDED'] and len(
                     self.env.discarded) > 0):
-                out = self.model(obs, 'choose', mask=obs[:80]).numpy()
-                if not explore or random.random() < 0.1:
-                    # print(out[0])
+                mask = self.generate_mask(obs[:80])
+                if self.model is not None and \
+                        (not explore or (not self.explore and random.random() < 0.9) or random.random() < 0.1):
+                    out = self.model(obs, 'choose', mask=mask).numpy()
                     iarg = np.argmax(np.vectorize(remove_zero)(out[0]))
+                    icard = iarg % 80
+                    self.play = iarg // 80
+                    return icard, None, mask
                 else:
-                    iarg = np.argmax(np.vectorize(random_nonzero)(out[0]))
-                return iarg, out[0][iarg], obs[:80]
-                # return np.random.choice(range(80), p=out[0])
-            elif self.env.action == 1 and \
-                    not (self.env.nth in [0, 7, 14] and self.board.wonder_effects['FIRST_FREE_PER_AGE']) and \
-                    not (self.env.nth in [5, 12, 19] and self.board.wonder_effects['LAST_FREE_PER_AGE']) and \
-                    not (self.board.wonder_effects['FIRST_FREE_PER_COLOR'] and self.board.colors[
-                        self.chosen.color.lower()] == 0):
-                mask = np.ones(3)
-                if not self.buildable(self.chosen.requirements, self.chosen.name)[0]:
-                    mask[0] = 0
-                if self.board.wonder_id[0] == 99 or not \
-                        self.buildable(self.board.wonder_to_build[0].requirements, None)[0]:
-                    mask[1] = 0
-                # if mask[0] == 1 or mask[1] == 1:
-                #     mask[2] = 0
-                if mask[0] == 1 and mask[1] == 1:
-                    if random.random() < 0.8:
-                        return 0, None, None
-                    else:
-                        return 1, None, None
-                if mask[0]:
-                    return 0, None, None
-                if mask[1]:
-                    return 1, None, None
-                return 2, None, None
-                # out = self.model(obs, 'play', mask=mask).numpy()
-                # if not explore or random.random() < 0.1:
-                #     iarg = np.argmax(np.vectorize(remove_zero)(out[0]))
-                # else:
-                #     iarg = np.argmax(np.vectorize(random_nonzero)(out[0]))
-                # return iarg, out[0][iarg], mask
-                # return np.random.choice(range(3), p=out[0])
-            elif self.env.action == 2 and \
-                    not (self.env.nth in [0, 7, 14] and self.board.wonder_effects['FIRST_FREE_PER_AGE']) and \
-                    not (self.env.nth in [5, 12, 19] and self.board.wonder_effects['LAST_FREE_PER_AGE']) and \
-                    not (self.board.wonder_effects['FIRST_FREE_PER_COLOR'] and self.board.colors[
-                        self.chosen.color.lower()] == 0):
+                    iarg = np.argmax(np.vectorize(random_nonzero)(obs[:80]))
+                    self.play = None
+                    return iarg, None, mask
 
+            elif self.env.action == 1:
+                if not (self.env.nth in [0, 7, 14] and self.board.wonder_effects['FIRST_FREE_PER_AGE']) and \
+                        not (self.env.nth in [5, 12, 19] and self.board.wonder_effects['LAST_FREE_PER_AGE']) and \
+                        not (self.board.wonder_effects['FIRST_FREE_PER_COLOR'] and self.board.colors[
+                            self.chosen.color.lower()] == 0):
+                    if self.play is None:
+                        if not self.board.wonder_id[0] == 99 and \
+                                self.buildable(self.board.wonder_to_build[0].requirements, None)[0]:
+                            return 1, None, None
+                        elif not self.board.built.get(self.chosen.name, False) and \
+                                self.buildable(self.chosen.requirements, self.chosen.name)[0]:
+                            return 0, None, None
+                        else:
+                            return 2, None, None
+                    else:
+                        return self.play, None, None
+                else:
+                    if self.play is None:
+                        if not self.board.built.get(self.chosen.name, False):
+                            return 0, None, None
+                        else:
+                            return 2, None, None
+                    else:
+                        return self.play, None, None
+
+            elif self.env.action == 2:
                 if self.action == 0:  # card
-                    cost = self.buildable(self.chosen.requirements, self.chosen.name)[1]
+                    if not (self.env.nth in [0, 7, 14] and self.board.wonder_effects['FIRST_FREE_PER_AGE']) and \
+                            not (self.env.nth in [5, 12, 19] and self.board.wonder_effects['LAST_FREE_PER_AGE']) and \
+                            not (self.board.wonder_effects['FIRST_FREE_PER_COLOR'] and self.board.colors[
+                                self.chosen.color.lower()] == 0):
+                        cost = self.buildable(self.chosen.requirements, self.chosen.name)[1]
+                    else:
+                        cost = True, None
                 elif self.action == 1:  # wonder
                     cost = self.buildable(self.board.wonder_to_build[0].requirements, None)[1]
                 else:  # discard for 3 coins
@@ -389,12 +446,12 @@ class DQPlayer(Player):
                     return [0, 0, 0], None, None
                 else:
                     cost = cost[1]
-                    if cost[0] == 0 and cost[1] == 0:
+                    if cost[0][0] == 0 and cost[0][1] == 0:
                         # cost is coin
-                        return [0, 0, cost[2] / 20], None, None
-                    return (np.array(list(random.choice(cost)) + [0]) / 20).tolist(), None, None
-                    # out = self.model(obs, 'pay')[0].numpy()
-                    # return np.array(list(self.match_payment(cost, out)) + [0])/20
+                        return [0, 0, cost[0][2] / 20], None, None
+                    return (np.array(
+                        list(min(cost, key=lambda x: x[0] + x[1] + random.random())) + [0]) / 20).tolist(), None, None
+
             else:
                 return 'idle', None, None
         else:

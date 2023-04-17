@@ -1,4 +1,4 @@
-## 7 Wonders
+# 7 Wonders
 
 **training log of 1st phase can be found phase_1_training_log_deep_q.md**
 
@@ -25,9 +25,9 @@ Wonder json and change information were obtained from the same source.
     - Created base elements classes and Game class as a Gymnasium Env class.
     - Defined action and observation space.
     - Implemented Effect on Board
-    - Implemented gameplay and DQNPlayer, enabling simulation of gameplay and results
-    - Implemented Deep-Q learning on card choosing phase of turns. 
-    - The play head was implemented but was removed and will be pushed to phase 2.
+    - Implemented gameplay and DQPlayer, enabling simulation of gameplay and results
+    - Implemented Deep-Q learning on card + action phase of turns.
+    - Payment phase (if action is build) greedily minimizes cost to self.
 
 2nd phase: interface and app for human players to join the play, potentially Policy Gradient or Actor-Critic.
 
