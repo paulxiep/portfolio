@@ -138,12 +138,12 @@ class PerBoardElement(Effect):
             if b == 'SELF':
                 b = 'board'
             if self.type == 'BUILT_WONDER_STAGES':
-                board.points += locals()[b.lower()].wonder_built * self.points
+                board.guild_points += locals()[b.lower()].wonder_built * self.points
             elif self.type == 'COMPLETED_WONDER':
-                board.points += (len(locals()[b.lower()].wonder_to_build) == 0) * self.points
+                board.guild_points += (len(locals()[b.lower()].wonder_to_build) == 0) * self.points
             elif self.type == 'CARD':
                 for c in self.colors:
-                    board.points += locals()[b.lower()].colors[c.lower()] * self.points
+                    board.guild_points += locals()[b.lower()].colors[c.lower()] * self.points
 
 
 @dataclass

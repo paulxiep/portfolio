@@ -102,6 +102,8 @@ class Game(Env):
             own_points = (
                 self.players[i].board.coins // 3 +
                 self.players[i].board.points +
+                self.players[i].board.guild_points +
+                self.players[i].board.military_points +
                 self.players[i].calculate_science()
             )
             reward_n_out[i] += own_points
@@ -119,8 +121,14 @@ class Game(Env):
             next_obs_n, reward_n, done_n, info_n, nth, action = self.step(action_n)
             self.memory.append(
                 [(obs_n[i], action_n[i], next_obs_n[i], reward_n[i], done_n[i],
-                  self.players[i].board.coins // 3 + self.players[i].board.points + self.players[i].calculate_science(),
-                  self.players[i].calculate_science(), mask_n[i], nth, action) for i
+                  self.players[i].board.coins // 3 +
+                  self.players[i].board.points +
+                  self.players[i].board.guild_points +
+                  self.players[i].board.military_points +
+                  self.players[i].calculate_science(),
+                  self.players[i].calculate_science(),
+                  self.players[i].board.points,
+                  mask_n[i], nth, action) for i
                  in range(self.n_players)])
             obs_n = next_obs_n
             done = bool(done_n[0])
@@ -288,9 +296,9 @@ class Game(Env):
                 for i in range(self.n_players):
                     for opponent in [self.players[i - 1], self.players[i - (self.n_players - 1)]]:
                         if self.players[i].board.army < opponent.board.army:
-                            self.players[i].board.points -= 1
+                            self.players[i].board.military_points -= 1
                         elif self.players[i].board.army > opponent.board.army:
-                            self.players[i].board.points += 1 + (self.era - 1) * 2
+                            self.players[i].board.military_points += 1 + (self.era - 1) * 2
                 if self.nth == 20:  # end of game
                     pass
                 else:  # start next era
@@ -349,6 +357,7 @@ class Game(Env):
             player.board = Board()
             player.board.wonder_to_build = self.wonders[i].stages
             player.board.wonder_name = self.wonders[i].name
+            player.board.wonder_side = self.wonders[i].side
             player.board.wonder_id = self.wonders[i].stages_id
         for i in range(self.n_players):
             self.players[i].right = self.players[i - 1].board

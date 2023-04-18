@@ -69,6 +69,7 @@ class Card(BuildOption):
 @dataclass
 class Wonder:
     name: str
+    side: str
     resource: str
     stages: list
     stages_id: list
@@ -81,7 +82,7 @@ class Wonder:
         resource = side['initialResource']
         stages = side['stages']
         stages_id = list(map(lambda x: wonder_dict[(name, choice, x)], range(1, len(stages) + 1)))
-        return Wonder(name, resource, [Stage.from_dict(stage) for stage in stages], stages_id + [99])
+        return Wonder(name, choice, resource, [Stage.from_dict(stage) for stage in stages], stages_id + [99])
 
 
 @dataclass
@@ -93,6 +94,8 @@ class Board:
     coins: int = 3
     army: int = 0
     points: int = 0
+    guild_points: int = 0
+    military_points: int = 0
     discount: list = field(default_factory=lambda: [0, 0, 0])
     science: dict = field(default_factory=lambda: {'wheel': 0, 'compass': 0, 'tablet': 0, 'any': 0})
     guilds: dict = field(default_factory=lambda: {g: False for g in guilds})
@@ -104,6 +107,7 @@ class Board:
     wonder_to_build: List[Stage] = field(default_factory=lambda: [])
     wonder_built: int = 0
     wonder_name: str = None
+    wonder_side: str = None
     wonder_id: List[int] = field(default_factory=lambda: [])
     built: dict = field(default_factory=lambda: {})
     science_points: int = 0
@@ -271,7 +275,7 @@ class AIPlayer(Player):
         self.env = env
         self.model = model
         if explore is None:
-            self.explore = random.choice([True, True, True, False])
+            self.explore = random.choice([True, True, True, True, False])
         else:
             self.explore = explore
 
@@ -393,7 +397,7 @@ class DQPlayer(AIPlayer):
                     self.env.discarded) > 0):
                 mask = self.generate_mask(obs[:80])
                 if self.model is not None and \
-                        (not explore or (not self.explore and random.random() < 0.9) or random.random() < 0.1):
+                        (not explore or (not self.explore and random.random() < 0.9) or random.random() < 0.3):
                     out = self.model(obs, 'choose', mask=mask).numpy()
                     iarg = np.argmax(np.vectorize(remove_zero)(out[0]))
                     icard = iarg % 80

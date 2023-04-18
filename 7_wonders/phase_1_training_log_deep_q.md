@@ -1,6 +1,6 @@
 # Training log of Phase 1 (Deep Q Network)
 
-# Latest Generation
+# Latest (2nd) Generation
 
 After testing the training results extensively with the previous generation,
 the DQPlayer and how it is called has been redesigned.
@@ -17,22 +17,52 @@ Both player types are then trained simultaneously using exact same experience wi
 
 The training loop now also utilizes experience replay, and only plays a new game once every 5 iterations.
 
-Results of this latest generation will be updated as it is obtained.
-
 ## Common paramaters over all rounds
 
     - 1024-1024-512 hidden nodes (3 layers)
     - Gamma 1.0
-    - Batch size 32.
+    - Batch size 32, 4 batches per iteration. (I'm aware multiple batches per iteration isn't common practice.)
+    - New game is played and added to experience cache after every 5 iterations, with the exception of first 10 iterations where a new game is always played.
     - Target model gets updated every 500 iterations (100 games)
-    - 4-6 players per game, at least 1 each of each training player as 'focused' player.
-    - Each training player seat is buffered by 1-2 other players (which may also use training weights, but are all 'unfocused').
     - Focused player takes 90+% greedy actions (90 + 10% of unfocused player greedy moves).
 
-## Round 1
+## Round 1 (dq_1 and dq_s_1)
 
     - Learning rate 0.0003.
+    - 4-6 players per game, at least 1 each of each training player as 'focused' player.
+    - Each training player seat is buffered by 1-2 other players (which also use training weights, but are all 'unfocused').
     - Unfocused player makes 10% greedy moves.
+    - 100000 iterations (20000 games)
+
+## Round 2 (dq_c_1)
+
+    - Learning rate 0.0003.
+    - 3-6 players per game, at least one training dq_c_1 player as 'focused' player. The rest are 25% of random, training, dq_1, or dq_s_1 (unfocused).
+    - First 2 hidden layers of training player was initialized from dq_1 weights.
+    - 25000 iterations (5000 games)
+
+## Round 3 (dq_2, dq_s_2, and dq_c_2)
+
+    - Learning rate 0.00003.
+    - 3-6 players per game, 1st seat is focused training player. The rest can be any of 7 choices (random, 1s, or 2s), and has 25% chance to be focused.
+    - Unfocused player makes 30% greedy moves.
+    - 100000 iterations (20000 games)
+
+## Results between 2 levels and 3 personalities of this generation's players
+
+dq is called 'Balanced', dq_s is called 'Science', and dq_c is called 'Civilian'
+
+First all AIs are pitted against each other in random seating, random wonder, random side (no helicarnassus).
+The average of 1000 games of best player is 49.
+
+![all](./images/DQ_FFA1-2.jpg)
+
+Second all level 2 AIs are pitted against each other, still random everything as in first setting.
+The average of 1000 games of all 3 players is 54+, 
+somehow higher than when worse players are in the mix, 
+probably because no other player's competing against dq_s_2 (Science 2) for science cards.
+
+![all](./images/DQ_FFA2.jpg)
 
 
 # Previous Generation
