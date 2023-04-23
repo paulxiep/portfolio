@@ -55,11 +55,11 @@ below are the results (semi-random has been modified to only random from build c
 
 ![score_type](./images/DQX2-3-5.jpg)
 
-![wonder](./images/wonder DQX 2-3-5.jpg)
+![wonder](./images/wonder-DQX-2-3-5.jpg)
 
-![box](./images/box DQX 2-3-5.jpg)
+![box](./images/box-DQX-2-3-5.jpg)
 
-![cdf](./images/cdf DQX 2-3-5.jpg)
+![cdf](./images/cdf-DQX-2-3-5.jpg)
 
 
 # 2nd Generation
