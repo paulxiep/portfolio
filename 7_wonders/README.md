@@ -28,8 +28,9 @@ Wonder json and change information were obtained from the same source.
     - Implemented gameplay and DQPlayer, enabling simulation of gameplay and results
     - Implemented Deep-Q learning on card + action phase of turns.
     - Payment phase (if action is build) greedily minimizes cost to self.
+    - DQTrainer for training Deep-Q model, with optional distributed training and Monte-Carlo loss update.
 
-2nd phase: interface and app for human players to join the play, potentially Policy Gradient or Actor-Critic.
+2nd phase: interface and app for human players to join the play, potentially Policy Gradient.
 
     - not to be done in short-term plan yet
 

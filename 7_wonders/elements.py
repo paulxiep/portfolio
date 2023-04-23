@@ -75,9 +75,12 @@ class Wonder:
     stages_id: list
 
     @classmethod
-    def from_dict(cls, wonder_json):
+    def from_dict(cls, wonder_json, side=None):
         name = wonder_json['name']
-        choice = random.choice(['A', 'B'])
+        if side is None:
+            choice = random.choice(['A', 'B'])
+        else:
+            choice = side
         side = wonder_json['sides'][choice]
         resource = side['initialResource']
         stages = side['stages']
@@ -93,9 +96,10 @@ class Board:
     chains: list = field(default_factory=lambda: [])
     coins: int = 3
     army: int = 0
-    points: int = 0
-    guild_points: int = 0
+    points: int = 0  # any flat points from Blue + Wonder
+    guild_points: int = 0  # includes yellow guild-like points
     military_points: int = 0
+    science_points: int = 0  # used to track science reward when training model, otherwise use calculate_science()
     discount: list = field(default_factory=lambda: [0, 0, 0])
     science: dict = field(default_factory=lambda: {'wheel': 0, 'compass': 0, 'tablet': 0, 'any': 0})
     guilds: dict = field(default_factory=lambda: {g: False for g in guilds})
@@ -110,7 +114,6 @@ class Board:
     wonder_side: str = None
     wonder_id: List[int] = field(default_factory=lambda: [])
     built: dict = field(default_factory=lambda: {})
-    science_points: int = 0
 
     def apply_card(self, card, left, right):
         self.built[card.name] = True
@@ -129,7 +132,7 @@ class Board:
             np.array(list(self.sellable.values())) / 10,
             np.array([self.coins]) / 50,
             np.array([self.army]) / 20,
-            np.array([self.points]) / 100,
+            np.array([self.points + self.military_points]) / 100,
             np.array([self.wonder_built]) / 4,
             np.array(list(self.colors.values())) / 10,
             np.array(list(self.science.values())) / 8,
@@ -137,7 +140,10 @@ class Board:
             np.array(self.discount),
             np.array(list(self.guilds.values())).astype(int),
             np.array(list(self.wonder_effects.values())).astype(int),
-            np.array([int(v == self.wonder_id[0]) for v in wonder_dict.values()])
+            np.array([wonder_name == self.wonder_name for wonder_name in wonder_names]),
+            np.array(['B' == self.wonder_side])
+            # below line kept in case old input is ever needed
+            # np.array([int(v == self.wonder_id[0]) for v in wonder_dict.values()])
         ))
 
     def production_choices(self, neighbor=False):
@@ -199,12 +205,17 @@ class Player:
     def build_wonder(self):
         self.board.build_wonder()
 
-    def buildable(self, cost, name):
+    def buildable(self, cost, name=None):
+        '''
+        determine if a card or wonder stage is buildable
+        for card, pass a name argument to check for chains
+        for wonder, pass None as name
+        '''
         if name is not None:
             if name in self.board.chains:
                 return True, (True, None)
         production_choices = self.board.production_choices()
-        if 'C' in cost.keys():
+        if 'C' in cost.keys():  # coin cost
             if self.board.coins >= cost['C']:
                 return True, (False, [(0, 0, cost['C'])])
             else:
@@ -252,6 +263,10 @@ class Player:
             return False, None
 
     def calculate_guilds(self):
+        '''
+        call once before calculating end game points
+        will add guild points (including yellow guild-like points) to self.guild_points
+        '''
         self.board.calculate_guilds(self.left, self.right)
 
     def calculate_science(self):
@@ -275,12 +290,17 @@ class AIPlayer(Player):
         self.env = env
         self.model = model
         if explore is None:
-            self.explore = random.choice([True, True, True, True, False])
+            self.explore = random.choice([True, True, True, False])
         else:
             self.explore = explore
 
     @staticmethod
     def match_payment(cost, out):
+        '''
+        legacy + possible future method
+        will be used in case of regression model in payment phase,
+        to match model output to actual valid payment options
+        '''
         def match_ratio(x, out):
             out = out[0] + 1, out[1] + 1
             if out[1] == 0:
@@ -293,6 +313,9 @@ class AIPlayer(Player):
         return min(cost, key=lambda x: match_ratio(x, out))
 
     def prepare_obs(self):
+        '''
+        generate observation
+        '''
         if self.env.action in [0, 3]:
             cards = np.zeros(80)
             np.add.at(cards, [card_dict[card.name] for card in self.cards], 1)
@@ -308,24 +331,25 @@ class AIPlayer(Player):
                 cur_action = 3
         else:
             cur_action = self.env.action
-        if self.env.nth in [6, 13, 20] and not self.board.wonder_effects['PLAY_LAST_CARD']:
+        if self.env.nth in [6, 13, 20] and not self.board.wonder_effects['PLAY_LAST_CARD'] and self.env.action != 3:
             cur_action = 3
         if cur_action == 3:
             return 'idle'
         else:
-            out_action = np.zeros(3)
-            np.add.at(out_action, [cur_action], 1)
             return np.concatenate((
                 cards,
                 self.board.to_obs(),
                 self.left.to_obs(),
                 self.right.to_obs(),
+                np.array([len(self.env.discarded)]) / 20,
                 np.array([self.env.nth / 21]),
-                out_action,
                 np.array([int(self.env.nth in range(7, 14))])
             )).astype(float)
 
     def generate_mask(self, card_array):
+        '''
+        for ineligible move masking from model output
+        '''
         reverse_card_dict = {v: k for k, v in card_dict.items()}
 
         def buildable(card_id_plus, free_color=False):
@@ -337,8 +361,10 @@ class AIPlayer(Player):
                 if card.name == card_name:
                     if (not free_color) or self.board.colors[card.color.lower()] > 0:
                         return int(
-                            not self.board.built.get(card.name, False) and self.buildable(card.requirements, card.name)[
-                                0])
+                            not self.board.built.get(card.name, False) and \
+                                (self.board.wonder_effects['PLAY_DISCARDED'] or \
+                                     self.buildable(card.requirements, card.name)[
+                                0]))
                     else:
                         return 2
 
@@ -358,6 +384,9 @@ class AIPlayer(Player):
                                                                    * card_array.astype(bool)
                                                                    + card_array.astype(bool))
         else:
+            if self.board.wonder_effects['PLAY_DISCARDED']:
+                discard_chance = 0
+                wonder_buildable = 0
             card_mask = np.vectorize(lambda x: buildable(x, False))(
                 np.arange(80) * card_array.astype(bool) + card_array.astype(bool))
         wonder_mask = wonder_buildable * card_array
@@ -392,36 +421,56 @@ class DQPlayer(AIPlayer):
             else:
                 return value
 
-        if self.env.nth not in [6, 13, 20] or self.board.wonder_effects['PLAY_LAST_CARD']:
-            if self.env.action == 0 or (self.env.action == 3 and self.board.wonder_effects['PLAY_DISCARDED'] and len(
+        if self.env.nth not in [6, 13, 20] or self.board.wonder_effects['PLAY_LAST_CARD'] or self.board.wonder_effects['PLAY_DISCARDED']:
+            if (self.env.action == 0 and (self.env.nth not in [6, 13, 20] or self.board.wonder_effects['PLAY_LAST_CARD'])) \
+                    or (self.env.action == 3 and self.env.nth not in [5, 12, 19] \
+                                        and self.board.wonder_effects['PLAY_DISCARDED'] and len(
                     self.env.discarded) > 0):
                 mask = self.generate_mask(obs[:80])
                 if self.model is not None and \
-                        (not explore or (not self.explore and random.random() < 0.9) or random.random() < 0.3):
-                    out = self.model(obs, 'choose', mask=mask).numpy()
-                    iarg = np.argmax(np.vectorize(remove_zero)(out[0]))
+                        (not explore or (not self.explore and random.random() < 0.9) or random.random() < 0.5):
+                    out = mask * self.model(np.expand_dims(obs, axis=0)).numpy()[0]
+                    iarg = np.argmax(np.vectorize(remove_zero)(out))
                     icard = iarg % 80
                     self.play = iarg // 80
                     return icard, None, mask
                 else:
-                    iarg = np.argmax(np.vectorize(random_nonzero)(obs[:80]))
-                    self.play = None
-                    return iarg, None, mask
+                    if not explore:
+                        if mask[:160].sum() > 0:
+                            iarg = np.argmax(np.vectorize(random_nonzero)(mask[:160]))
+                            self.play = iarg // 80
+                            icard = iarg % 80
+                        else:
+                            icard = np.argmax(np.vectorize(random_nonzero)(obs[:80]))
+                            self.play = 2
+                    else:
+                        icard = np.argmax(np.vectorize(random_nonzero)(obs[:80]))
+                        self.play = None
+                return icard, None, mask
 
-            elif self.env.action == 1:
+            elif self.env.action == 1 and (self.env.nth not in [6, 13, 20] or self.board.wonder_effects['PLAY_LAST_CARD']):
                 if not (self.env.nth in [0, 7, 14] and self.board.wonder_effects['FIRST_FREE_PER_AGE']) and \
                         not (self.env.nth in [5, 12, 19] and self.board.wonder_effects['LAST_FREE_PER_AGE']) and \
                         not (self.board.wonder_effects['FIRST_FREE_PER_COLOR'] and self.board.colors[
                             self.chosen.color.lower()] == 0):
+
                     if self.play is None:
+                        wonder_possible = False
+                        card_possible = False
                         if not self.board.wonder_id[0] == 99 and \
                                 self.buildable(self.board.wonder_to_build[0].requirements, None)[0]:
-                            return 1, None, None
+                            wonder_possible = True
                         elif not self.board.built.get(self.chosen.name, False) and \
                                 self.buildable(self.chosen.requirements, self.chosen.name)[0]:
-                            return 0, None, None
+                            card_possible = True
                         else:
                             return 2, None, None
+                        if wonder_possible and card_possible:
+                            return random.choice[0, 1, 1], None, None
+                        elif card_possible:
+                            return 0, None, None
+                        else:
+                            return 1, None, None
                     else:
                         return self.play, None, None
                 else:
@@ -433,7 +482,7 @@ class DQPlayer(AIPlayer):
                     else:
                         return self.play, None, None
 
-            elif self.env.action == 2:
+            elif self.env.action == 2 and (self.env.nth not in [6, 13, 20] or self.board.wonder_effects['PLAY_LAST_CARD']):
                 if self.action == 0:  # card
                     if not (self.env.nth in [0, 7, 14] and self.board.wonder_effects['FIRST_FREE_PER_AGE']) and \
                             not (self.env.nth in [5, 12, 19] and self.board.wonder_effects['LAST_FREE_PER_AGE']) and \
@@ -451,7 +500,6 @@ class DQPlayer(AIPlayer):
                 else:
                     cost = cost[1]
                     if cost[0][0] == 0 and cost[0][1] == 0:
-                        # cost is coin
                         return [0, 0, cost[0][2] / 20], None, None
                     return (np.array(
                         list(min(cost, key=lambda x: x[0] + x[1] + random.random())) + [0]) / 20).tolist(), None, None

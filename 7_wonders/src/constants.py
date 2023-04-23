@@ -117,6 +117,7 @@ card_dict = {'Clay Pit': 0,
              'Traders Guild': 78,
              'Workers Guild': 79}
 
+wonder_names = ['Alexandria', 'Babylon', 'Ephesos', 'Gizah', 'Halikarnassus', 'Olympia', 'Rhodos']
 wonder_dict = {('Alexandria', 'A', 1): 0,
                ('Alexandria', 'A', 2): 1,
                ('Alexandria', 'A', 3): 2,

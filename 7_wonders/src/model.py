@@ -1,7 +1,12 @@
 import numpy as np
 from tensorflow.keras.layers import Dense, Multiply
-from tensorflow.keras.models import Model
+from tensorflow.keras.models import Model, Sequential
 
+'''
+legacy classes for legacy usage.
+
+model can now be initialized as sequential and saved as a single h5 file
+'''
 
 class FullyConnected(Model):
     def __init__(
@@ -37,12 +42,10 @@ class DQNetwork(Model):
         self.head = DQHead(action_space)
         self.multiply = Multiply()
 
-    def call(self, obs, training=None, mask=None):
+    def call(self, obs):
         if len(obs.shape) == 1:
             obs = np.expand_dims(obs, 0)
-            mask = np.expand_dims(mask, 0)
-        x = self.head(self.fc(obs))
-        return self.multiply([x, mask])
+        return self.head(self.fc(obs))
 
     def save_weights(self, filepath,
                      overwrite=True,

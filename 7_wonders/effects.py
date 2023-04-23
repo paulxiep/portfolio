@@ -62,9 +62,9 @@ class Discount(Effect):
         if self.resourceTypes == 'LGP':
             board.discount[2] = 1
         else:
-            if self.providers == 'LEFT_PLAYER':
+            if self.providers == ['LEFT_PLAYER']:
                 board.discount[0] = 1
-            elif self.providers == 'RIGHT_PLAYER':
+            elif self.providers == ['RIGHT_PLAYER']:
                 board.discount[1] = 1
 
 

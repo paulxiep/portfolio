@@ -25,10 +25,7 @@ class Game(Env):
         self.n_players = len(players)
         self.players = players
         self.cards = {1: [], 2: [], 3: []}
-        # choose from among 80 cards, pay left and/or right, choose what to do with card
-        self.action_space = {'choose': Discrete(80),
-                             'play': Discrete(3),
-                             'pay': Box(np.zeros(2), np.ones(2))}
+        self.action_space = Discrete(240)   # card * action
         board_space = Tuple((Box(np.zeros(15), np.ones(15)),  # production
                              Box(np.zeros(15), np.ones(15)),  # sellable
                              Box(np.zeros(4), np.ones(4)),  # coins army points wonder_stage
@@ -38,17 +35,16 @@ class Game(Env):
                              MultiBinary(3),  # discount
                              MultiBinary(15),  # guilds
                              MultiBinary(5),  # wonder_effects
-                             MultiBinary(42)  # wonder_choice
+                             MultiBinary(7),  # wonder_name
+                             Discrete(1)        # wonder_side
                              ))
 
-        # note that observation space defined here still has 3 units more length
-        # than outputted from Player class. I still fail to find the source of the discrepancy.
         self.observation_space = flatten_space(Tuple((MultiBinary(80), board_space, board_space, board_space,
+                                                      Box(np.zeros(1), np.ones(1)),  # number of cards in discard
                                                       Box(np.zeros(1), np.ones(1)),
                                                       # game progress; order of card in play
-                                                      Discrete(3),  # choose, play for price, pay, play_discarded/idle
                                                       Discrete(1)  # reverse passing direction
-                                                      )))
+                                                      ))) # dimension should be 380
 
     def setup(self):
         self.build_deck()
@@ -107,7 +103,7 @@ class Game(Env):
                 self.players[i].calculate_science()
             )
             reward_n_out[i] += own_points
-        return obs_n, reward_n_out, done_n, info_n, 21, 0
+        return obs_n, reward_n_out, done_n, info_n, 20, 3
 
     def collect(self, training):
         '''
@@ -119,6 +115,7 @@ class Game(Env):
             action_n, raw_n, mask_n = tuple(
                 zip(*map(lambda i: self.players[i].select_action(obs_n[i], training), range(self.n_players))))
             next_obs_n, reward_n, done_n, info_n, nth, action = self.step(action_n)
+            # print(nth, action)
             self.memory.append(
                 [(obs_n[i], action_n[i], next_obs_n[i], reward_n[i], done_n[i],
                   self.players[i].board.coins // 3 +
@@ -150,23 +147,18 @@ class Game(Env):
         reward_n = [0] * self.n_players
         done_n = [0] * self.n_players
         info_n = None
-        if False:  # self.nth == 20 and self.action == 3:
-            pass  # return self.end()
-        elif self.action == 0:
+        if self.action == 0:
             self.action = 1
             obs_n = []
             for i in range(self.n_players):
                 if self.nth not in [6, 13, 20] or self.players[i].board.wonder_effects['PLAY_LAST_CARD']:
                     chosen = {v: k for k, v in card_dict.items()}[action_n[i]]
-                    # print(chosen, action_n[i], [card.name for card in self.players[i].hand])
                     for cid in range(len(self.players[i].hand)):
                         if self.players[i].hand[cid].name == chosen:
                             self.players[i].chosen = self.players[i].hand.pop(cid)
                             break
-                    # print(self.nth, i, [c.name for c in self.players[i].hand])
             for i in range(self.n_players):
                 if self.nth not in [6, 13, 20] or self.players[i].board.wonder_effects['PLAY_LAST_CARD']:
-                    # self.players[i].cards = self.players[i].hand.copy()
                     obs_n.append(self.players[i].prepare_obs())
                 else:
                     obs_n.append('idle')
@@ -190,9 +182,7 @@ class Game(Env):
             for i in range(self.n_players):
                 if self.nth not in [6, 13, 20] or self.players[i].board.wonder_effects['PLAY_LAST_CARD']:
                     if (self.nth in [0, 7, 14] and self.players[i].board.wonder_effects['FIRST_FREE_PER_AGE']) or \
-                            (self.nth in [5, 12, 19] and self.players[i].board.wonder_effects['LAST_FREE_PER_AGE']): #or \
-                            # (self.players[i].board.wonder_effects['FIRST_FREE_PER_COLOR'] and
-                            #  self.players[i].board.colors[self.players[i].chosen.color.lower()] == 0):
+                            (self.nth in [5, 12, 19] and self.players[i].board.wonder_effects['LAST_FREE_PER_AGE']):
                         obs_n.append('idle')
                     else:
                         if action_n[i] == 2 or (action_n[i] == 0 and
@@ -210,9 +200,6 @@ class Game(Env):
                 if self.nth not in [6, 13, 20] or self.players[i].board.wonder_effects['PLAY_LAST_CARD']:
                     if (self.nth in [0, 7, 14] and self.players[i].board.wonder_effects['FIRST_FREE_PER_AGE']) or \
                             (self.nth in [5, 12, 19] and self.players[i].board.wonder_effects['LAST_FREE_PER_AGE']): #or \
-                            # (self.players[i].board.wonder_effects['FIRST_FREE_PER_COLOR'] and
-                            #  self.players[i].board.colors[self.players[i].chosen.color.lower()] == 0)):
-                        # obs_n.append('idle')
                         pass
                     else:
                         if self.players[i].action != 2:
@@ -246,7 +233,8 @@ class Game(Env):
                         self.discarded.append(card)
 
             for i in range(self.n_players):
-                if self.nth not in [6, 13, 20] or self.players[i].board.wonder_effects['PLAY_LAST_CARD']:
+                if self.nth not in [6, 13, 20] or self.players[i].board.wonder_effects['PLAY_DISCARDED'] or\
+                        self.players[i].board.wonder_effects['PLAY_LAST_CARD']:
                     if ((self.nth in [0, 7, 14] and self.players[i].board.wonder_effects['FIRST_FREE_PER_AGE']) or \
                             (self.nth in [5, 12, 19] and self.players[i].board.wonder_effects['LAST_FREE_PER_AGE']) or \
                             (self.players[i].board.wonder_effects['FIRST_FREE_PER_COLOR'] and
@@ -255,27 +243,34 @@ class Game(Env):
                     else:
                         if not self.players[i].board.wonder_effects['PLAY_DISCARDED']:
                             obs_n.append('idle')
-                        else:
+                        elif self.nth not in [5, 12, 19]:
                             if len(self.discarded) > 0:
+                                self.players[i].cards = self.discarded.copy()
                                 obs_n.append(self.players[i].prepare_obs())
                             else:
+                                # print('discarded should not be empty')
                                 obs_n.append('idle')
+                        else:
+                            obs_n.append('idle')
                 else:
                     obs_n.append('idle')
 
         elif self.action == 3:
             obs_n = []
+            score_3 = -1
             for i in range(self.n_players):
-                if self.nth not in [6, 13, 20] or self.players[i].board.wonder_effects['PLAY_LAST_CARD']:
-                    if self.players[i].board.wonder_effects['PLAY_DISCARDED']:
-                        self.players[i].board.wonder_effects['PLAY_DISCARDED'] = False
-                        if len(self.discarded) > 0:
-                            chosen = {v: k for k, v in card_dict.items()}[action_n[i]]
-                            for cid in range(len(self.players[i].cards)):
-                                if self.players[i].cards[cid].name == chosen:
-                                    self.players[i].chosen = self.players[i].cards.pop(cid)
-                                    break
-                            self.players[i].apply_card(self.players[i].chosen)
+                if self.nth not in [5, 12, 19] and self.players[i].board.wonder_effects['PLAY_DISCARDED']:
+                    # if self.players[i].board.wonder_effects['PLAY_DISCARDED']:
+                    #     if self.nth not in [5, 12, 19]:
+                    self.players[i].board.wonder_effects['PLAY_DISCARDED'] = False
+                    if len(self.discarded) > 0:
+                        chosen = {v: k for k, v in card_dict.items()}[action_n[i]]
+                        for cid in range(len(self.players[i].cards)):
+                            if self.discarded[cid].name == chosen:
+                                self.players[i].chosen = self.discarded.pop(cid)
+                                break
+                        self.players[i].apply_card(self.players[i].chosen)
+                        score_3 = i
             if self.nth not in [5, 6, 12, 13, 19, 20]:  # not end of era
                 if self.nth in range(7, 14):  # pass counter clockwise
                     buffer_from = self.players[-1].hand.copy()
@@ -322,11 +317,20 @@ class Game(Env):
             else:
                 for i in range(self.n_players):
                     obs_n.append(self.players[i].prepare_obs())
+
+        if naction == 2:
             reward_n = []
             for i in range(self.n_players):
                 new_science = self.players[i].board.calculate_science()-self.players[i].board.science_points
                 self.players[i].board.science_points += new_science
-                reward_n.append(new_science)
+                reward_n.append(new_science/2)
+
+        if naction == 3:
+            for i in range(self.n_players):
+                if score_3 == i:
+                    new_science = self.players[i].board.calculate_science()-self.players[i].board.science_points
+                    self.players[i].board.science_points += new_science
+                    reward_n[i] += new_science/2
 
         if nth == 20 and naction == 3:
             return self.end(reward_n)
@@ -335,10 +339,8 @@ class Game(Env):
     def get_wonders(self):
         with open('v2_wonders.json', 'r') as f:
             wonders = json.load(f)
-        wonders = wonders[:4] + wonders[5:7]
-        self.wonders = [Wonder.from_dict(wonders.pop(random.randrange(len(wonders)))) \
-                        for _ in range(self.n_players)]
-        random.shuffle(self.wonders)
+        self.wonders = [Wonder.from_dict(w) \
+                        for w in random.sample(wonders, k=self.n_players)]
 
     def build_deck(self):
         with open('v2_cards.json', 'r') as f:
