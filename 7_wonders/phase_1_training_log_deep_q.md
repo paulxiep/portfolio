@@ -1,6 +1,65 @@
 # Training log of Phase 1 (Deep Q Network)
 
-# Latest (2nd) Generation
+# 3rd Generation
+
+Very little change training-wise from 2nd Generation except that Helicarnassus has now been implemented
+
+Feature input was redesigned to be much more compact, down to 380 features from 484 features.
+
+## Round 1
+	- 1024-1024-512 hidden layers
+	- 0.0001 lr
+	- 1 gamma
+	- 80000 iterations (16000 games)
+	- Focused make 91% greedy moves. Unfocused make 10% greedy moves.
+	- seating 1 focused training player + 2-6 players from [random, training (20% focused)]
+	- dq: 
+		no extra reward, reward is end game points given at end game only
+	- dq_s: 
+		half science reward given at build + given again at end (*1.5 science rewards)
+	- dq_c: 
+		*1.5 civilian+wonder rewards
+
+## Round 2
+	- 80000 iterations (16000 games)
+	- added a minor MCTS loss update routine to the NN for 2nd-6th move from end game
+		(not aiming for results but more for testing MCTS implementation)
+		twice each time a game is simulated (every 5 iterations)
+		This updates the training player in 1st position only
+	- 0.0002 lr for dq optimizer and 0.0001 for mc (0.0001 converged too slowly)
+	- Unfocused make 20% greedy moves
+	- 1 focused training (used to update MCTS) + 2-6 players from [random, training, and dqx1]
+
+## Round 3
+	- 50000 iterations (10000 games)
+	- 0.0001 lr for dq optimizer and 0.00003 for mc
+	- Unfocused make 30% greedy moves
+	- 1 focused training (used to update MCTS) + 2-6 players from [random, training, and dqx2]
+
+## Round 4
+	- implemented distributed training (but not used in real training run as it was slower)
+	- 100000 iterations (20000 games)
+	- increased batch size to 128
+	- 0.0001 lr
+	- Unfocused make 40% greedy moves
+	- 1 focused training + 2-6 players from [random, training, dqx2, dqx3]
+
+## Round 5
+	- 80000 iterations (16000 games)
+	- decreased batch size to 64
+	- 0.00003 lr
+	- Unfocused make 50% greedy moves
+	- 1 focused training + 2-6 players from [random, training, dqx2, dqx3, dqx4]
+
+below are the results (semi-random has been modified to only random from build choices if available)
+
+![score_type](./images/DQX2-3-5.jpg)
+![wonder](./images/wonder DQX 2-3-5.jpg)
+![box](./images/box DQX 2-3-5.jpg)
+![cdf](./images/cdf DQX 2-3-5.jpg)
+
+
+# 2nd Generation
 
 After testing the training results extensively with the previous generation,
 the DQPlayer and how it is called has been redesigned.
@@ -62,7 +121,7 @@ The average of 1000 games of all 3 players is 54+,
 somehow higher than when worse players are in the mix, 
 probably because no other player's competing against dq_s_2 (Science 2) for science cards.
 
-![all](./images/DQ_FFA2.jpg)
+![2](./images/DQ_FFA2.jpg)
 
 
 # Previous Generation
