@@ -51,15 +51,21 @@ Feature input was redesigned to be much more compact, down to 380 features from 
 	- Unfocused make 50% greedy moves
 	- 1 focused training + 2-6 players from [random, training, dqx2, dqx3, dqx4]
 
+## Round 6
+	- 200000 iterations (40000 games)
+	- 0.00001 lr
+	- Unfocused make 60% greedy moves
+	- 1 focused training + 2-6 players from [random, training, dqx3, dqx4, dqx5]
+
 below are the results (semi-random has been modified to only random from build choices if available)
 
-![score_type](./images/DQX2-3-5.jpg)
+![score_type](./images/DQX4-5-6.jpg)
 
-![wonder](./images/wonder-DQX-2-3-5.jpg)
+![wonder](./images/wonder-DQX-4-5-6.jpg)
 
-![box](./images/box-DQX-2-3-5.jpg)
+![box](./images/box-DQX-4-5-6.jpg)
 
-![cdf](./images/cdf-DQX-2-3-5.jpg)
+![cdf](./images/cdf-DQX-4-5-6.jpg)
 
 
 # 2nd Generation

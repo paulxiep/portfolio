@@ -361,6 +361,8 @@ class Game(Env):
             player.board.wonder_name = self.wonders[i].name
             player.board.wonder_side = self.wonders[i].side
             player.board.wonder_id = self.wonders[i].stages_id
+            player.board.production[self.wonders[i].resource] += 1
+            player.board.sellable[self.wonders[i].resource] += 1
         for i in range(self.n_players):
             self.players[i].right = self.players[i - 1].board
             self.players[i].left = self.players[i - (self.n_players - 1)].board

@@ -41,9 +41,10 @@ class DQTrainer:
         self.replay = deque()
         self.model_dict = {0: None, 'dq': self.model, 'dq_s': self.model_s,
                       'dq_c': self.model_c, #1: self.dq_1, 2: self.dq_s_1, 3: self.dq_c_1,
-                      4: self.dq_2, 5: self.dq_s_2, 6: self.dq_c_2,
+                      # 4: self.dq_2, 5: self.dq_s_2, 6: self.dq_c_2,
                       7: self.dq_3, 8: self.dq_s_3, 9: self.dq_c_3,
-                      10: self.dq_4, 11: self.dq_s_4, 12: self.dq_c_4}
+                      10: self.dq_4, 11: self.dq_s_4, 12: self.dq_c_4,
+                           13: self.dq_5, 14: self.dq_s_5, 15: self.dq_c_5,}
 
         wandb.init(project='reinforcement-learning')
 
@@ -57,15 +58,15 @@ class DQTrainer:
         # self.dq_c_1 = DQNetwork(240, hidden_size=512)
         # self.dq_c_1.fc.build([1, 380])
         # self.dq_c_1.head.build([1, 512])
-        self.dq_2 = DQNetwork(240, hidden_size=512)
-        self.dq_2.fc.build([1, 380])
-        self.dq_2.head.build([1, 512])
-        self.dq_s_2 = DQNetwork(240, hidden_size=512)
-        self.dq_s_2.fc.build([1, 380])
-        self.dq_s_2.head.build([1, 512])
-        self.dq_c_2 = DQNetwork(240, hidden_size=512)
-        self.dq_c_2.fc.build([1, 380])
-        self.dq_c_2.head.build([1, 512])
+        # self.dq_2 = DQNetwork(240, hidden_size=512)
+        # self.dq_2.fc.build([1, 380])
+        # self.dq_2.head.build([1, 512])
+        # self.dq_s_2 = DQNetwork(240, hidden_size=512)
+        # self.dq_s_2.fc.build([1, 380])
+        # self.dq_s_2.head.build([1, 512])
+        # self.dq_c_2 = DQNetwork(240, hidden_size=512)
+        # self.dq_c_2.fc.build([1, 380])
+        # self.dq_c_2.head.build([1, 512])
         self.dq_3 = DQNetwork(240, hidden_size=512)
         self.dq_3.fc.build([1, 380])
         self.dq_3.head.build([1, 512])
@@ -84,6 +85,15 @@ class DQTrainer:
         self.dq_c_4 = DQNetwork(240, hidden_size=512)
         self.dq_c_4.fc.build([1, 380])
         self.dq_c_4.head.build([1, 512])
+        self.dq_5 = DQNetwork(240, hidden_size=512)
+        self.dq_5.fc.build([1, 380])
+        self.dq_5.head.build([1, 512])
+        self.dq_s_5 = DQNetwork(240, hidden_size=512)
+        self.dq_s_5.fc.build([1, 380])
+        self.dq_s_5.head.build([1, 512])
+        self.dq_c_5 = DQNetwork(240, hidden_size=512)
+        self.dq_c_5.fc.build([1, 380])
+        self.dq_c_5.head.build([1, 512])
         self.model = DQNetwork(240, hidden_size=512)
         self.target_model = DQNetwork(240, hidden_size=512)
         self.model_s = DQNetwork(240, hidden_size=512)
@@ -102,9 +112,9 @@ class DQTrainer:
         self.model_c.head.build([1, 512])
         self.target_model_c.fc.build([1, 380])
         self.target_model_c.head.build([1, 512])
-        self.dq_optimizer = Adam(0.00003)
-        self.dq_optimizer_s = Adam(0.00003)
-        self.dq_optimizer_c = Adam(0.00003)
+        self.dq_optimizer = Adam(0.00001)
+        self.dq_optimizer_s = Adam(0.00001)
+        self.dq_optimizer_c = Adam(0.00001)
 
     def load_weights(self, path):
         self.model.load_weights(path)
@@ -123,7 +133,7 @@ class DQTrainer:
             return DQPlayer(model=self.model_dict[pid])
         n_other = random.randrange(2, 7)
         focused_player_id = random.choice(['dq', 'dq_s', 'dq_c'])
-        player_ids = list(random.choices(['dq', 'dq_s', 'dq_c', 0, 4, 5, 6, 7, 8, 9, 10, 11, 12], k=n_other))
+        player_ids = list(random.choices(['dq', 'dq_s', 'dq_c', 0, 7, 8, 9, 10, 11, 12, 13, 14, 15], k=n_other))
         players = [DQPlayer(model=self.model_dict[focused_player_id], explore=False)] + \
                     [get_player(x) for x in player_ids]
         player_ids = [focused_player_id] + player_ids
@@ -238,7 +248,7 @@ class DQTrainer:
         accu_loss_c = 0
         for i in range(2):
             with tf.GradientTape(persistent=True) as tape:
-                loss, loss_s, loss_c = self.dq_loss(random.sample(self.replay, min(64, len(self.replay))))
+                loss, loss_s, loss_c = self.dq_loss(random.sample(self.replay, 64))
             accu_loss += loss
             accu_loss_s += loss_s
             accu_loss_c += loss_c
