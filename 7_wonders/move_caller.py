@@ -61,7 +61,8 @@ class BoardData:
                         elif isinstance(card.effect, PerBoardElement):
                             out.chains += card.chain_children
                             out.colors[card.color.lower()] += 1
-                            out.guilds[card.name.lower()] = True
+                            if card.effect.points > 0:
+                                out.guilds[card.name.lower()] = True
                             out.built[card.name] = True
                             break_outside = True
                             break
