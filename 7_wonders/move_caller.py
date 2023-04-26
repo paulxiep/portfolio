@@ -65,8 +65,8 @@ class BoardData:
                             out.built[card.name] = True
                             break_outside = True
                             break
-                        else:
-                            # out.chains += card.chain_children
+                        elif isinstance(card.effect, Gold):
+                            out.chains += card.chain_children
                             out.colors[card.color.lower()] += 1
                             out.built[card.name] = True
                             break_outside = True
