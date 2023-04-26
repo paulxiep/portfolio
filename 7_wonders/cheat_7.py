@@ -51,14 +51,13 @@ def call():
                                             globals()[f'{player}_coins'],
                                             play_discard
                                     )
-    out = move_caller(cards,
+    return move_caller(cards,
                        own_board.prepare_board(),
                        left_board.prepare_board(),
                        right_board.prepare_board(),
                        ncard,
                        age,
                        n_discarded)
-    return out
 
 move = st.button('Make a move!')
 if move and len(cards) > 0:
