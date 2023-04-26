@@ -59,18 +59,11 @@ class BoardData:
                             break_outside = True
                             break
                         elif isinstance(card.effect, PerBoardElement):
-                            # out.chains += card.chain_children
                             out.colors[card.color.lower()] += 1
                             out.guilds[card.name.lower()] = True
                             out.built[card.name] = True
                             break_outside = True
                             break
-                        # elif isinstance(card.effect, Gold):
-                        #     # out.chains += card.chain_children
-                        #     out.colors[card.color.lower()] += 1
-                        #     out.built[card.name] = True
-                        #     break_outside = True
-                        #     break
 
                 if break_outside:
                     break
