@@ -1,8 +1,9 @@
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from functools import reduce
 from itertools import product, combinations
 from typing import Optional, List
+import json
 
 import numpy as np
 from gymnasium import Env
@@ -114,9 +115,11 @@ class Board:
     wonder_side: str = None
     wonder_id: List[int] = field(default_factory=lambda: [])
     built: dict = field(default_factory=lambda: {})
+    built_turn: dict = field(default_factory=lambda: {})
 
-    def apply_card(self, card, left, right):
+    def apply_card(self, card, left, right, nth=-1):
         self.built[card.name] = True
+        self.built_turn[card.name] = nth
         self.colors[card.color.lower()] += 1
         card.apply(self, left, right)
 
@@ -200,7 +203,7 @@ class Player:
     action: Optional[str] = None
 
     def apply_card(self, card):
-        self.board.apply_card(card, self.left, self.right)
+        self.board.apply_card(card, self.left, self.right, self.env.nth)
 
     def build_wonder(self):
         self.board.build_wonder()
@@ -272,7 +275,110 @@ class Player:
     def calculate_science(self):
         return self.board.calculate_science()
 
+    def prepare_obs(self):
+        '''
+        generate observation
+        '''
+        if self.env.action in [0, 3]:
+            cards = np.zeros(80)
+            np.add.at(cards, [card_dict[card.name] for card in self.cards], 1)
+        elif self.env.action in [1, 2]:
+            cards = np.zeros(80)
+            np.add.at(cards, [card_dict[self.chosen.name]], 1)
+        else:
+            cards = np.zeros(80)
+        if self.env.action == 3:
+            if self.board.wonder_effects['PLAY_DISCARDED'] and len(self.env.discarded) > 0:
+                cur_action = 0
+            else:
+                cur_action = 3
+        else:
+            cur_action = self.env.action
+        if self.env.nth in [6, 13, 20] and not self.board.wonder_effects['PLAY_LAST_CARD'] and self.env.action != 3:
+            cur_action = 3
+        if cur_action == 3:
+            return 'idle'
+        else:
+            return np.concatenate((
+                cards,
+                self.board.to_obs(),
+                self.left.to_obs(),
+                self.right.to_obs(),
+                np.array([len(self.env.discarded)]) / 20,
+                np.array([self.env.nth / 21]),
+                np.array([int(self.env.nth in range(7, 14))])
+            )).astype(float)
 
+    def select_action(self, obs, explore=False):
+        if self.env.nth not in [6, 13, 20] or self.board.wonder_effects['PLAY_LAST_CARD'] or self.board.wonder_effects['PLAY_DISCARDED']:
+            if (self.env.action == 0 and (self.env.nth not in [6, 13, 20] or self.board.wonder_effects['PLAY_LAST_CARD'])) \
+                    or (self.env.action == 3 and self.env.nth not in [5, 12, 19] \
+                                        and self.board.wonder_effects['PLAY_DISCARDED'] and len(
+                    self.env.discarded) > 0):
+                while True:
+                    try:
+                        print('card number', (self.env.nth%7) + 1, 'of age', (self.env.nth//7) + 1)
+                        print('own board', self.board, '\n')
+                        print('left', self.left.sellable, self.left.science, self.left.colors,
+                              f'{self.left.wonder_name} {self.left.wonder_side} {self.left.wonder_built}',
+                              self.left.army, f'coins: {self.left.coins}', list(self.left.built.keys()),'\n')
+                        print('right', self.right.sellable, self.right.science, self.right.colors,
+                              f'{self.right.wonder_name} {self.right.wonder_side} {self.right.wonder_built}',
+                              self.right.army, f'coins: {self.right.coins}', list(self.right.built.keys()), '\n')
+                        print('available cards: ', json.dumps({i: asdict(c) for i, c in enumerate(self.cards)}, indent=4), '\n')
+                        print('available wonder stage: ', self.board.wonder_to_build, '\n')
+                        card = self.cards[int(input('select card to play: '))]
+                        card_buildable = self.buildable(card.requirements, card.name)
+                        wonder_buildable = self.buildable(self.board.wonder_to_build[0].requirements) if len(self.board.wonder_to_build)>0 else (False, None)
+                        options = []
+                        if card_buildable[0] or \
+                                (((self.board.wonder_effects['FIRST_FREE_PER_COLOR'] and self.board.colors[card.color]==0) or \
+                                (self.board.wonder_effects['FIRST_FREE_PER_AGE'] and self.env.nth in [0, 7, 14]) or \
+                                (self.board.wonder_effects['LAST_FREE_PER_AGE'] and self.env.nth in [5, 12, 19]) or \
+                            self.board.wonder_effects['PLAY_DISCARDED']) and not self.board.built.get(card.name, False)):
+                            options.append('card')
+                        if wonder_buildable[0]:
+                            options.append('wonder')
+                        options.append('discard')
+                        play = options[int(input(f'select action from {options}: '))]
+                        self.play = {'card': 0, 'wonder': 1, 'discard': 2}[play]
+                        print('\n')
+                        break
+                    except:
+                        pass
+
+                return card_dict[card.name], None, None
+
+            elif self.env.action == 1 and (
+                        self.env.nth not in [6, 13, 20] or self.board.wonder_effects['PLAY_LAST_CARD']):
+                return self.play, None, None
+            elif self.env.action == 2 and (
+                        self.env.nth not in [6, 13, 20] or self.board.wonder_effects['PLAY_LAST_CARD']):
+                if self.action == 0:  # card
+                    if not (self.env.nth in [0, 7, 14] and self.board.wonder_effects['FIRST_FREE_PER_AGE']) and \
+                            not (self.env.nth in [5, 12, 19] and self.board.wonder_effects['LAST_FREE_PER_AGE']) and \
+                            not (self.board.wonder_effects['FIRST_FREE_PER_COLOR'] and self.board.colors[
+                                self.chosen.color.lower()] == 0):
+                        cost = self.buildable(self.chosen.requirements, self.chosen.name)[1]
+                    else:
+                        cost = True, None
+                elif self.action == 1:  # wonder
+                    cost = self.buildable(self.board.wonder_to_build[0].requirements, None)[1]
+                else:  # discard for 3 coins
+                    return 'idle', None, None
+                if cost[0]:
+                    return [0, 0, 0], None, None
+                else:
+                    cost = cost[1]
+                    if cost[0][0] == 0 and cost[0][1] == 0:
+                        return [0, 0, cost[0][2] / 20], None, None
+                    return (np.array(
+                        list(min(cost, key=lambda x: x[0] + x[1] + random.random())) + [0]) / 20).tolist(), None, None
+
+            else:
+                return 'idle', None, None
+        else:
+            return 'idle', None, None
 @dataclass(init=False)
 class AIPlayer(Player):
     env: Env = field(compare=False, default=None)
@@ -312,46 +418,11 @@ class AIPlayer(Player):
 
         return min(cost, key=lambda x: match_ratio(x, out))
 
-    def prepare_obs(self):
-        '''
-        generate observation
-        '''
-        if self.env.action in [0, 3]:
-            cards = np.zeros(80)
-            np.add.at(cards, [card_dict[card.name] for card in self.cards], 1)
-        elif self.env.action in [1, 2]:
-            cards = np.zeros(80)
-            np.add.at(cards, [card_dict[self.chosen.name]], 1)
-        else:
-            cards = np.zeros(80)
-        if self.env.action == 3:
-            if self.board.wonder_effects['PLAY_DISCARDED'] and len(self.env.discarded) > 0:
-                cur_action = 0
-            else:
-                cur_action = 3
-        else:
-            cur_action = self.env.action
-        if self.env.nth in [6, 13, 20] and not self.board.wonder_effects['PLAY_LAST_CARD'] and self.env.action != 3:
-            cur_action = 3
-        if cur_action == 3:
-            return 'idle'
-        else:
-            return np.concatenate((
-                cards,
-                self.board.to_obs(),
-                self.left.to_obs(),
-                self.right.to_obs(),
-                np.array([len(self.env.discarded)]) / 20,
-                np.array([self.env.nth / 21]),
-                np.array([int(self.env.nth in range(7, 14))])
-            )).astype(float)
-
     def generate_mask(self, card_array):
         '''
         for ineligible move masking from model output
         '''
         reverse_card_dict = {v: k for k, v in card_dict.items()}
-
         def buildable(card_id_plus, free_color=False):
             card_id_plus = int(card_id_plus)
             if card_id_plus == 0:
@@ -428,7 +499,7 @@ class DQPlayer(AIPlayer):
                     self.env.discarded) > 0):
                 mask = self.generate_mask(obs[:80])
                 if self.model is not None and \
-                        (not explore or (not self.explore and random.random() < 0.9) or random.random() < 0.5):
+                        (not explore or (not self.explore and random.random() < 0.9) or random.random() < 0.6):
                     out = mask * self.model(np.expand_dims(obs, axis=0)).numpy()[0]
                     iarg = np.argmax(np.vectorize(remove_zero)(out))
                     icard = iarg % 80
@@ -466,11 +537,11 @@ class DQPlayer(AIPlayer):
                         else:
                             return 2, None, None
                         if wonder_possible and card_possible:
-                            return random.choice[0, 1, 1], None, None
+                            return random.choice([0, 1, 0, 1, 1, 2]), None, None
                         elif card_possible:
-                            return 0, None, None
+                            return random.choice([0, 0, 0, 2]), None, None
                         else:
-                            return 1, None, None
+                            return random.choice([1, 1, 1, 2]), None, None
                     else:
                         return self.play, None, None
                 else:
