@@ -58,7 +58,6 @@ def call():
                        ncard,
                        age,
                        n_discarded)
-    del model
     return out
 
 move = st.button('Make a move!')
