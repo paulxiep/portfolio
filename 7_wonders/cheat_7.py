@@ -39,7 +39,7 @@ with col3:
 def call():
     model = DQNetwork(240, hidden_size=512)
     model(np.zeros([1, 380]).astype(float))
-    model.load_weights('weights/dqx_7')
+    model.load_weights('7_wonders/weights/dqx_7')
     move_caller = MoveCaller(model)
     for player in ['own', 'left', 'right']:
         play_discard = playing_discard if player == 'own' else False

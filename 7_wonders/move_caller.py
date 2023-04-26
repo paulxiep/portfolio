@@ -5,10 +5,10 @@ from typing import List
 import json
 import numpy as np
 
-with open('v2_cards.json', 'r') as f:
+with open('7_wonders/v2_cards.json', 'r') as f:
     card_json = json.load(f)
 
-with open('v2_wonders.json', 'r') as f:
+with open('7_wonders/v2_wonders.json', 'r') as f:
     wonder_json = json.load(f)
 
 
