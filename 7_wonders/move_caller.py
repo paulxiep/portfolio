@@ -64,7 +64,6 @@ class BoardData:
                             out.built[card.name] = True
                             break_outside = True
                             break
-
                 if break_outside:
                     break
             if not break_outside:
