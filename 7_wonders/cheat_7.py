@@ -5,6 +5,7 @@ from move_caller import BoardData, MoveCaller
 from src.model import DQNetwork
 import numpy as np
 
+st.set_page_config(page_title="7 Wonders AI call")
 st.title('7 Wonders AI call')
 st.subheader('An app for cheating your friends in 7 wonders 2nd edition (base game only)')
 st.text('Input built structures, coins, and wonder level\non yours and your immediate neighbor boards\nthen input your card and game stage\nif you\'re playing discarded as Helicarnassus, check playing discarded\nWhen you\'re done, click Make a move!')
