@@ -16,23 +16,23 @@ with col0:
     ncard = st.slider('Card Order in Age', 1, 7, 1)
     age = st.slider('Age', 1, 3, 1)
     playing_discard = st.checkbox('Playing Discarded')
-    n_discarded = st.slider('Cards in discarded pile', 0, 150, 0)
+    n_discarded = st.slider('Cards in discarded pile', 0, 50, 0)
 
 with col1:
     own_wonder_name, own_wonder_side = st.selectbox('Own Wonder', product(wonder_names, ['A', 'B']))
-    own_coins = st.slider('Own Coins', 0, 100, 3)
+    own_coins = st.slider('Own Coins', 0, 50, 3)
     own_wonder_built = st.slider('Own Wonder Stages Built', 0, 4, 0)
     own_structures = st.multiselect('Own Structures', card_dict.keys())
 
 with col2:
     left_wonder_name, left_wonder_side = st.selectbox('Left Wonder', product(wonder_names, ['A', 'B']))
-    left_coins = st.slider('Left Coins', 0, 100, 3)
+    left_coins = st.slider('Left Coins', 0, 50, 3)
     left_wonder_built = st.slider('Left Wonder Stages Built', 0, 4, 0)
     left_structures = st.multiselect('Left Structures', card_dict.keys())
 
 with col3:
     right_wonder_name, right_wonder_side = st.selectbox('Right Wonder', product(wonder_names, ['A', 'B']))
-    right_coins = st.slider('Right Coins', 0, 100, 3)
+    right_coins = st.slider('Right Coins', 0, 50, 3)
     right_wonder_built = st.slider('Right Wonder Stages Built', 0, 4, 0)
     right_structures = st.multiselect('Right Structures', card_dict.keys())
 
