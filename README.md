@@ -2,6 +2,8 @@
 
 **This portfolio is only meant to supplement my employment experience, not replace it.**
 
+**Certificates in the certificates folder**
+
 It is both a place to showcase my other skills aside from what I demonstrated in work, and for me to develop new skills via new projects.
 
 Skills aimed to demonstrate/practice with each project are:
