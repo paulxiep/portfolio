@@ -2,6 +2,8 @@
 
 **training log of 1st phase can be found phase_1_training_log_deep_q.md**
 
+**The AI can be accessed via the streamlit [app](https://7-wonders-ai.streamlit.app/)**
+
 7 Wonders is another (and 2nd) popular classic board game that I've decided to include in my repository. I started playing it in Mar 2023.
 
 The project has reached the end of phase 1, with some planned features pushed to future updates.

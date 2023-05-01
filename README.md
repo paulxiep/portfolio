@@ -1,6 +1,8 @@
 # Portfolio
 
-Even though this repository is called 'portfolio', it has evolved to be more like a playground for my experiments.
+**This portfolio is only meant to supplement my employment experience, not replace it.**
+
+It is both a place to showcase my other skills aside from what I demonstrated in work, and for me to develop new skills via new projects.
 
 Skills aimed to demonstrate/practice with each project are:
 
