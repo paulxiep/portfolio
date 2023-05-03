@@ -1,5 +1,12 @@
 ## Catan
 
+---
+#### Showcase (For recruiters looking for highlights)
+
+ - catan_units/hex_geometry.py (can be visualized with catan_app.py): Not using the standard cube or trapezoidal coordinate system for hex coordinates, I daresay my system is more intuitive to humans and while code is not easy to read and debug, it'll scale to any hex board size.
+
+---
+
 Catan or Settlers of Catan is a popular classic board game. I only just in February 2023 started playing it. I found some academic papers on Catan strategy and algorithm and I wanted to see how well I can make one too.
 
 Currently the project is in Phase 3. As it is in the early part of a phase, the code won't be clean. This is the same as when forking a new branch for new feature implementation, but this is a portfolio, not production, so I just develop in the main branch so you can see new updates sooner.

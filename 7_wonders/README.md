@@ -4,6 +4,15 @@
 
 **The AI can be accessed via the streamlit [app](https://7-wonders-ai.streamlit.app/)**
 
+---
+
+#### Showcase (For recruiters looking for highlights)
+
+1. Effect.from_dict() in effects.py: Single entry point method to generate subclasses of Effect from json input as obtained from v2_cards.json. Eliminates the need for repetitive code/specification by parsing the json which I obtained from other's repo to dataclass.
+   
+2. Custom distributed TensorFlow training in dq_trainer.py. With access to multiple GPUs, this would speed up training greatly.
+---
+
 7 Wonders is another (and 2nd) popular classic board game that I've decided to include in my repository. I started playing it in Mar 2023.
 
 The project has reached the end of phase 1, with some planned features pushed to future updates.
