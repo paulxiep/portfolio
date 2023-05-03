@@ -24,8 +24,7 @@ class Effect:
         used to parse card and wonder effects from json
         returns relevant subclass instance of Effect
         '''
-        for key, value in e_dict.items():
-            break
+        key, value = list(e_dict.items())[0]
         return globals()[key[0].upper() + key[1:]](**value) if isinstance(value, dict) \
             else globals()[key[0].upper() + key[1:]](value)
 
