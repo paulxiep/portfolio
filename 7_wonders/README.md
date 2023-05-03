@@ -1,6 +1,6 @@
 # 7 Wonders
 
-**training log of 1st phase can be found phase_1_training_log_deep_q.md**
+**training log of 1st phase can be found [phase_1_training_log_deep_q.md](phase_1_training_log_deep_q.md)**
 
 **The AI can be accessed via the streamlit [app](https://7-wonders-ai.streamlit.app/)**
 
@@ -8,9 +8,9 @@
 
 #### Showcase (For recruiters looking for highlights)
 
-1. Effect.from_dict() in effects.py: Single entry point method to generate subclasses of Effect from json input as obtained from v2_cards.json. Eliminates the need for repetitive code/specification by parsing the json which I obtained from other's repo to dataclass.
+1. Effect.from_dict() in [effects.py](effects.py): Single entry point method to generate subclasses of Effect from json input as obtained from v2_cards.json. Eliminates the need for repetitive code/specification by parsing the json which I obtained from other's repo to dataclass.
    
-2. Custom distributed TensorFlow training in dq_trainer.py. With access to multiple GPUs, this would speed up training greatly.
+2. Custom distributed TensorFlow training in [dq_trainer.py](dq_trainer.py). With access to multiple GPUs, this would speed up training greatly.
 ---
 
 7 Wonders is another (and 2nd) popular classic board game that I've decided to include in my repository. I started playing it in Mar 2023.

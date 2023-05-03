@@ -3,7 +3,7 @@
 ---
 #### Showcase (For recruiters looking for highlights)
 
- - catan_units/hex_geometry.py (can be visualized with catan_app.py): Not using the standard cube or trapezoidal coordinate system for hex coordinates, I daresay my system is more intuitive to humans and while code is not easy to read and debug, it'll scale to any hex board size.
+ - [catan_units/hex_geometry.py](catan_units/hex_geometry.py) (can be visualized with catan_app.py): Not using the standard cube or trapezoidal coordinate system for hex coordinates, I daresay my system is more intuitive to humans and while code is not easy to read and debug, it'll scale to any hex board size.
 
 ---
 
