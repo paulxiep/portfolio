@@ -24,4 +24,3 @@ Will be worked on in order of evaluated usefulness and urgency of need. (still u
 
     - Recommendation System
     - NLP
-    - JavaScript
