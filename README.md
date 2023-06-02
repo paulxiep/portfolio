@@ -10,7 +10,7 @@ Skills aimed to demonstrate/practice with each project are:
 
 1. [7_wonders](7_wonders): Reinforcement learning using Gymnasium library. OOP. Only implemented Deep-Q Learning for now.
 2. [catan](catan): Object-oriented programming, practical AI programming.
-3. [earth_surface_temperature](earth_surface_temperature): Interactive dashboard
+3. [earth_surface_temperature](earth_surface_temperature): Interactive dashboard using Plotly and Streamlit.
 4. [cities_skylines_transport_ridership](cities_skylines_transport_ridership): Basic data visualization using Seaborn.
 5. [duck_detection](duck_detection): Basic object detection and json data manipulation.
 6. [geospatial](geospatial): Geospatial Data Science, still only a practice ground. I have yet to find a dataset I like to work with and make something fruitful out of it.
