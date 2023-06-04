@@ -12,7 +12,7 @@ To use the dashboard app:
        
 3. Run ```streamlit run earth_surface_temperature.py``` after installing the requirements
 
-Alternatively, try the online app on [cloud (link to be added)]
+Alternatively, try the online app on [cloud](https://berkeley-data-earth-temperature.streamlit.app/)
 
 #### Preview images
 
