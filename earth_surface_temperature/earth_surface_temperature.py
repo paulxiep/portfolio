@@ -1,5 +1,4 @@
 import os
-import shutil
 import zipfile
 from datetime import date
 
@@ -14,13 +13,19 @@ st.set_page_config(layout='wide', page_title='Land Surface Temperature')
 st.title('Global Land Surface Temperature')
 st.header('Monthly averages since 1890')
 
-st.markdown('from [Berkeley Earth data](https://www.kaggle.com/datasets/berkeleyearth/climate-change-earth-surface-temperature-data)')
+st.markdown(
+    'from [Berkeley Earth data](https://www.kaggle.com/datasets/berkeleyearth/climate-change-earth-surface-temperature-data)')
+
+'''
+no caching to prevent exceeding cloud memory limit
+'''
 
 
 def load_data():
-    kaggle.api.authenticate()
-    kaggle.api.dataset_download_files('berkeleyearth/climate-change-earth-surface-temperature-data', path='.',
-                                      unzip=False)
+    if not os.path.exists('climate-change-earth-surface-temperature-data.zip'):
+        kaggle.api.authenticate()
+        kaggle.api.dataset_download_files('berkeleyearth/climate-change-earth-surface-temperature-data', path='.',
+                                          unzip=False)
     with zipfile.ZipFile('climate-change-earth-surface-temperature-data.zip', 'r') as zip_ref:
         df = pd.read_csv(zip_ref.open('GlobalLandTemperaturesByCity.csv'))
 
@@ -35,7 +40,6 @@ def load_data():
     return df
 
 
-@st.cache_data
 def df_filter_latitude(thres_l, thres_u):
     return load_data()[load_data()['Latitude'].apply(lambda x: thres_l <= abs(x) <= thres_u)]
 
@@ -50,7 +54,6 @@ def max_temp(thres_l, thres_u):
         .groupby(['City', 'Year']).max().reset_index().drop('City', axis=1).groupby('Year').mean().reset_index()
 
 
-@st.cache_data
 def smooth(data):
     return signal.savgol_filter(data, 21, 1)
 
@@ -96,6 +99,9 @@ with st.expander('Min-Max temperature, averaged over cities in selected latitude
                     opacity=0.2, fillcolor='purple', line_width=0),
                         use_container_width=True)
 
+'''
+The map will exceed cloud app memory limit so this section is commented out.
+'''
 # with st.expander('On the map over time'):
 #     st.plotly_chart(
 #         px.scatter_geo(load_data()[load_data()['Year'].apply(lambda x: x % 10 == 0)], lat='Latitude', lon='Longitude',
