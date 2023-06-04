@@ -96,19 +96,19 @@ with st.expander('Min-Max temperature, averaged over cities in selected latitude
                     opacity=0.2, fillcolor='purple', line_width=0),
                         use_container_width=True)
 
-with st.expander('On the map over time'):
-    st.plotly_chart(
-        px.scatter_geo(load_data()[load_data()['Year'].apply(lambda x: x % 10 == 0)], lat='Latitude', lon='Longitude',
-                       size="AdjustedTemperature",
-                       size_max=6,
-                       animation_frame='dt', labels={'AverageTemperature': 'Monthly Average Temperature'},
-                       range_color=[-45, 45],
-                       color_continuous_scale='Cividis',
-                       color="AverageTemperature",
-                       hover_data={'AdjustedTemperature': False,
-                                   'dt': False,
-                                   'City': True,
-                                   'AverageTemperature': True,
-                                   'Latitude': True,
-                                   'Longitude': True}, height=600
-                       ), use_container_width=True)
+# with st.expander('On the map over time'):
+#     st.plotly_chart(
+#         px.scatter_geo(load_data()[load_data()['Year'].apply(lambda x: x % 10 == 0)], lat='Latitude', lon='Longitude',
+#                        size="AdjustedTemperature",
+#                        size_max=6,
+#                        animation_frame='dt', labels={'AverageTemperature': 'Monthly Average Temperature'},
+#                        range_color=[-45, 45],
+#                        color_continuous_scale='Cividis',
+#                        color="AverageTemperature",
+#                        hover_data={'AdjustedTemperature': False,
+#                                    'dt': False,
+#                                    'City': True,
+#                                    'AverageTemperature': True,
+#                                    'Latitude': True,
+#                                    'Longitude': True}, height=600
+#                        ), use_container_width=True)
