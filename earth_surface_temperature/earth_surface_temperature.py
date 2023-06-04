@@ -91,5 +91,6 @@ with st.expander('On the map over time'):
                        animation_frame='dt', labels={'AverageTemperature': 'Monthly Average Temperature'},
                    range_color=[-45, 45],
                    color_continuous_scale='Cividis',
-                         color="AverageTemperature",
-                  width=1200, height=600), use_container_width=True)
+                         color="AverageTemperature", height=600
+                                   ),
+                    use_container_width=True)
