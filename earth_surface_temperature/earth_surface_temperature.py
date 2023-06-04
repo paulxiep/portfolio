@@ -23,10 +23,10 @@ def load_data():
         kaggle.api.dataset_download_files('berkeleyearth/climate-change-earth-surface-temperature-data', path='.',
                                           unzip=False)
         with zipfile.ZipFile('climate-change-earth-surface-temperature-data.zip', 'r') as zip_ref:
-            zip_ref.extractall('earth_surface_temperature')
+            zip_ref.extractall('earth_surface_temperature_data')
         os.remove('climate-change-earth-surface-temperature-data.zip')
 
-        df = pd.read_csv('earth_surface_temperature/GlobalLandTemperaturesByCity.csv').dropna(axis=0)
+        df = pd.read_csv('earth_surface_temperature_data/GlobalLandTemperaturesByCity.csv').dropna(axis=0)
         df['dt'] = df['dt'].apply(date.fromisoformat)
         df['Year'] = df['dt'].apply(lambda x: x.year)
         df = df[['Year', 'dt', 'AverageTemperature', 'City', 'Latitude', 'Longitude']]
