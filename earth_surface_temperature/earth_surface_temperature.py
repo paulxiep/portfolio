@@ -16,11 +16,8 @@ st.header('Monthly averages since 1890')
 st.markdown(
     'from [Berkeley Earth data](https://www.kaggle.com/datasets/berkeleyearth/climate-change-earth-surface-temperature-data)')
 
-'''
-no caching to prevent exceeding cloud memory limit
-'''
 
-
+@st.cache_data
 def load_data():
     if not os.path.exists('climate-change-earth-surface-temperature-data.zip'):
         kaggle.api.authenticate()
