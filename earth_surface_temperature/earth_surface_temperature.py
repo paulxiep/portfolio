@@ -7,6 +7,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 from scipy import signal
+from PIL import Image
 
 st.set_page_config(layout='wide', page_title='Land Surface Temperature')
 
@@ -99,3 +100,6 @@ with st.expander('Min-Max temperature, averaged over cities in selected latitude
             thres_u = 70
     st.session_state['thres_u'] = thres_u
     plot(df_aggregate(load_data()[load_data()['Latitude'].apply(lambda x: thres_l <= abs(x) <= thres_u)]))
+
+    st.text('The cities in the database are distributed on the map like so')
+    st.image(Image.open('earth_surface_temperature/preview_images/cities_temperature_map.jpg'))
