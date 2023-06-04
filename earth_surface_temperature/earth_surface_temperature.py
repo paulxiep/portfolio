@@ -19,40 +19,73 @@ st.markdown(
 
 @st.cache_data
 def load_data():
-    if not os.path.exists('climate-change-earth-surface-temperature-data.zip'):
-        kaggle.api.authenticate()
-        kaggle.api.dataset_download_files('berkeleyearth/climate-change-earth-surface-temperature-data', path='.',
-                                          unzip=False)
+    kaggle.api.authenticate()
+    kaggle.api.dataset_download_files('berkeleyearth/climate-change-earth-surface-temperature-data', path='.',
+                                      unzip=False)
     with zipfile.ZipFile('climate-change-earth-surface-temperature-data.zip', 'r') as zip_ref:
         df = pd.read_csv(zip_ref.open('GlobalLandTemperaturesByCity.csv'))
+    os.remove('climate-change-earth-surface-temperature-data.zip')
 
     df['dt'] = df['dt'].apply(date.fromisoformat)
     df['Year'] = df['dt'].apply(lambda x: x.year)
-    df = df[['Year', 'dt', 'AverageTemperature', 'City', 'Latitude', 'Longitude']]
-    df['AdjustedTemperature'] = (df['AverageTemperature'] * 9 / 5) + 32 + 45
+    df = df[['Year', 'AverageTemperature', 'City', 'Latitude']]
     df['Latitude'] = df['Latitude'].apply(lambda x: float(x[:-1]) if x[-1] == 'N' else -float(x[:-1]))
-    df['Longitude'] = df['Longitude'].apply(lambda x: float(x[:-1]) if x[-1] == 'E' else -float(x[:-1]))
     df = df[df['Year'] >= 1890].reset_index().drop('index', axis=1)
 
     return df
 
 
 def df_filter_latitude(thres_l, thres_u):
-    return load_data()[load_data()['Latitude'].apply(lambda x: thres_l <= abs(x) <= thres_u)]
-
-
-def min_temp(thres_l, thres_u):
-    return df_filter_latitude(thres_l, thres_u).drop('dt', axis=1) \
-        .groupby(['City', 'Year']).min().reset_index().drop('City', axis=1).groupby('Year').mean().reset_index()
-
-
-def max_temp(thres_l, thres_u):
-    return df_filter_latitude(thres_l, thres_u).drop('dt', axis=1) \
-        .groupby(['City', 'Year']).max().reset_index().drop('City', axis=1).groupby('Year').mean().reset_index()
+    df = load_data()[load_data()['Latitude'].apply(lambda x: thres_l <= abs(x) <= thres_u)]
+    return pd.concat([
+        df.groupby(['City', 'Year']).min().reset_index().drop('City', axis=1) \
+            .groupby('Year').mean().reset_index() \
+            .rename(columns={'AverageTemperature': 'MinAverageTemperature'}) \
+            .drop(['Year', 'Latitude'], axis=1),
+        df.groupby(['City', 'Year']).max().reset_index().drop('City', axis=1) \
+            .groupby('Year').mean().reset_index() \
+            .rename(columns={'AverageTemperature': 'MaxAverageTemperature'})
+    ], axis=1)
 
 
 def smooth(data):
     return signal.savgol_filter(data, 21, 1)
+
+
+def plot(df):
+    minc, maxc = st.columns(2)
+    with minc:
+        st.plotly_chart(px.scatter(df,
+                                   x='Year', y='MinAverageTemperature',
+                                   title='Minimum yearly temperature, averaged over cities in latitude range',
+                                   labels={'MinAverageTemperature': 'Temperature in °C'}  # , color='City'
+                                   ).update_traces(
+            marker={'size': 4}).add_traces(
+            px.line(
+                df, x='Year',
+                y=smooth(df['MinAverageTemperature']),
+                labels={'y': 'smoothed Temperature in °C'}
+            ).data
+        ).add_hrect(y0=min(smooth(df['MinAverageTemperature'])),
+                    y1=max(smooth(df['MinAverageTemperature'])),
+                    opacity=0.2, fillcolor='purple', line_width=0),
+                        use_container_width=True)
+    with maxc:
+        st.plotly_chart(px.scatter(df,
+                                   x='Year', y='MaxAverageTemperature',
+                                   title='Maximum yearly temperature, averaged over cities in latitude range',
+                                   labels={'MaxAverageTemperature': 'Temperature in °C'}  # , color='City'
+                                   ).update_traces(
+            marker={'size': 4}).add_traces(
+            px.line(
+                df, x='Year',
+                y=smooth(df['MaxAverageTemperature']),
+                labels={'y': 'smoothed Temperature in °C'}
+            ).data
+        ).add_hrect(y0=min(smooth(df['MaxAverageTemperature'])),
+                    y1=max(smooth(df['MaxAverageTemperature'])),
+                    opacity=0.2, fillcolor='purple', line_width=0),
+                        use_container_width=True)
 
 
 with st.expander('Min-Max temperature, averaged over cities in selected latitude range'):
@@ -64,54 +97,4 @@ with st.expander('Min-Max temperature, averaged over cities in selected latitude
         thres_u = st.slider('max latitude', thres_l + 10, 70,
                             value=max(thres_l + 10, st.session_state.get('thres_u', 70)), step=5)
     st.session_state['thres_u'] = thres_u
-    minc, maxc = st.columns(2)
-    with minc:
-        st.plotly_chart(px.scatter(min_temp(thres_l, thres_u),
-                                   x='Year', y='AverageTemperature',
-                                   title='Minimum yearly temperature, averaged over cities in latitude range',
-                                   labels={'AverageTemperature': 'Temperature in °C'}  # , color='City'
-                                   ).update_traces(
-            marker={'size': 4}).add_traces(
-            px.line(
-                min_temp(thres_l, thres_u), x='Year',
-                y=smooth(min_temp(thres_l, thres_u)['AverageTemperature']),
-            ).data
-        ).add_hrect(y0=min(smooth(min_temp(thres_l, thres_u)['AverageTemperature'])),
-                    y1=max(smooth(min_temp(thres_l, thres_u)['AverageTemperature'])),
-                    opacity=0.2, fillcolor='purple', line_width=0),
-                        use_container_width=True)
-    with maxc:
-        st.plotly_chart(px.scatter(max_temp(thres_l, thres_u),
-                                   x='Year', y='AverageTemperature',
-                                   title='Maximum yearly temperature, averaged over cities in latitude range',
-                                   labels={'AverageTemperature': 'Temperature in °C'}  # , color='City'
-                                   ).update_traces(
-            marker={'size': 4}).add_traces(
-            px.line(
-                max_temp(thres_l, thres_u), x='Year',
-                y=smooth(max_temp(thres_l, thres_u)['AverageTemperature']),
-            ).data
-        ).add_hrect(y0=min(smooth(max_temp(thres_l, thres_u)['AverageTemperature'])),
-                    y1=max(smooth(max_temp(thres_l, thres_u)['AverageTemperature'])),
-                    opacity=0.2, fillcolor='purple', line_width=0),
-                        use_container_width=True)
-
-'''
-The map will exceed cloud app memory limit so this section is commented out.
-'''
-# with st.expander('On the map over time'):
-#     st.plotly_chart(
-#         px.scatter_geo(load_data()[load_data()['Year'].apply(lambda x: x % 10 == 0)], lat='Latitude', lon='Longitude',
-#                        size="AdjustedTemperature",
-#                        size_max=6,
-#                        animation_frame='dt', labels={'AverageTemperature': 'Monthly Average Temperature'},
-#                        range_color=[-45, 45],
-#                        color_continuous_scale='Cividis',
-#                        color="AverageTemperature",
-#                        hover_data={'AdjustedTemperature': False,
-#                                    'dt': False,
-#                                    'City': True,
-#                                    'AverageTemperature': True,
-#                                    'Latitude': True,
-#                                    'Longitude': True}, height=600
-#                        ), use_container_width=True)
+    plot(df_filter_latitude(thres_l, thres_u))
