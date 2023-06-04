@@ -91,9 +91,12 @@ with st.expander('Min-Max temperature, averaged over cities in selected latitude
     st.text('Equivalent Southern latitudes included')
     threslc, thresuc = st.columns(2)
     with threslc:
-        thres_l = st.slider('min latitude', 0, 55, value=0, step=5)
+        thres_l = st.slider('min latitude', 0, 60, value=0, step=5)
     with thresuc:
-        thres_u = st.slider('max latitude', thres_l + 10, 70,
-                            value=max(thres_l + 10, st.session_state.get('thres_u', 70)), step=5)
+        if thres_l < 60:
+            thres_u = st.slider('max latitude', thres_l + 10, 70,
+                                value=max(thres_l + 10, st.session_state.get('thres_u', 70)), step=5)
+        else:
+            thres_u = 70
     st.session_state['thres_u'] = thres_u
     plot(df_filter_latitude(load_data()[load_data()['Latitude'].apply(lambda x: thres_l <= abs(x) <= thres_u)], thres_l, thres_u))
