@@ -14,7 +14,7 @@ st.title('Global Land Surface Temperature')
 st.header('Monthly averages since 1890')
 
 st.markdown(
-    'from [Berkeley Earth data](https://www.kaggle.com/datasets/berkeleyearth/climate-change-earth-surface-temperature-data)')
+    'from ~3500 cities on [Berkeley Earth data](https://www.kaggle.com/datasets/berkeleyearth/climate-change-earth-surface-temperature-data)')
 
 
 @st.cache_data
@@ -31,11 +31,10 @@ def load_data():
     df = df[['Year', 'AverageTemperature', 'City', 'Latitude']]
     df['Latitude'] = df['Latitude'].apply(lambda x: float(x[:-1]) if x[-1] == 'N' else -float(x[:-1]))
     df = df[df['Year'] >= 1890].reset_index().drop('index', axis=1)
-
     return df
 
 
-def df_filter_latitude(df, thres_l, thres_u):
+def df_aggregate(df):
     return pd.concat([
         df.groupby(['City', 'Year']).min().reset_index().drop('City', axis=1) \
             .groupby('Year').mean().reset_index() \
@@ -99,4 +98,4 @@ with st.expander('Min-Max temperature, averaged over cities in selected latitude
         else:
             thres_u = 70
     st.session_state['thres_u'] = thres_u
-    plot(df_filter_latitude(load_data()[load_data()['Latitude'].apply(lambda x: thres_l <= abs(x) <= thres_u)], thres_l, thres_u))
+    plot(df_aggregate(load_data()[load_data()['Latitude'].apply(lambda x: thres_l <= abs(x) <= thres_u)]))
