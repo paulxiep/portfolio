@@ -18,26 +18,27 @@ st.markdown('from [Berkeley Earth data](https://www.kaggle.com/datasets/berkeley
 
 
 def load_data():
-    if not os.path.exists('processed_est.csv'):
-        kaggle.api.authenticate()
-        kaggle.api.dataset_download_files('berkeleyearth/climate-change-earth-surface-temperature-data', path='.',
-                                          unzip=False)
-        with zipfile.ZipFile('climate-change-earth-surface-temperature-data.zip', 'r') as zip_ref:
-            zip_ref.extractall('earth_surface_temperature_data')
-        os.remove('climate-change-earth-surface-temperature-data.zip')
+    # if not os.path.exists('processed_est.csv'):
+    kaggle.api.authenticate()
+    kaggle.api.dataset_download_files('berkeleyearth/climate-change-earth-surface-temperature-data', path='.',
+                                      unzip=False)
+    with zipfile.ZipFile('climate-change-earth-surface-temperature-data.zip', 'r') as zip_ref:
+        zip_ref.extractall('earth_surface_temperature_data')
+        df = pd.read_csv(zip_ref.open('GlobalLandTemperaturesByCity.csv'))
+    # os.remove('climate-change-earth-surface-temperature-data.zip')
 
-        df = pd.read_csv('earth_surface_temperature_data/GlobalLandTemperaturesByCity.csv').dropna(axis=0)
-        df['dt'] = df['dt'].apply(date.fromisoformat)
-        df['Year'] = df['dt'].apply(lambda x: x.year)
-        df = df[['Year', 'dt', 'AverageTemperature', 'City', 'Latitude', 'Longitude']]
-        df['AdjustedTemperature'] = (df['AverageTemperature'] * 9 / 5) + 32 + 45
-        df['Latitude'] = df['Latitude'].apply(lambda x: float(x[:-1]) if x[-1] == 'N' else -float(x[:-1]))
-        df['Longitude'] = df['Longitude'].apply(lambda x: float(x[:-1]) if x[-1] == 'E' else -float(x[:-1]))
-        df = df[df['Year'] >= 1890].reset_index().drop('index', axis=1)
-        df.to_csv('processed_est.csv')
-        shutil.rmtree('earth_surface_temperature')
+    # df = pd.read_csv('earth_surface_temperature_data/GlobalLandTemperaturesByCity.csv').dropna(axis=0)
+    df['dt'] = df['dt'].apply(date.fromisoformat)
+    df['Year'] = df['dt'].apply(lambda x: x.year)
+    df = df[['Year', 'dt', 'AverageTemperature', 'City', 'Latitude', 'Longitude']]
+    df['AdjustedTemperature'] = (df['AverageTemperature'] * 9 / 5) + 32 + 45
+    df['Latitude'] = df['Latitude'].apply(lambda x: float(x[:-1]) if x[-1] == 'N' else -float(x[:-1]))
+    df['Longitude'] = df['Longitude'].apply(lambda x: float(x[:-1]) if x[-1] == 'E' else -float(x[:-1]))
+    df = df[df['Year'] >= 1890].reset_index().drop('index', axis=1)
+        # df.to_csv('processed_est.csv')
+        # shutil.rmtree('earth_surface_temperature')
 
-    return pd.read_csv('processed_est.csv')
+    return df
 
 
 @st.cache_data
