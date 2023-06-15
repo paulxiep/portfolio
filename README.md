@@ -23,5 +23,10 @@ More project info can be found on the projects' own readme.
 
 Will be worked on in order of evaluated usefulness and urgency of need. (still unsure about the order)
 
-    - (More) Interactive Dashboards
-    - NLP
+**I've worked on this portfolio 6 days a week non-stop for 5 months and I'm burned out. I'll be 'on vacation' from projects until I take down this notice.**
+
+- (More) Interactive Dashboards: I'll need to find suitable data
+- NLP (fine-tuning): I've tried fine-tuning of BERT model with Kaggle data, but I'm not satisfied with the results. In any case it's a simple task so I might be working on self-supervised learning first.
+- NLP (self-supervised learning): This will be a long one, because I'll have to write the whole pipeline from web-scraping and then study some model code to build my own from scratch.
+- Data Engineering: I'll be taking a professional certificate program. Should take me ~14 days.
+- Generative AI: I'll be taking introductory course to generative AI to get started. Should take me ~7 days.
