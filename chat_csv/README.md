@@ -1,5 +1,7 @@
 ## Data Assistance Wizard
 
+[Preview application on cloud](https://pxp-data-chat.streamlit.app/)
+
 ### What it is
  - A user-friendly web data application that allows users to ask questions about the data.
 
