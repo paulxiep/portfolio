@@ -11,11 +11,12 @@ Skills aimed to demonstrate/practice with each project are:
 1. [7_wonders](7_wonders): Reinforcement learning using Gymnasium library. OOP. Only implemented Deep-Q Learning for now.
 2. [catan](catan): Object-oriented programming, practical AI programming.
 3. [earth_surface_temperature](earth_surface_temperature): Interactive dashboard using Plotly and Streamlit.
-4. [cities_skylines_transport_ridership](cities_skylines_transport_ridership): Basic data visualization using Seaborn.
-5. [duck_detection](duck_detection): Basic object detection and json data manipulation.
-6. [geospatial](geospatial): Geospatial Data Science, still only a practice ground. I have yet to find a dataset I like to work with and make something fruitful out of it.
+4. [chat_csv](chat_csv): Chatbot app that allows you to ask questions about your csv or postgresql data.
+5. [cities_skylines_transport_ridership](cities_skylines_transport_ridership): Basic data visualization using Seaborn.
+6. [duck_detection](duck_detection): Basic object detection and json data manipulation.
+7. [geospatial](geospatial): Geospatial Data Science, still only a practice ground. I have yet to find a dataset I like to work with and make something fruitful out of it.
 
-With the exception of 7 Wonders and Catan, the rest are 1-day projects (3, 4, 5) or practice range (6).
+With the exception of 7 Wonders, Catan, and Chat CSV, the rest are 1-day projects (3, 4, 5) or practice range (6).
 
 More project info can be found on the projects' own readme.
 
@@ -23,7 +24,7 @@ More project info can be found on the projects' own readme.
 
 Will be worked on in order of evaluated usefulness and urgency of need. (still unsure about the order)
 
-**I've worked on this portfolio 6 days a week non-stop for 5 months and I'm burned out. I'll be 'on vacation' from projects until I take down this notice.**
+**This portfolio is currently not being worked on regularly.**
 
 - (More) Interactive Dashboards: I'll need to find suitable data
 - NLP (fine-tuning): I've tried fine-tuning of BERT model with Kaggle data, but I'm not satisfied with the results. In any case it's a simple task so I might be working on self-supervised learning first.
