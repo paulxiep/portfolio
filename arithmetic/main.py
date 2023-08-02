@@ -1,13 +1,9 @@
 from arithmetic_classes import *
+import time
+from itertools import permutations
 
-'''
-Special case: 3 numbers (3, 7, 5), fixed order.
-            Parenthesis can be put over 3 and 5, or over 5 and 7,
-            effectively either joins the first 2 terms first, or the last 2 terms first.
-            Singular Operator can be put over Number or over Parenthesis (joined terms)
-            Duo Operator must be put over 2 Entities.
-'''
-
+FACTORIAL_LIMIT = 8  # beyond this value, don't calculate factorial
+MULTIPLY_LIMIT = 1800  # for results beyond this value (absolute), drop the multiplication results
 
 def operation(*args):
     '''
@@ -44,7 +40,7 @@ def singular_operators(number, allow_factorial=True):
         else:
             base += [[Operator.get('sqrt'), operation(*[Operator.get('-()'), number])], [Operator.get('-()'), operation(
                 *[Operator.get('sqrt'), operation(*[Operator.get('-()'), number])])]]
-    if allow_factorial and number.is_positive() and number.value < 11 and int(number.value) == number.value:
+    if allow_factorial and number.is_positive() and number.value < FACTORIAL_LIMIT+1 and float(number.value).is_integer():
         base += [[number, Operator.get('!')],
                  [Operator.get('-()'), operation(*[number, Operator.get('!')])]]
     yield from map(lambda x: operation(*x), base)
@@ -60,24 +56,24 @@ def duo_operators(n1, n2):
     Note that this is a generator function.
     '''
     yield from map(lambda x: operation(*x), [
-        [n1, Operator.get('+'), n2],
-        [n1, Operator.get('*'), n2]
-    ] + [[n1, Operator.get('/'), n2]] * int(n2.value != 0))
+        [n1, Operator.get('+'), n2]
+    ] + [[n1, Operator.get('*'), n2]] * (abs(n1.value * n2.value) < MULTIPLY_LIMIT) \
+      + [[n1, Operator.get('/'), n2]] * (int(n2.value != 0) and (n1.value/n2.value).is_integer()))
 
 
-def from_2(n1, n2):
+def from_2(n1, n2, allow_factorial=True):
     '''
     This function accepts 2 numbers.
     Returns all Duo operations on all Singular operations of 2 numbers.
     This is what you need in most cases.
     Note that this is a generator function.
     '''
-    yield from (do for sn1 in singular_operators(n1)
-                for sn2 in singular_operators(n2)
+    yield from (do for sn1 in singular_operators(n1, allow_factorial=allow_factorial)
+                for sn2 in singular_operators(n2, allow_factorial=allow_factorial)
                 for do in duo_operators(sn1, sn2))
 
 
-def fixed_pos(*args):
+def fixed_pos(*args, allow_factorial=True):
     '''
     Accepts any number of numbers.
     It returns results of recursively matching all adjacent pairs of numbers with from_2,
@@ -85,36 +81,70 @@ def fixed_pos(*args):
     Note that this is a generator function.
     '''
     if len(args) == 1:
-        yield from singular_operators(args[0])
+        yield from singular_operators(args[0], allow_factorial=allow_factorial)
     elif len(args) > 1:
         yield from (fp
                     for i in range(len(args) - 1)
-                    for pair in from_2(args[i], args[i + 1])
-                    for fp in fixed_pos(*(list(args[:i]) + [pair] + list(args[i + 2:]))))
+                    for pair in from_2(args[i], args[i + 1], allow_factorial=allow_factorial)
+                    for fp in fixed_pos(*(list(args[:i]) + [pair] + list(args[i + 2:])), allow_factorial=allow_factorial))
     else:
         raise NotImplementedError('0 argument in fixed_pos not implemented')
 
+def permute_pos(*args, allow_factorial=False):
+    '''
+    Like fixed_pos, but with argument order permutation.
+    Note that this is a generator function.
+    '''
+    yield from (fp for perm in permutations(args, len(args)) for fp in fixed_pos(*perm, allow_factorial=allow_factorial))
 
-def search(*args, search_range=range(0, 101)):
+def search_range(*args, search_range=range(0, 51), allow_factorial=False):
     '''
     Search, for any number of number arguments, how to arrive at results within a search range.
-    It is not advisable to go beyond 4 numbers unless you're willing to test your patience at waiting.
+    First try for fewer number of arguments, to get a feel for time required.
+    Each argument added exponentially increases runtime.
     '''
-    out = {k: [] for k in search_range}
-
-    for value in fixed_pos(*args):
-        if value.value in search_range:
-            out[int(value.value)].append(value.repr)
+    out = {k: None for k in search_range}
+    i = 0
+    for value in permute_pos(*args, allow_factorial=allow_factorial):
+        if int(value.value) in search_range:
+            if out[int(value.value)] is None:
+                out[int(value.value)] = value.repr
+                i += 1
+                if i >= len(search_range):
+                    break
+            elif out[int(value.value)].count('(') > value.repr.count('('):
+                out[int(value.value)] = value.repr
 
     for k, v in sorted(out.items()):
-        if len(v) > 0:
-            print(k, min(v, key=lambda x: x.count('(')))
+        print(k, ':', v)
+
+def search_value(*args, search_value=729, allow_factorial=True):
+    '''
+    Like search_range, but search only for a single answer.
+    First try for fewer number of arguments, to get a feel for time required.
+    Each argument added exponentially increases runtime.
+    '''
+    for value in permute_pos(*args, allow_factorial=allow_factorial):
+        if value.value == search_value:
+            print(value.value, ':', value.repr)
+            return value.value, value.repr
 
 
 if __name__ == '__main__':
     '''
-    4 numbers is the maximum number of input advised.
-    5 numbers will likely take too long for your patience.
-    Define a search range as keyword argument if needed.
+    First try for fewer number of arguments, to get a feel for time required. 
+    Each argument added exponentially increases runtime.
+    Setting allow_factorial=False also decreases runtime immensely.
     '''
-    search(3, 7, 5, 3)
+    inputs = [3, 6, 4, 7, 5]
+    cumulative = 0
+    for i in range(101):
+        start = time.time()
+        search_value(*inputs, search_value=i, allow_factorial=True)
+        temp = time.time() - start
+        cumulative += temp
+        print('took', temp, 'seconds')
+    print('cumulative segregated searches took', cumulative, 'seconds')
+    start = time.time()
+    search_range(*inputs, search_range=range(0, 101), allow_factorial=True)
+    print('combined search took', time.time() - start, 'seconds')

@@ -31,8 +31,7 @@ class Number(Arithmetic):
             return False
 
     def integer_root(self):
-        temp = sqrt(self.value * self.is_positive() - self.value * (not self.is_positive()))
-        return int(temp) == temp
+        return sqrt(self.value * self.is_positive() - self.value * (not self.is_positive())).is_integer()
 
     def __rshift__(self, other):
         if isinstance(other, DuoOperator):
