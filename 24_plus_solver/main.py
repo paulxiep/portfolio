@@ -1,6 +1,7 @@
 from arithmetic_classes import *
 import time
 from itertools import permutations
+from functools import lru_cache
 
 FACTORIAL_LIMIT = 8  # beyond this value, don't calculate factorial
 MULTIPLY_LIMIT = 1800  # for results beyond this value (absolute), drop the multiplication results

@@ -43,7 +43,7 @@ class Number(Arithmetic):
             raise NotImplementedError('Number can only be followed by PostSingularOperator or DuoOperator')
 
 
-@dataclass(init=False)
+@dataclass
 class Operator(Arithmetic):
     value: str
     repr: str
