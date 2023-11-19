@@ -15,6 +15,10 @@ Fork this repo and make this model ready to deploy on GCP on any suitable servic
 
 Will require ```.env``` file with corresponding keys to run
 
+### Disclaimer
+
+While there were attempts to ensure compatibilities across platforms, the main code was only tested on Windows.
+
 ### Methods
 
 1. Streamlit: Simple, easy to use, web application tool suitable for small data application.
