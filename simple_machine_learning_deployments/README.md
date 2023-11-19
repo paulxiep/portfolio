@@ -25,8 +25,8 @@ Will require ```.env``` file with corresponding keys to run
 
 0. All methods: ```sh 00_prepare_demo.sh``` to prepare dummy models and synthetic data for demo runs on all methods.
 1. Streamlit: ```streamlit run simple_streamlit.py```, then insert test data with categorical features already encoded (can be obtained from ```/data``` after preparing demo in step 0). The results will be displayed on the streamlit web app.
-2. Airflow Docker: ```sh 02_prepare_airflow_demo.sh```. Go to ```localhost:{AIRFLOW_PORT}``` on your browser (requires said port to be vacant), and login with user and password specified in .env. Click to enable the daily_prediction_run DAG and wait for scheduled run or activate more runs manually. The prediction results and generated test data will be in ```/results``` folder. When done run ```sh 10_clean_docker.sh```.
-3. Flask API: ```sh 03_prepare_flask_demo.sh```. Then run ```streamlit run simple_streamlit.py```, except this time choose 'Call Flask API' on the radio button, then uploaded test data. When done run ```sh 10_clean_docker.sh```.
+2. Airflow Docker: (requires running docker engine) ```sh 02_prepare_airflow_demo.sh```. Go to ```localhost:{AIRFLOW_PORT}``` on your browser (requires said port to be vacant), and login with user and password specified in .env. Click to enable the daily_prediction_run DAG and wait for scheduled run or activate more runs manually. The prediction results and generated test data will be in ```/results``` folder. When done run ```sh 10_clean_docker.sh```.
+3. Flask API: (requires running docker engine) ```sh 03_prepare_flask_demo.sh```. Then run ```streamlit run simple_streamlit.py```, except this time choose 'Call Flask API' on the radio button, then uploaded test data. When done run ```sh 10_clean_docker.sh```.
 
 ### Mid-Development Updates Log
 
