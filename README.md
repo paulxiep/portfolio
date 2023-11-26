@@ -11,14 +11,16 @@ Skills aimed to demonstrate/practice with each project are:
 1. [7_wonders](7_wonders): Reinforcement learning using Gymnasium library. OOP. Only implemented Deep-Q Learning for now.
 2. [catan](catan): Object-oriented programming, practical AI programming.
 3. [simple_machine_learning_deployments](simple_machine_learning_deployments): Machine Learning Engineering, Airflow, Flask
-4. [earth_surface_temperature](earth_surface_temperature): Interactive dashboard using Plotly and Streamlit.
-5. [chat_csv](chat_csv): Chatbot app that allows you to ask questions about your csv or postgresql data.
-6. [cities_skylines_transport_ridership](cities_skylines_transport_ridership): Basic data visualization using Seaborn.
-7. [duck_detection](duck_detection): Basic object detection and json data manipulation.
-8. [24_plus_solver](24_plus_solver): This is mainly a toy project for a challenge, made use of generator functions.
-9. [geospatial](geospatial): Geospatial Data Science, still only a practice ground. I have yet to find a dataset I like to work with and make something fruitful out of it.
+4. [functional_programming](functional_programming): Functional Programming, Meta-Programming, OOP.
+5. [earth_surface_temperature](earth_surface_temperature): Interactive dashboard using Plotly and Streamlit.
+6. [chat_csv](chat_csv): Chatbot app that allows you to ask questions about your csv or postgresql data.
+7. [cities_skylines_transport_ridership](cities_skylines_transport_ridership): Basic data visualization using Seaborn.
+8. [duck_detection](duck_detection): Basic object detection and json data manipulation.
+9. [24_plus_solver](24_plus_solver): This is mainly a toy project for a challenge, made use of generator functions.
+10. [geospatial](geospatial): Geospatial Data Science, still only a practice ground. I have yet to find a dataset I like to work with and make something fruitful out of it.
 
-With the exception of 7 Wonders, Catan, and Chat CSV, the rest are 1-day projects (3, 5, 6, 7) or practice range (8).
+7 Wonders, Catan, Simple ML Deployments, Functional Programming, and Chat CSV are multi-day projects spanning a few days or weeks, 
+the rest are 1-day projects (5, 7, 8, 9) or practice range (10).
 
 More project info can be found on the projects' own readme.
 
