@@ -37,7 +37,7 @@ def datetime_demo():
         '''
         get timedelta object for the preceding Tuesday
         '''
-        return datetime.timedelta(days=-((weekday + 6) % 7) - 7)
+        return datetime.timedelta(days=-((weekday + 6) % 7) - (7 * (weekday == 1)))
 
     return make_functional(datetime.datetime.today()) \
                 .freeze(logs='saved today datetime') \
