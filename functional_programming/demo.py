@@ -1,5 +1,6 @@
 import datetime
 import logging
+import random
 
 from model_scripts.preprocess import common_preprocess, batch_preprocess, stream_preprocess
 from utils.functional_tools import make_functional
@@ -45,9 +46,19 @@ def datetime_demo():
                 .pipe(get_preceding_tuesday_delta, comment='now it becomes timedelta') \
                 .meta_pipe(lambda self: self.restore().pipe(print, comment='should print datetime') + \
                                         self.pipe(print, comment='should print timedelta'),
-                           comment='Subtract timedelta from frozen datetime object') \
-                .pipe(print) \
+                           comment='Subtract timedelta from frozen datetime object', print_value=True) \
                 .return_content(logs='return value as datetime of last Tuesday')
+
+
+def list_demo():
+    return make_functional([1, 2, 3, 4, 5, 6, 7, 8]) \
+                .pipe(random.shuffle, print_value=logging.INFO) \
+                .pipe(random.shuffle, print_value=logging.INFO) \
+                .sort(print_value=logging.INFO) \
+                .sort(reverse=True, print_value=logging.INFO) \
+                .pipe(lambda x: x[0], print_value=logging.INFO) \
+                .pipe(lambda x: [x] * x, print_value=logging.INFO) \
+                .return_content()
 
 
 if __name__ == '__main__':
@@ -56,3 +67,6 @@ if __name__ == '__main__':
 
     print('\ndatetime_demo()-----------------\n')
     datetime_demo()
+
+    print('\nlist_demo()-----------------\n')
+    list_demo()

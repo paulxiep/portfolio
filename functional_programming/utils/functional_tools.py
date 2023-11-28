@@ -12,6 +12,18 @@ def add_log_and_comment(func):
     return function_wrapper
 
 
+def add_print(func):
+    def function_wrapper(*args, print_value=False, **kwargs):
+        out = func(*args, **kwargs)
+        if print_value:
+            if print_value in [logging.DEBUG, logging.INFO, logging.WARNING, logging.ERROR, logging.CRITICAL]:
+                logging.log(print_value, out._content)
+            else:
+                print(out._content)
+        return out
+
+    return function_wrapper
+
 def delegate(object_class, additional_methods, meta_methods):
     '''
     Used to wrap object methods to return self as default,
@@ -29,6 +41,7 @@ def delegate(object_class, additional_methods, meta_methods):
             '''
 
             @add_log_and_comment
+            @add_print
             def return_self_as_default(self, *args, **kwargs):
                 args = list(map(lambda x: x if x.__class__.__name__ != 'FunctionalObject' else x._content, args))
                 out = getattr(getattr(self, '_content'), method)(*args, **kwargs)
@@ -46,6 +59,7 @@ def delegate(object_class, additional_methods, meta_methods):
             '''
 
             @add_log_and_comment
+            @add_print
             def f_to_m(self, *args, **kwargs):
                 self._content = func(self._content, *args, **kwargs)
                 return self
@@ -58,6 +72,7 @@ def delegate(object_class, additional_methods, meta_methods):
             '''
 
             @add_log_and_comment
+            @add_print
             def mf_to_m(self, *args, **kwargs):
                 self._content = func(self, *args, **kwargs)
                 return self
@@ -70,6 +85,7 @@ def delegate(object_class, additional_methods, meta_methods):
             '''
 
             @add_log_and_comment
+            @add_print
             def freeze_content(self, freeze_key=None):
                 self._frozen_content[freeze_key] = copy.deepcopy(self._content)
                 return self
@@ -83,6 +99,7 @@ def delegate(object_class, additional_methods, meta_methods):
             '''
 
             @add_log_and_comment
+            @add_print
             def restore_content(self, restore_key=None):
                 try:
                     return make_functional(copy.deepcopy(self._frozen_content[restore_key]),
@@ -110,6 +127,7 @@ def delegate(object_class, additional_methods, meta_methods):
 
         def pipe():
             @add_log_and_comment
+            @add_print
             def pipe_func(self, func, *args, input_args_name=None, **kwargs):
                 if input_args_name is None:
                     out = func(self._content, *args, **kwargs)
@@ -130,6 +148,7 @@ def delegate(object_class, additional_methods, meta_methods):
 
         def meta_pipe():
             @add_log_and_comment
+            @add_print
             def meta_pipe_func(self, func, *args, **kwargs):
                 # print(func(self, *args, **kwargs)._content)
                 return make_functional(
