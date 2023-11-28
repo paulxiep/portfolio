@@ -1,4 +1,15 @@
 import copy
+import logging
+from dataclasses import dataclass
+
+
+def add_log_and_comment(func):
+    def function_wrapper(*args, logs=None, log_level=logging.DEBUG, comment=None, **kwargs):
+        if logs is not None:
+            logging.log(log_level, logs)
+        return func(*args, **kwargs)
+
+    return function_wrapper
 
 
 def delegate(object_class, additional_methods, meta_methods):
@@ -11,12 +22,15 @@ def delegate(object_class, additional_methods, meta_methods):
     '''
 
     def decorate(cls):
+
         def delegate_method(method):
             '''
             new decorated class will inherit _content class methods, and apply methods to _content
             '''
 
+            @add_log_and_comment
             def return_self_as_default(self, *args, **kwargs):
+                args = list(map(lambda x: x if x.__class__.__name__ != 'FunctionalObject' else x._content, args))
                 out = getattr(getattr(self, '_content'), method)(*args, **kwargs)
                 if out is None:
                     return self
@@ -31,6 +45,7 @@ def delegate(object_class, additional_methods, meta_methods):
             add functions, for example the functions from preprocess.py, as methods
             '''
 
+            @add_log_and_comment
             def f_to_m(self, *args, **kwargs):
                 self._content = func(self._content, *args, **kwargs)
                 return self
@@ -42,6 +57,7 @@ def delegate(object_class, additional_methods, meta_methods):
             add meta-level functions as methods
             '''
 
+            @add_log_and_comment
             def mf_to_m(self, *args, **kwargs):
                 self._content = func(self, *args, **kwargs)
                 return self
@@ -53,8 +69,9 @@ def delegate(object_class, additional_methods, meta_methods):
             allow one instance of _content freeze
             '''
 
-            def freeze_content(self):
-                self._frozen_content = copy.deepcopy(self._content)
+            @add_log_and_comment
+            def freeze_content(self, freeze_key=None):
+                self._frozen_content[freeze_key] = copy.deepcopy(self._content)
                 return self
 
             return freeze_content
@@ -65,10 +82,18 @@ def delegate(object_class, additional_methods, meta_methods):
             and swap current _content into frozen
             '''
 
-            def restore_content(self):
-                return make_functional(copy.deepcopy(self._frozen_content),
-                                       additional_methods, meta_methods,
-                                       frozen_content=copy.deepcopy(self._content))
+            @add_log_and_comment
+            def restore_content(self, restore_key=None):
+                try:
+                    return make_functional(copy.deepcopy(self._frozen_content[restore_key]),
+                                           additional_methods, meta_methods,
+                                           frozen_content=copy.deepcopy({**self._frozen_content,
+                                                                         restore_key: self._content}))
+                except Exception as e:
+                    if isinstance(e, KeyError):
+                        raise Exception(f"Can't restore key '{restore_key}', no value stored")
+                    else:
+                        raise e
 
             return restore_content
 
@@ -77,13 +102,49 @@ def delegate(object_class, additional_methods, meta_methods):
             exit functional wrapper class and return current _content
             '''
 
+            @add_log_and_comment
             def content_return(self):
                 return self._content
 
             return content_return
 
+        def pipe():
+            @add_log_and_comment
+            def pipe_func(self, func, *args, input_args_name=None, **kwargs):
+                if input_args_name is None:
+                    out = func(self._content, *args, **kwargs)
+                else:
+                    out = func(*args, **{input_args_name: self._content, **kwargs})
+
+                if out is not None:
+                    return make_functional(
+                        out,
+                        additional_methods=additional_methods,
+                        meta_methods=meta_methods,
+                        frozen_content=self._frozen_content
+                    )
+                else:
+                    return self
+
+            return pipe_func
+
+        def meta_pipe():
+            @add_log_and_comment
+            def meta_pipe_func(self, func, *args, **kwargs):
+                # print(func(self, *args, **kwargs)._content)
+                return make_functional(
+                    func(self, *args, **kwargs)._content,
+                    additional_methods=additional_methods,
+                    meta_methods=meta_methods,
+                    frozen_content=self._frozen_content)
+
+            return meta_pipe_func
+
         for method in dir(object_class):
-            if method[:2] != '__':
+            if method not in ['__class__', '__new__', '__init__',
+                              '__getattribute__', '__setattr__', '__delattr__',
+                              '__dict__', '__str__', '__repr__', '__hash__']:
+            # if method[:2] != '__' or method in ['__add__']:
                 '''
                 override only unprotected methods
                 '''
@@ -101,6 +162,8 @@ def delegate(object_class, additional_methods, meta_methods):
             '''
             setattr(cls, meta_func.__name__, meta_function_to_method(meta_func))
 
+        setattr(cls, 'pipe', pipe())
+        setattr(cls, 'meta_pipe', meta_pipe())
         setattr(cls, 'return_content', return_content())
         setattr(cls, 'freeze', freeze())
         setattr(cls, 'restore', restore())
@@ -110,17 +173,20 @@ def delegate(object_class, additional_methods, meta_methods):
     return decorate
 
 
-def make_functional(obj, additional_methods=tuple(), meta_methods=tuple(), frozen_content=None):
+def make_functional(obj, additional_methods=tuple(),
+                    meta_methods=tuple(), frozen_content=None):
     '''
-    Used to wrap object methods to return self as default when nothing else is returned,
+    Used to wrap object methods to return self as default
+    when nothing else is returned,
     conforming to functional programming style
     '''
 
     @delegate(obj.__class__, additional_methods, meta_methods)
+    @dataclass(init=False, repr=False)
     class FunctionalObject:
         def __init__(self, content):
             self._content = content
             self._class = content.__class__
-            self._frozen_content = frozen_content
+            self._frozen_content = {} if frozen_content is None else {**frozen_content}
 
     return FunctionalObject(obj)
