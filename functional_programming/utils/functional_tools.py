@@ -4,25 +4,26 @@ from dataclasses import dataclass
 
 
 def add_log_and_comment(func):
-    def function_wrapper(*args, logs=None, log_level=logging.DEBUG, comment=None, **kwargs):
-        if logs is not None:
-            logging.log(log_level, logs)
+    def function_wrapper(*args, log=None, log_level=logging.DEBUG, comment=None, **kwargs):
+        if log is not None:
+            logging.log(log_level, log)
         return func(*args, **kwargs)
 
     return function_wrapper
 
 
-def add_print(func):
-    def function_wrapper(*args, print_value=False, **kwargs):
+def add_content_log(func):
+    def function_wrapper(*args, content_log_level=False, **kwargs):
         out = func(*args, **kwargs)
-        if print_value:
-            if print_value in [logging.DEBUG, logging.INFO, logging.WARNING, logging.ERROR, logging.CRITICAL]:
-                logging.log(print_value, out._content)
+        if content_log_level:
+            if content_log_level in [logging.DEBUG, logging.INFO, logging.WARNING, logging.ERROR, logging.CRITICAL]:
+                logging.log(content_log_level, out._content)
             else:
                 print(out._content)
         return out
 
     return function_wrapper
+
 
 def delegate(object_class, additional_methods, meta_methods):
     '''
@@ -41,7 +42,7 @@ def delegate(object_class, additional_methods, meta_methods):
             '''
 
             @add_log_and_comment
-            @add_print
+            @add_content_log
             def return_self_as_default(self, *args, **kwargs):
                 args = list(map(lambda x: x if x.__class__.__name__ != 'FunctionalObject' else x._content, args))
                 out = getattr(getattr(self, '_content'), method)(*args, **kwargs)
@@ -59,7 +60,7 @@ def delegate(object_class, additional_methods, meta_methods):
             '''
 
             @add_log_and_comment
-            @add_print
+            @add_content_log
             def f_to_m(self, *args, **kwargs):
                 self._content = func(self._content, *args, **kwargs)
                 return self
@@ -72,7 +73,7 @@ def delegate(object_class, additional_methods, meta_methods):
             '''
 
             @add_log_and_comment
-            @add_print
+            @add_content_log
             def mf_to_m(self, *args, **kwargs):
                 self._content = func(self, *args, **kwargs)
                 return self
@@ -85,7 +86,7 @@ def delegate(object_class, additional_methods, meta_methods):
             '''
 
             @add_log_and_comment
-            @add_print
+            @add_content_log
             def freeze_content(self, freeze_key=None):
                 self._frozen_content[freeze_key] = copy.deepcopy(self._content)
                 return self
@@ -99,7 +100,7 @@ def delegate(object_class, additional_methods, meta_methods):
             '''
 
             @add_log_and_comment
-            @add_print
+            @add_content_log
             def restore_content(self, restore_key=None):
                 try:
                     return make_functional(copy.deepcopy(self._frozen_content[restore_key]),
@@ -127,7 +128,7 @@ def delegate(object_class, additional_methods, meta_methods):
 
         def pipe():
             @add_log_and_comment
-            @add_print
+            @add_content_log
             def pipe_func(self, func, *args, input_args_name=None, **kwargs):
                 if input_args_name is None:
                     out = func(self._content, *args, **kwargs)
@@ -148,7 +149,7 @@ def delegate(object_class, additional_methods, meta_methods):
 
         def meta_pipe():
             @add_log_and_comment
-            @add_print
+            @add_content_log
             def meta_pipe_func(self, func, *args, **kwargs):
                 # print(func(self, *args, **kwargs)._content)
                 return make_functional(
@@ -163,7 +164,7 @@ def delegate(object_class, additional_methods, meta_methods):
             if method not in ['__class__', '__new__', '__init__',
                               '__getattribute__', '__setattr__', '__delattr__',
                               '__dict__', '__str__', '__repr__', '__hash__']:
-            # if method[:2] != '__' or method in ['__add__']:
+                # if method[:2] != '__' or method in ['__add__']:
                 '''
                 override only unprotected methods
                 '''
