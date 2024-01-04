@@ -1,0 +1,14 @@
+services:
+  flask:
+    image: "paul-sentiment:0.0.1"
+    environment:
+      - AIKEY=${AIKEY}
+    volumes:
+      - ./models:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+    ports:
+      - "${FLASK_PORT}:8081"
