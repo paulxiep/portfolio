@@ -1,2 +1,2 @@
-tensorflow == 2.7.4
-gymnasium == 0.28.1
+tensorflow
+gymnasium
