@@ -25,12 +25,5 @@ the rest are 1-day projects (6, 8, 9, 10) or practice range (11).
 
 More project info can be found on the projects' own readme.
 
-## Planned projects
-
-Will be worked on in order of evaluated usefulness and urgency of need. (still unsure about the order)
-
 **This portfolio is currently not being worked on regularly.**
 
-- (More) Interactive Dashboards: I'll need to find suitable data
-- Data Engineering: I'll be taking a professional certificate program. Should take me ~14 days if full time.
-- Generative AI: I'll be taking introductory course to generative AI to get started. Should take me ~7 days if full time.
