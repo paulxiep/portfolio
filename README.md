@@ -12,16 +12,13 @@ Skills aimed to demonstrate/practice with each project are:
 2. [7_wonders](7_wonders): Reinforcement learning using Gymnasium library. OOP. Only implemented Deep-Q Learning for now.
 3. [catan](catan): Object-oriented programming, practical AI programming.
 4. [simple_machine_learning_deployments](simple_machine_learning_deployments): Machine Learning Engineering, Airflow, Flask
-5. [functional_programming](functional_programming): Functional Programming, Meta-Programming, OOP.
-6. [earth_surface_temperature](earth_surface_temperature): Interactive dashboard using Plotly and Streamlit.
+5. [earth_surface_temperature](earth_surface_temperature): Interactive dashboard using Plotly and Streamlit.
+6. [24_plus_solver](24_plus_solver): This is mainly a toy project for a challenge, made use of generator 
 7. [chat_csv](chat_csv): Chatbot app that allows you to ask questions about your csv or postgresql data.
-8. [cities_skylines_transport_ridership](cities_skylines_transport_ridership): Basic data visualization using Seaborn.
-9. [duck_detection](duck_detection): Basic object detection and json data manipulation.
-10. [24_plus_solver](24_plus_solver): This is mainly a toy project for a challenge, made use of generator functions.
-11. [geospatial](geospatial): Geospatial Data Science, still only a practice ground. I have yet to find a dataset I like to work with and make something fruitful out of it.
+8. [duck_detection](duck_detection): Basic object detection and json data manipulation.functions.
 
-Sentiment Analysis, 7 Wonders, Catan, Simple ML Deployments, Functional Programming, and Chat CSV are multi-day projects spanning a few days or weeks, 
-the rest are 1-day projects (6, 8, 9, 10) or practice range (11).
+Sentiment Analysis, 7 Wonders, Catan, Simple ML Deployments, and Chat CSV are multi-day projects spanning a few days or weeks, 
+the rest are 1-day projects.
 
 More project info can be found on the projects' own readme.
 
