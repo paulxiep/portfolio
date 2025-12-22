@@ -1,5 +1,7 @@
 mod ingestion;
 mod models;
+#[allow(dead_code)]
+mod store;
 
 use ingestion::run_ingestion;
 

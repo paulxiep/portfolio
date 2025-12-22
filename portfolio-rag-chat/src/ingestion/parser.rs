@@ -1,5 +1,6 @@
 use crate::models::CodeChunk;
 use streaming_iterator::StreamingIterator;
+use tracing::warn;
 use tree_sitter::{Parser, Query};
 
 #[derive(Debug, Clone, Copy)]
@@ -59,15 +60,18 @@ impl CodeAnalyzer {
 
     pub fn analyze_content(&mut self, source: &str, lang: SupportedLanguage) -> Vec<CodeChunk> {
         let grammar = lang.get_grammar();
-        if self.parser.set_language(&grammar).is_err() {
+        if let Err(e) = self.parser.set_language(&grammar) {
+            warn!(language = lang.name(), error = ?e, "Failed to set parser language");
             return Vec::new();
         }
 
         let Some(tree) = self.parser.parse(source, None) else {
+            warn!(language = lang.name(), "Failed to parse source code");
             return Vec::new();
         };
 
         let Ok(query) = Query::new(&grammar, lang.query_string()) else {
+            warn!(language = lang.name(), "Failed to create tree-sitter query");
             return Vec::new();
         };
 

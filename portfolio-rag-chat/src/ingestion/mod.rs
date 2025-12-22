@@ -3,6 +3,7 @@ pub mod parser;
 use self::parser::{CodeAnalyzer, SupportedLanguage};
 use crate::models::{CodeChunk, ReadmeChunk};
 use std::path::{Path, PathBuf};
+use tracing::warn;
 use walkdir::{DirEntry, WalkDir};
 
 /// Extract project name from file path based on directory structure
@@ -54,7 +55,10 @@ fn process_code_file(
 
     let content = match std::fs::read_to_string(entry.path()) {
         Ok(c) => c,
-        Err(_) => return Vec::new(),
+        Err(e) => {
+            warn!(path = %entry.path().display(), error = %e, "Failed to read file");
+            return Vec::new();
+        }
     };
 
     let path_str = entry.path().to_string_lossy().to_string();
