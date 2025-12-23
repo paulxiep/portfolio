@@ -1,49 +1,48 @@
+mod api;
+mod engine;
 mod ingestion;
 mod models;
-#[allow(dead_code)]
 mod store;
 
-use ingestion::run_ingestion;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-fn main() {
-    println!("Portfolio RAG Chat - Ingestion Test");
-    println!("====================================\n");
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // Initialize logging
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer())
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "portfolio_rag_chat=debug,tower_http=debug".into()),
+        )
+        .init();
 
-    // Point to your portfolio directory
-    let portfolio_path = r"c:\Users\paulx\Documents\portfolio";
+    // Load environment variables
+    dotenvy::dotenv().ok();
 
-    println!("Starting ingestion from: {}", portfolio_path);
-    let (code_chunks, readme_chunks) = run_ingestion(portfolio_path);
+    // Configuration (could be extracted to config.rs)
+    let db_path = std::env::var("DB_PATH").unwrap_or_else(|_| "./data/portfolio.lance".into());
+    let model = std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.5-flash".into());
+    let host = std::env::var("HOST").unwrap_or_else(|_| "127.0.0.1".into());
+    let port: u16 = std::env::var("PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(3000);
 
-    println!("\n📊 Ingestion Results:");
-    println!("  - Code chunks extracted: {}", code_chunks.len());
-    println!("  - README files found: {}", readme_chunks.len());
+    tracing::info!(db_path, model, "Initializing application");
 
-    // Show some sample output
-    if !code_chunks.is_empty() {
-        println!("\n📝 Sample Code Chunks (first 3):");
-        for (i, chunk) in code_chunks.iter().take(3).enumerate() {
-            println!(
-                "  {}. {} in {} ({}:{})",
-                i + 1,
-                chunk.identifier,
-                chunk.project_name.as_deref().unwrap_or("unknown"),
-                chunk.language,
-                chunk.start_line
-            );
-        }
-    }
+    // Build application state
+    let state = api::AppState::from_config(&db_path, &model).await?;
 
-    if !readme_chunks.is_empty() {
-        println!("\n📚 README Files Found:");
-        for readme in &readme_chunks {
-            println!(
-                "  - {} ({} chars)",
-                readme.project_name,
-                readme.content.len()
-            );
-        }
-    }
+    // Build router
+    let app = api::router(state);
 
-    println!("\n✅ Ingestion complete!");
+    // Start server
+    let addr = format!("{}:{}", host, port);
+    tracing::info!("Starting server on http://{}", addr);
+
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    axum::serve(listener, app).await?;
+
+    Ok(())
 }

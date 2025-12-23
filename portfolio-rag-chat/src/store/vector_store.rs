@@ -1,4 +1,5 @@
 use arrow_array::{Array, RecordBatch, RecordBatchIterator, StringArray, UInt64Array};
+use futures::TryStreamExt;
 use lancedb::{
     Connection, Table, connect,
     query::{ExecutableQuery, QueryBase},
@@ -120,6 +121,45 @@ impl VectorStore {
         let code = self.search_code(query_embedding, code_limit).await?;
         let readme = self.search_readme(query_embedding, readme_limit).await?;
         Ok((code, readme))
+    }
+
+    pub async fn list_projects(&self) -> Result<Vec<String>, StoreError> {
+        let table = match self.conn.open_table(CODE_TABLE).execute().await {
+            Ok(t) => t,
+            Err(_) => return Ok(Vec::new()), // No data yet
+        };
+
+        // Query all project names
+        let batches: Vec<RecordBatch> = table
+            .query()
+            .select(lancedb::query::Select::columns(&["project_name"]))
+            .execute()
+            .await?
+            .try_collect()
+            .await?;
+
+        // Extract unique non-null project names
+        let mut projects: Vec<String> = batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column_by_name("project_name")
+                    .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                    .map(|arr| {
+                        (0..arr.len())
+                            .filter(|&i| !arr.is_null(i))
+                            .map(|i| arr.value(i).to_string())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            })
+            .collect();
+
+        // Deduplicate and sort
+        projects.sort();
+        projects.dedup();
+
+        Ok(projects)
     }
 
     async fn upsert_batch(&self, table_name: &str, batch: RecordBatch) -> Result<(), StoreError> {

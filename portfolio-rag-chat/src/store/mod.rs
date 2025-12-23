@@ -1,6 +1,4 @@
-#[allow(dead_code)]
 pub mod embedder;
-#[allow(dead_code)]
 pub mod vector_store;
 
 pub use embedder::Embedder;
