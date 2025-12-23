@@ -1,0 +1,28 @@
+<div class="message user">
+    <div class="message-content">
+        <strong>You:</strong>
+        <p>{{ query }}</p>
+    </div>
+</div>
+<div class="message assistant">
+    <div class="message-content">
+        <strong>Assistant:</strong>
+        <div class="answer">{{ answer }}</div>
+        {% if !sources.is_empty() %}
+        <details class="sources">
+            <summary>📚 Sources ({{ sources.len() }})</summary>
+            <ul>
+            {% for source in sources %}
+                <li>
+                    <code>{{ source.file }}</code>
+                    {% if let Some(project) = source.project %}
+                    <span class="project-tag">{{ project }}</span>
+                    {% endif %}
+                    <span class="line-info">L{{ source.line }}</span>
+                </li>
+            {% endfor %}
+            </ul>
+        </details>
+        {% endif %}
+    </div>
+</div>
