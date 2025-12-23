@@ -20,7 +20,7 @@ async fn main() -> anyhow::Result<()> {
     // Load environment variables
     dotenvy::dotenv().ok();
 
-    // Configuration (could be extracted to config.rs)
+    // Configuration
     let db_path = std::env::var("DB_PATH").unwrap_or_else(|_| "./data/portfolio.lance".into());
     let model = std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.5-flash".into());
     let host = std::env::var("HOST").unwrap_or_else(|_| "127.0.0.1".into());

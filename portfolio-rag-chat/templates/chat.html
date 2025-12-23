@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+
+{% block title %}Portfolio RAG Chat{% endblock %}
+
+{% block content %}
+<header>
+    <h1>📁 Portfolio RAG Chat</h1>
+    <p class="subtitle">Ask questions about my projects</p>
+</header>
+
+<main>
+    <div id="chat-container">
+        <div id="messages">
+            <div class="message assistant">
+                <div class="message-content">
+                    <strong>Assistant:</strong>
+                    <p>Hello! I can answer questions about the portfolio projects. Try asking about specific projects, technologies used, or how things work!</p>
+                </div>
+            </div>
+        </div>
+
+        <form id="chat-form" 
+              hx-post="/api/chat" 
+              hx-target="#messages" 
+              hx-swap="beforeend"
+              hx-on::after-request="this.reset(); document.getElementById('messages').scrollTop = document.getElementById('messages').scrollHeight;">
+            <div class="input-group">
+                <input type="text" 
+                       name="query" 
+                       placeholder="Ask about my projects..." 
+                       autocomplete="off"
+                       required>
+                <button type="submit">
+                    <span class="send-icon">➤</span>
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <aside id="info-panel">
+        <h3>📂 Indexed Projects</h3>
+        <div id="projects-list" hx-get="/api/projects-list" hx-trigger="load">
+            <p class="loading">Loading projects...</p>
+        </div>
+        
+        <h3>� Admin</h3>
+        <details>
+            <summary>Ingest Repository</summary>
+            <form hx-post="/api/ingest" 
+                  hx-target="#ingest-result" 
+                  hx-swap="innerHTML"
+                  class="ingest-form">
+                <input type="text" 
+                       name="repo_path" 
+                       placeholder="/path/to/portfolio" 
+                       required>
+                <button type="submit">Ingest</button>
+            </form>
+            <div id="ingest-result"></div>
+        </details>
+        
+        <h3>�💡 Example Questions</h3>
+        <ul class="examples">
+            <li><button class="example-btn" onclick="askQuestion('What projects are in this portfolio?')">What projects are in this portfolio?</button></li>
+            <li><button class="example-btn" onclick="askQuestion('What technologies does the Catan project use?')">What technologies does Catan use?</button></li>
+            <li><button class="example-btn" onclick="askQuestion('How does the sentiment analysis model work?')">How does sentiment analysis work?</button></li>
+            <li><button class="example-btn" onclick="askQuestion('Explain the 7 Wonders AI implementation')">Explain the 7 Wonders AI</button></li>
+        </ul>
+    </aside>
+</main>
+
+<script>
+function askQuestion(question) {
+    const input = document.querySelector('input[name="query"]');
+    input.value = question;
+    document.getElementById('chat-form').requestSubmit();
+}
+</script>
+{% endblock %}
