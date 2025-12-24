@@ -6,6 +6,8 @@
 
 It is both a place to showcase my other skills aside from what I demonstrated in work, and for me to develop new skills via new projects.
 
+As expansion to my latest venture into RAG and Vector databases, I'm ideating a **code-topology-construction** for any generic repository code. The topology constructor will recursively cluster functions into emergent architectural understanding, somewhat like RAPTOR for code repositories.
+
 Projects are divided into 2025+ and 2023-24, which correlates to AI-assisted (2025+) vs 100% hand-write (2023-24)
 
 ## 2025 onwards (AI-assisted projects)
