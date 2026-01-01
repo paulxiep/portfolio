@@ -21,7 +21,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/", get(web::index))
         .route("/api/chat", post(web::chat_html))
         .route("/api/projects-list", get(web::projects_list_html))
-        .route("/api/ingest", post(web::ingest_html))
         // JSON API routes
         .route("/chat", post(handlers::chat))
         .route("/ingest", post(handlers::ingest))

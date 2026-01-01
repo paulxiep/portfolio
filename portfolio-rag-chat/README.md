@@ -6,7 +6,12 @@ This project was (with planned Shuttle deployment removed) completed within 1 da
 
 **An alternative deployment to Shuttle will be figured out ASAP.**
 
-**There'll be updates to improve, and simplify set up and access,** but the core engine are now functional.
+**There'll be updates to improve ingestion** but the core engine are now functional.
+
+## Log
+
+- <2025-12-23>: Core engine functional.
+- <2026-01-01>: Docker deployment added. To use, run `docker-compose up`. To clean, run `sh clean_docker.sh`.
 
 ## Purpose
 

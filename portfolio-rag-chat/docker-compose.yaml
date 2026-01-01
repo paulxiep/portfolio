@@ -1,0 +1,21 @@
+services:
+  portfolio-rag-chat:
+    build:
+      context: ..  # Build from parent directory to access all portfolio projects
+      dockerfile: ./portfolio-rag-chat/dockerfile/Dockerfile
+      args:
+        # Pass build-time API key if needed for ingestion
+        - GEMINI_API_KEY=${GEMINI_API_KEY}
+    container_name: portfolio-rag-chat
+    ports:
+      - "3000:3000"
+    environment:
+      # Runtime environment variables
+      - RUST_LOG=info
+      - HOST=0.0.0.0
+      - PORT=3000
+    env_file:
+      - .env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/app/portfolio-rag-chat", "--health"]

@@ -10,7 +10,6 @@ use std::sync::Arc;
 use crate::api::dto::SourceInfo;
 use crate::api::state::AppState;
 use crate::engine::{context, generator, retriever};
-use crate::store::ingest_repository;
 
 /// Helper to render templates into axum responses
 fn render_template<T: Template>(template: &T) -> Response {
@@ -118,68 +117,4 @@ pub async fn projects_list_html(State(state): State<Arc<AppState>>) -> Response 
     let count = projects.len();
 
     render_template(&ProjectsListFragment { projects, count })
-}
-
-/// POST /api/ingest - Ingest form submission (returns HTML fragment)
-#[derive(serde::Deserialize)]
-pub struct IngestForm {
-    pub repo_path: String,
-}
-
-#[derive(Template)]
-#[template(path = "partials/ingest_result.html")]
-pub struct IngestResultFragment {
-    pub success: bool,
-    pub message: String,
-    pub code_chunks: usize,
-    pub readme_chunks: usize,
-}
-
-pub async fn ingest_html(
-    State(state): State<Arc<AppState>>,
-    Form(form): Form<IngestForm>,
-) -> Response {
-    let path = form.repo_path.trim();
-
-    if path.is_empty() {
-        return render_template(&IngestResultFragment {
-            success: false,
-            message: "Please enter a repository path".to_string(),
-            code_chunks: 0,
-            readme_chunks: 0,
-        });
-    }
-
-    if !std::path::Path::new(path).exists() {
-        return render_template(&IngestResultFragment {
-            success: false,
-            message: format!("Path does not exist: {}", path),
-            code_chunks: 0,
-            readme_chunks: 0,
-        });
-    }
-
-    // Run ingestion
-    let result = {
-        let mut embedder = state.embedder.lock().await;
-        match ingest_repository(path, &state.store, &mut embedder).await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::error!("Ingestion error: {}", e);
-                return render_template(&IngestResultFragment {
-                    success: false,
-                    message: format!("Ingestion failed: {}", e),
-                    code_chunks: 0,
-                    readme_chunks: 0,
-                });
-            }
-        }
-    };
-
-    render_template(&IngestResultFragment {
-        success: true,
-        message: "Repository indexed successfully!".to_string(),
-        code_chunks: result.code_chunks,
-        readme_chunks: result.readme_chunks,
-    })
 }

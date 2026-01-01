@@ -43,23 +43,7 @@
             <p class="loading">Loading projects...</p>
         </div>
         
-        <h3>� Admin</h3>
-        <details>
-            <summary>Ingest Repository</summary>
-            <form hx-post="/api/ingest" 
-                  hx-target="#ingest-result" 
-                  hx-swap="innerHTML"
-                  class="ingest-form">
-                <input type="text" 
-                       name="repo_path" 
-                       placeholder="/path/to/portfolio" 
-                       required>
-                <button type="submit">Ingest</button>
-            </form>
-            <div id="ingest-result"></div>
-        </details>
-        
-        <h3>�💡 Example Questions</h3>
+        <h3>💡 Example Questions</h3>
         <ul class="examples">
             <li><button class="example-btn" onclick="askQuestion('What projects are in this portfolio?')">What projects are in this portfolio?</button></li>
             <li><button class="example-btn" onclick="askQuestion('What technologies does the Catan project use?')">What technologies does Catan use?</button></li>

@@ -45,7 +45,7 @@ pub async fn chat(
     Ok(Json(ChatResponse { answer, sources }))
 }
 
-/// POST /ingest - Index a repository
+/// POST /ingest - Ingest a repository
 pub async fn ingest(
     State(state): State<Arc<AppState>>,
     Json(req): Json<IngestRequest>,
@@ -67,7 +67,7 @@ pub async fn ingest(
         code_chunks: result.code_chunks,
         readme_chunks: result.readme_chunks,
         message: format!(
-            "Indexed {} code chunks and {} README chunks",
+            "Successfully ingested {} code chunks and {} readme chunks",
             result.code_chunks, result.readme_chunks
         ),
     }))

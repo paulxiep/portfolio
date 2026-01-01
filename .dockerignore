@@ -1,0 +1,76 @@
+# Rust build artifacts
+**/target/
+**/*.rs.bk
+**/*.pdb
+
+# Node
+**/node_modules/
+**/.npm/
+
+# Python
+**/__pycache__/
+**/*.pyc
+**/.venv/
+**/venv/
+
+# Git
+**/.git/
+**/.gitignore
+**/.github/
+
+# IDE
+**/.vscode/
+**/.idea/
+**/*.swp
+**/*.swo
+
+# Environment and secrets
+**/.env
+**/.env.*
+
+# Caches
+**/.cache/
+**/.fastembed_cache/
+
+# Data directories
+**/data/
+**/raw_data/
+**/data_scrape/
+**/weights/
+**/results/
+**/dags/
+
+# Media and resources
+**/*.jpg
+**/*.jpeg
+**/*.png
+**/*.gif
+**/images/
+**/preview_images/
+**/resources/
+
+# Certificates and PDFs
+**/certificates/
+**/*.pdf
+
+# Docker files
+**/Dockerfile
+**/docker-compose*.yml
+**/docker-compose*.yaml
+**/.dockerignore
+
+# OS files
+**/.DS_Store
+**/Thumbs.db
+
+# Logs and temp
+**/*.log
+**/tmp/
+**/temp/
+
+# Sample files
+**/env-sampl
+
+# Scripts (setup/demo scripts)
+**/*.she
+**/*.example

@@ -8,6 +8,14 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Warmup mode - just download model and exit
+    if std::env::args().any(|a| a == "--warmup") {
+        println!("Warming up embedding model...");
+        let _ = crate::store::Embedder::new();
+        println!("Warmup complete");
+        return Ok(());
+    }
+
     // Initialize logging
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer())
