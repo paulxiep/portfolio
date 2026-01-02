@@ -6,9 +6,9 @@
 
 It is both a place to showcase my other skills aside from what I demonstrated in work, and for me to develop new skills via new projects.
 
-As expansion to my latest venture into RAG and Vector databases, I'm ideating a **code-topology-construction** for any generic repository code. The topology constructor will recursively cluster functions into emergent architectural understanding, somewhat like RAPTOR for code repositories.
-
 Projects are divided into 2025+ and 2023-24, which correlates to AI-assisted (2025+) vs 100% hand-write (2023-24)
+
+More project info can be found on the projects' own readme.
 
 ## 2025 onwards (AI-assisted projects)
 
@@ -28,4 +28,7 @@ Projects are divided into 2025+ and 2023-24, which correlates to AI-assisted (20
 Sentiment Analysis, 7 Wonders, Catan, Simple ML Deployments, and Chat CSV are multi-day projects spanning a few days or weeks, 
 the rest are 1-day projects.
 
-More project info can be found on the projects' own readme.
+## 2 planned projects, in order
+
+1. [quant-trading-gym](quant-trading-gym/project_plan_vertical.md): a quantitative trading simulation Rust with RL training in Python, modular quant strategies, risk management, microservices architecture, and chatbot interface to execute trading API.
+2. **code-topology-construction**: for any generic repository code (as expansion to my latest venture into RAG and Vector databases). The topology constructor will recursively cluster functions into emergent architectural understanding, somewhat like RAPTOR for code repositories. This is more research-focused and will require me to study related technologies and researches first.
