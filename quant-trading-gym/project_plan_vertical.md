@@ -14,6 +14,25 @@ Instead of completing all types → all matching → all agents → all viz, we 
 
 ---
 
+## Guiding Mantra
+
+> **"Declarative, Modular, SoC"**
+
+Every implementation decision should be evaluated against these three principles:
+
+| Principle | Meaning | Example |
+|-----------|---------|----------|
+| **Declarative** | Describe *what*, not *how*. Config over code. Data-driven behavior. | Strategies declare indicators they need; the system provides them. Agent behavior defined by config/trait impl, not hardcoded logic. |
+| **Modular** | Components are self-contained, swappable, and independently testable. | Each crate compiles alone. Strategies are plugins. Swap `NoiseTrader` for `RLAgent` without touching simulation. |
+| **SoC** (Separation of Concerns) | Each module has ONE job. No god objects. Clear boundaries. | `types/` = data. `sim-core/` = matching. `agents/` = behavior. `simulation/` = orchestration. No crate does two things. |
+
+**Before writing code, ask:**
+1. Am I describing behavior or implementing mechanics? (Declarative)
+2. Can this be swapped out without ripple effects? (Modular)
+3. Does this component have exactly one responsibility? (SoC)
+
+---
+
 ## V0: The Steel Thread (4 Weeks)
 
 **Goal:** A single-threaded simulation with TUI visualization showing agents trading.

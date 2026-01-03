@@ -2,6 +2,8 @@
 members = [
     "crates/types",
     "crates/sim-core",
+    "crates/agents",
+    "crates/simulation",
 ]
 resolver = "2"
 
@@ -21,3 +23,17 @@ rand = "0.9"
 # Internal crates
 types = { path = "crates/types" }
 sim-core = { path = "crates/sim-core" }
+agents = { path = "crates/agents" }
+simulation = { path = "crates/simulation" }
+
+[package]
+name = "quant-trading-gym"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+types.workspace = true
+sim-core.workspace = true
+agents.workspace = true
+simulation.workspace = true

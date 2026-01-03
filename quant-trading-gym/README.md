@@ -29,9 +29,28 @@ The project is built vertically in iterative stages, ensuring a runnable simulat
 - **Modular Design:** Strategies, observations, and rewards are implemented as plugins.
 - **Microservices:** Async services for non-critical paths, bridged to the synchronous simulation core.
 
+## Guiding Mantra
+
+> **"Declarative, Modular, SoC"**
+
+| Principle | Meaning |
+|-----------|----------|
+| **Declarative** | Describe *what*, not *how*. Config over code. Data-driven behavior. |
+| **Modular** | Components are self-contained, swappable, and independently testable. |
+| **SoC** | Separation of Concerns — each module has ONE job. No god objects. |
+
 ## Architecture
 
 The project follows a strict separation of concerns where crates communicate through traits. It is designed to fit within a 2GB memory budget while maintaining realistic latency and order execution.
+
+### Crate Responsibilities (SoC)
+
+| Crate | Single Responsibility |
+|-------|----------------------|
+| `types` | Shared data structures (Order, Trade, Price) — no logic |
+| `sim-core` | Order book and matching engine — market mechanics only |
+| `agents` | Agent trait and market data — behavior interface only |
+| `simulation` | Tick loop orchestration — coordination only |
 
 ## Tech Stack
 

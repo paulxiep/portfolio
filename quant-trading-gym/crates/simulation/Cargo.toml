@@ -1,0 +1,11 @@
+[package]
+name = "simulation"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Simulation runner for the quant-trading-gym"
+
+[dependencies]
+types.workspace = true
+sim-core.workspace = true
+agents.workspace = true

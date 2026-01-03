@@ -20,10 +20,21 @@ A quantitative trading simulation built in Rust with RL training capabilities, m
 | Python | 10% | Training scripts, experiments (via PyO3) |
 | TypeScript | 5% | Frontend (Phase 22 G) |
 
+## Guiding Mantra
+
+> **"Declarative, Modular, SoC"**
+
+Every implementation decision should be evaluated against these three principles. Before writing code, ask:
+1. Am I describing behavior or implementing mechanics? (Declarative)
+2. Can this be swapped out without ripple effects? (Modular)
+3. Does this component have exactly one responsibility? (SoC)
+
 ## Design Principles
 
 | Principle | Implementation |
 |-----------|----------------|
+| **Declarative** | Config-driven behavior, strategies declare needs, data-driven logic |
+| **Modular** | Crates compile independently, strategies are plugins, components swappable |
 | Separation of Concerns | Each crate has single responsibility |
 | Modularity | Strategies, observations, rewards are plugins |
 | Trait Boundaries | Crates communicate through traits, not concrete types |

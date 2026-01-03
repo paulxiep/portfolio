@@ -3,6 +3,14 @@
 version = 4
 
 [[package]]
+name = "agents"
+version = "0.1.0"
+dependencies = [
+ "sim-core",
+ "types",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -75,6 +83,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9695f8df41bb4f3d222c95a67532365f569318332d03d5f3f67f37b20e6ebdf0"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "quant-trading-gym"
+version = "0.1.0"
+dependencies = [
+ "agents",
+ "sim-core",
+ "simulation",
+ "types",
 ]
 
 [[package]]
@@ -185,6 +203,15 @@ version = "0.1.0"
 dependencies = [
  "rand",
  "serde",
+ "types",
+]
+
+[[package]]
+name = "simulation"
+version = "0.1.0"
+dependencies = [
+ "agents",
+ "sim-core",
  "types",
 ]
 
