@@ -10,3 +10,4 @@ types.workspace = true
 sim-core.workspace = true
 agents.workspace = true
 quant.workspace = true
+rand.workspace = true

@@ -50,3 +50,4 @@ tui.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 crossbeam-channel.workspace = true
+rand.workspace = true

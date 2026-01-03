@@ -4,6 +4,7 @@ use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Rect},
     style::{Color, Modifier, Style},
+    text::Span,
     widgets::{Block, Borders, Cell, Row, Table, Widget},
 };
 
@@ -15,6 +16,8 @@ use super::update::AgentInfo;
 pub struct AgentTable {
     /// Agent information to display (sorted).
     agents: Vec<AgentInfo>,
+    /// Scroll offset for the agent list.
+    scroll_offset: usize,
 }
 
 impl AgentTable {
@@ -36,7 +39,16 @@ impl AgentTable {
                 }
             }
         });
-        Self { agents: sorted }
+        Self {
+            agents: sorted,
+            scroll_offset: 0,
+        }
+    }
+
+    /// Set scroll offset.
+    pub fn scroll_offset(mut self, offset: usize) -> Self {
+        self.scroll_offset = offset;
+        self
     }
 }
 
@@ -49,33 +61,42 @@ impl Widget for AgentTable {
             .style(Style::default().fg(Color::Yellow))
             .height(1);
 
-        let rows = self.agents.iter().map(|agent| {
-            // Color position based on direction
-            let position_style = if agent.position > 0 {
-                Style::default().fg(Color::Green)
-            } else if agent.position < 0 {
-                Style::default().fg(Color::Red)
-            } else {
-                Style::default().fg(Color::Gray)
-            };
+        // Calculate visible rows (area height - border - header)
+        let visible_rows = (area.height.saturating_sub(3)) as usize;
+        let scroll_offset = self.scroll_offset.min(self.agents.len().saturating_sub(1));
 
-            // Color P&L based on profit/loss
-            let pnl_value = agent.realized_pnl.to_float();
-            let pnl_style = if pnl_value > 0.0 {
-                Style::default().fg(Color::Green)
-            } else if pnl_value < 0.0 {
-                Style::default().fg(Color::Red)
-            } else {
-                Style::default().fg(Color::Gray)
-            };
+        let rows = self
+            .agents
+            .iter()
+            .skip(scroll_offset)
+            .take(visible_rows)
+            .map(|agent| {
+                // Color position based on direction
+                let position_style = if agent.position > 0 {
+                    Style::default().fg(Color::Green)
+                } else if agent.position < 0 {
+                    Style::default().fg(Color::Red)
+                } else {
+                    Style::default().fg(Color::Gray)
+                };
 
-            Row::new(vec![
-                Cell::from(agent.name.clone()),
-                Cell::from(format!("{:>8}", agent.position)).style(position_style),
-                Cell::from(format!("${:>10.2}", agent.cash.to_float())),
-                Cell::from(format!("${:>10.2}", pnl_value)).style(pnl_style),
-            ])
-        });
+                // Color P&L based on profit/loss
+                let pnl_value = agent.realized_pnl.to_float();
+                let pnl_style = if pnl_value > 0.0 {
+                    Style::default().fg(Color::Green)
+                } else if pnl_value < 0.0 {
+                    Style::default().fg(Color::Red)
+                } else {
+                    Style::default().fg(Color::Gray)
+                };
+
+                Row::new(vec![
+                    Cell::from(agent.name.clone()),
+                    Cell::from(format!("{:>8}", agent.position)).style(position_style),
+                    Cell::from(format!("${:>10.2}", agent.cash.to_float())),
+                    Cell::from(format!("${:>10.2}", pnl_value)).style(pnl_style),
+                ])
+            });
 
         let table = Table::new(
             rows,
@@ -89,13 +110,14 @@ impl Widget for AgentTable {
         .header(header)
         .block(
             Block::default()
-                .title("Agent P&L")
+                .title(Span::styled(
+                    " Agent P&L ",
+                    Style::default().fg(Color::White),
+                ))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::White)),
-        )
-        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        );
 
-        // Render the table using the Widget trait
         Widget::render(table, area, buf);
     }
 }

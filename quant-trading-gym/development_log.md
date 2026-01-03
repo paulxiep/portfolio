@@ -1,5 +1,112 @@
 # Development Log
 
+## 2026-01-04: V1.3 - Phase 7-8 Strategies, Tier Configuration & TUI Scrolling
+
+### Completed
+
+#### Phase 7 Strategies (4 new indicator-based agents)
+- ✅ `MomentumTrader` (`momentum.rs`): RSI-based strategy
+  - Buys when RSI < 30 (oversold), sells when RSI > 70 (overbought)
+  - Configurable thresholds and position limits
+- ✅ `TrendFollower` (`trend_follower.rs`): SMA crossover strategy
+  - Golden cross (fast > slow): bullish signal → buy
+  - Death cross (fast < slow): bearish signal → sell
+  - Uses SMA(10) and SMA(50) by default
+- ✅ `MacdCrossover` (`macd_crossover.rs`): MACD/Signal line crossover
+  - Buys when MACD crosses above signal line
+  - Sells when MACD crosses below signal line
+  - Tracks previous state to detect crossovers
+- ✅ `BollingerReversion` (`bollinger_reversion.rs`): Mean reversion at bands
+  - Buys when price touches lower band (oversold)
+  - Sells when price touches upper band (overbought)
+  - Uses Bollinger(20, 2.0) by default
+
+#### Phase 8 Strategy (partial)
+- ✅ `VwapExecutor` (`vwap_executor.rs`): VWAP-targeting execution algorithm
+  - Executes target quantity over configurable time horizon
+  - Slices orders into intervals to minimize market impact
+  - Uses limit orders near mid price to avoid crossing spread
+
+#### Tier-Based Configuration System
+- ✅ `Tier1AgentType` enum: `NoiseTrader`, `MarketMaker`, `Momentum`, `TrendFollower`, `Macd`, `Bollinger`
+- ✅ Per-type minimums: `num_noise_traders`, `num_market_makers`, `num_momentum_traders`, etc.
+- ✅ Tier minimum: `min_tier1_agents` ensures minimum total agent count
+- ✅ Random fill: If specified agents < tier minimum, randomly selects from `SPAWNABLE` types
+- ✅ Shared quant config: `quant_initial_cash`, `quant_order_size`, `quant_max_position`
+- ✅ Agent numbering fix: Dynamic width based on agent count (`digit_width()` function)
+
+#### TUI Scrollable Panels with Mouse Support
+- ✅ **Visual Scrollbars**: `ratatui::Scrollbar` widget on both Risk and Agent P&L panels
+  - Scrollbar renders on right edge (▲, █, ▼ track/thumb)
+  - Scrollbar position reflects current scroll offset vs total items
+- ✅ **Mouse Wheel Scrolling**: Hover over a panel and scroll with mouse wheel
+  - Enabled via `crossterm::EnableMouseCapture`
+  - Area tracking (`risk_area`, `agent_area`) to detect which panel mouse is over
+- ✅ **Scrollbar Click/Drag**: Click on track to jump, drag thumb for continuous scrolling
+- ✅ **Footer**: `q Quit │ 🖱 Scroll Mouse wheel or drag scrollbar`
+
+### Analysis: Momentum vs NoiseTrader Metrics
+
+**Observation**: Momentum traders show better returns but lower equity than NoiseTraders.
+
+**Explanation**: This is **intentional by design** - the two panels measure different things:
+
+| Panel | Metric | What It Measures |
+|-------|--------|------------------|
+| Risk | `total_return` | Percentage gain from initial equity |
+| P&L | `equity` | Absolute wealth (cash + position × price) |
+
+NoiseTraders accumulate large positions through frequent random trading. Even with poor percentage returns, their absolute equity can be higher because:
+1. They hold more shares
+2. Price appreciation on large positions compounds
+3. `equity = cash + position × mark_price`
+
+**Not a bug** - sorting by return (performance) vs equity (wealth) are both valid views.
+
+### Un-Implemented Phase 8 Strategies
+
+| Strategy | Blocker | When to Add |
+|----------|---------|-------------|
+| **Pairs Trading** | Requires two correlated symbols | V2+ (multi-symbol support) |
+| **Factor Long-Short** | Requires factor infrastructure | V2+ (factor engine) |
+| **News Reactive** | Requires news event system | V3+ (per project plan) |
+
+### Files Created
+| File | Purpose |
+|------|---------|
+| `crates/agents/src/strategies/momentum.rs` | RSI-based momentum trader |
+| `crates/agents/src/strategies/trend_follower.rs` | SMA crossover trend following |
+| `crates/agents/src/strategies/macd_crossover.rs` | MACD/signal line crossover |
+| `crates/agents/src/strategies/bollinger_reversion.rs` | Bollinger Bands mean reversion |
+| `crates/agents/src/strategies/vwap_executor.rs` | VWAP execution algorithm |
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `crates/agents/src/strategies/mod.rs` | Exported 5 new strategy modules |
+| `src/config.rs` | Tier1AgentType enum, per-type minimums, random fill logic |
+| `src/main.rs` | spawn_agent(), two-phase spawn, dynamic agent numbering |
+| `crates/tui/src/app.rs` | Mouse capture, `handle_mouse_event()`, scrollbar rendering |
+| `crates/tui/src/widgets/risk_panel.rs` | Added scroll_offset, dynamic visible rows |
+| `crates/tui/src/widgets/agent_table.rs` | Converted to Widget with scroll_offset, scrollbar |
+| `Cargo.toml` | Added `rand.workspace = true` |
+
+### Rust Concepts Demonstrated
+- **Enum dispatch**: `Tier1AgentType` with `random()` and `SPAWNABLE` const array
+- **Mouse event handling**: `crossterm::event::MouseEvent` with button/position tracking
+- **Area-based hit testing**: Storing `Rect` for each panel to detect mouse position
+- **ratatui Scrollbar widget**: `Scrollbar::new(ScrollbarOrientation::VerticalRight)` with `ScrollbarState`
+- **Saturating arithmetic**: `saturating_sub()` for safe bounds checking
+
+### Exit Criteria
+```
+cargo fmt --check     # ✅ No formatting issues
+cargo clippy          # ✅ No warnings
+cargo test --workspace # ✅ 132 tests pass
+```
+
+---
+
 ## 2026-01-03: V1.2 - Risk Metrics & Per-Agent Tracking
 
 ### Completed

@@ -18,13 +18,26 @@ mod config;
 use std::thread;
 use std::time::Duration;
 
-use agents::{MarketMaker, MarketMakerConfig, NoiseTrader, NoiseTraderConfig};
+use agents::{
+    BollingerReversion, BollingerReversionConfig, MacdCrossover, MacdCrossoverConfig, MarketMaker,
+    MarketMakerConfig, MomentumConfig, MomentumTrader, NoiseTrader, NoiseTraderConfig,
+    TrendFollower, TrendFollowerConfig, VwapExecutor, VwapExecutorConfig,
+};
 use crossbeam_channel::{Sender, bounded};
 use simulation::{Simulation, SimulationConfig};
 use tui::{AgentInfo, RiskInfo, SimUpdate, TuiApp};
 use types::{AgentId, Cash};
 
-pub use config::SimConfig;
+pub use config::{SimConfig, Tier1AgentType};
+
+/// Calculate the number of digits needed to display a number.
+fn digit_width(n: usize) -> usize {
+    if n == 0 {
+        1
+    } else {
+        (n as f64).log10().floor() as usize + 1
+    }
+}
 
 /// Build a SimUpdate from current simulation state.
 fn build_update(sim: &Simulation, price_history: &[f64], finished: bool) -> SimUpdate {
@@ -35,19 +48,23 @@ fn build_update(sim: &Simulation, price_history: &[f64], finished: bool) -> SimU
     // Get mark price for equity calculation
     let mark_price = book.last_price().map(|p| p.to_float()).unwrap_or(100.0);
 
+    // Calculate digit width for agent numbering
+    let agent_summaries = sim.agent_summaries();
+    let num_agents = agent_summaries.len();
+    let width = digit_width(num_agents);
+
     // Build agent info from simulation
-    let agents: Vec<AgentInfo> = sim
-        .agent_summaries()
-        .into_iter()
+    let agents: Vec<AgentInfo> = agent_summaries
+        .iter()
         .enumerate()
         .map(|(i, (name, position, cash))| {
             let is_mm = name.contains("Market");
-            let equity = cash.to_float() + (position as f64 * mark_price);
+            let equity = cash.to_float() + (*position as f64 * mark_price);
             AgentInfo {
-                name: format!("{:02}-{}", i + 1, name),
-                position,
+                name: format!("{:0width$}-{}", i + 1, name, width = width),
+                position: *position,
                 realized_pnl: Cash::ZERO, // TODO: track realized P&L
-                cash,
+                cash: *cash,
                 is_market_maker: is_mm,
                 equity,
             }
@@ -56,15 +73,14 @@ fn build_update(sim: &Simulation, price_history: &[f64], finished: bool) -> SimU
 
     // Build risk metrics from simulation
     let risk_metrics_map = sim.agent_risk_metrics();
-    let risk_metrics: Vec<RiskInfo> = sim
-        .agent_summaries()
-        .into_iter()
+    let risk_metrics: Vec<RiskInfo> = agent_summaries
+        .iter()
         .enumerate()
         .filter_map(|(i, (name, _, _))| {
             let agent_id = AgentId((i + 1) as u64);
             let is_mm = name.contains("Market");
             risk_metrics_map.get(&agent_id).map(|metrics| RiskInfo {
-                name: format!("{:02}-{}", i + 1, name),
+                name: format!("{:0width$}-{}", i + 1, name, width = width),
                 sharpe: metrics.sharpe,
                 max_drawdown: metrics.max_drawdown,
                 total_return: metrics.total_return,
@@ -90,6 +106,85 @@ fn build_update(sim: &Simulation, price_history: &[f64], finished: bool) -> SimU
     }
 }
 
+/// Spawn a single agent of the given type with the next available ID.
+fn spawn_agent(
+    sim: &mut Simulation,
+    agent_type: Tier1AgentType,
+    next_id: &mut u64,
+    config: &SimConfig,
+) {
+    let id = AgentId(*next_id);
+    *next_id += 1;
+
+    match agent_type {
+        Tier1AgentType::NoiseTrader => {
+            let nt_config = NoiseTraderConfig {
+                symbol: config.symbol.clone(),
+                order_probability: config.nt_order_probability,
+                initial_price: config.initial_price,
+                price_deviation: config.nt_price_deviation,
+                min_quantity: config.nt_min_quantity,
+                max_quantity: config.nt_max_quantity,
+                initial_cash: config.nt_initial_cash,
+            };
+            sim.add_agent(Box::new(NoiseTrader::new(id, nt_config)));
+        }
+        Tier1AgentType::MomentumTrader => {
+            let momentum_config = MomentumConfig {
+                symbol: config.symbol.clone(),
+                initial_price: config.initial_price,
+                initial_cash: config.quant_initial_cash,
+                order_size: config.quant_order_size,
+                max_position: config.quant_max_position,
+                ..Default::default()
+            };
+            sim.add_agent(Box::new(MomentumTrader::new(id, momentum_config)));
+        }
+        Tier1AgentType::TrendFollower => {
+            let trend_config = TrendFollowerConfig {
+                symbol: config.symbol.clone(),
+                initial_price: config.initial_price,
+                initial_cash: config.quant_initial_cash,
+                order_size: config.quant_order_size,
+                max_position: config.quant_max_position,
+                ..Default::default()
+            };
+            sim.add_agent(Box::new(TrendFollower::new(id, trend_config)));
+        }
+        Tier1AgentType::MacdTrader => {
+            let macd_config = MacdCrossoverConfig {
+                symbol: config.symbol.clone(),
+                initial_price: config.initial_price,
+                initial_cash: config.quant_initial_cash,
+                order_size: config.quant_order_size,
+                max_position: config.quant_max_position,
+                ..Default::default()
+            };
+            sim.add_agent(Box::new(MacdCrossover::new(id, macd_config)));
+        }
+        Tier1AgentType::BollingerTrader => {
+            let bollinger_config = BollingerReversionConfig {
+                symbol: config.symbol.clone(),
+                initial_price: config.initial_price,
+                initial_cash: config.quant_initial_cash,
+                order_size: config.quant_order_size,
+                max_position: config.quant_max_position,
+                ..Default::default()
+            };
+            sim.add_agent(Box::new(BollingerReversion::new(id, bollinger_config)));
+        }
+        Tier1AgentType::VwapExecutor => {
+            let vwap_config = VwapExecutorConfig {
+                symbol: config.symbol.clone(),
+                initial_price: config.initial_price,
+                initial_cash: config.quant_initial_cash,
+                ..Default::default()
+            };
+            sim.add_agent(Box::new(VwapExecutor::new(id, vwap_config)));
+        }
+    }
+}
+
 /// Run the simulation, sending updates to the TUI via channel.
 fn run_simulation(tx: Sender<SimUpdate>, config: SimConfig) {
     // Create simulation from central config
@@ -98,9 +193,14 @@ fn run_simulation(tx: Sender<SimUpdate>, config: SimConfig) {
         .with_verbose(config.verbose);
 
     let mut sim = Simulation::new(sim_config);
+    let mut next_id: u64 = 1;
 
-    // Add market makers (provide liquidity)
-    for i in 0..config.num_market_makers {
+    // ─────────────────────────────────────────────────────────────────────────
+    // Phase 1: Spawn specified minimum agents for each type
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // Market Makers (infrastructure, always spawn first)
+    for _ in 0..config.num_market_makers {
         let mm_config = MarketMakerConfig {
             symbol: config.symbol.clone(),
             initial_price: config.initial_price,
@@ -111,26 +211,71 @@ fn run_simulation(tx: Sender<SimUpdate>, config: SimConfig) {
             inventory_skew: config.mm_inventory_skew,
             initial_cash: config.mm_initial_cash,
         };
-        let mm = MarketMaker::new(AgentId(i as u64 + 1), mm_config);
-        sim.add_agent(Box::new(mm));
+        sim.add_agent(Box::new(MarketMaker::new(AgentId(next_id), mm_config)));
+        next_id += 1;
     }
 
-    // Add noise traders (generate activity)
-    for i in 0..config.num_noise_traders {
-        let nt_config = NoiseTraderConfig {
-            symbol: config.symbol.clone(),
-            order_probability: config.nt_order_probability,
-            initial_price: config.initial_price,
-            price_deviation: config.nt_price_deviation,
-            min_quantity: config.nt_min_quantity,
-            max_quantity: config.nt_max_quantity,
-            initial_cash: config.nt_initial_cash,
-        };
-        let nt = NoiseTrader::new(
-            AgentId((config.num_market_makers + i + 1) as u64),
-            nt_config,
+    // Noise Traders
+    for _ in 0..config.num_noise_traders {
+        spawn_agent(&mut sim, Tier1AgentType::NoiseTrader, &mut next_id, &config);
+    }
+
+    // Momentum Traders (RSI)
+    for _ in 0..config.num_momentum_traders {
+        spawn_agent(
+            &mut sim,
+            Tier1AgentType::MomentumTrader,
+            &mut next_id,
+            &config,
         );
-        sim.add_agent(Box::new(nt));
+    }
+
+    // Trend Followers (SMA crossover)
+    for _ in 0..config.num_trend_followers {
+        spawn_agent(
+            &mut sim,
+            Tier1AgentType::TrendFollower,
+            &mut next_id,
+            &config,
+        );
+    }
+
+    // MACD Traders
+    for _ in 0..config.num_macd_traders {
+        spawn_agent(&mut sim, Tier1AgentType::MacdTrader, &mut next_id, &config);
+    }
+
+    // Bollinger Traders
+    for _ in 0..config.num_bollinger_traders {
+        spawn_agent(
+            &mut sim,
+            Tier1AgentType::BollingerTrader,
+            &mut next_id,
+            &config,
+        );
+    }
+
+    // VWAP Executors
+    for _ in 0..config.num_vwap_executors {
+        spawn_agent(
+            &mut sim,
+            Tier1AgentType::VwapExecutor,
+            &mut next_id,
+            &config,
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Phase 2: Fill to Tier 1 minimum with random agents
+    // ─────────────────────────────────────────────────────────────────────────
+
+    let random_count = config.random_tier1_count();
+    if random_count > 0 {
+        let mut rng = rand::rng();
+        for _ in 0..random_count {
+            let agent_type = Tier1AgentType::random(&mut rng);
+            spawn_agent(&mut sim, agent_type, &mut next_id, &config);
+        }
     }
 
     // Price history for chart
@@ -194,35 +339,48 @@ fn main() {
     //     .nt_cash(25_000.0);
 
     // Print config summary
-    eprintln!("╔════════════════════════════════════════════════════════════════╗");
-    eprintln!("║  Quant Trading Gym - Simulation Config                         ║");
-    eprintln!("╠════════════════════════════════════════════════════════════════╣");
+    eprintln!("╔═══════════════════════════════════════════════════════════════════════╗");
+    eprintln!("║  Quant Trading Gym - Simulation Config                                ║");
+    eprintln!("╠═══════════════════════════════════════════════════════════════════════╣");
     eprintln!(
-        "║  Symbol: {:6}  │  Initial Price: ${:<8.2}               ║",
+        "║  Symbol: {:6}  │  Initial Price: ${:<8.2}                      ║",
         config.symbol,
         config.initial_price.to_float()
     );
     eprintln!(
-        "║  Ticks:  {:6}  │  Tick Delay: {}ms                         ║",
+        "║  Ticks:  {:6}  │  Tick Delay: {:3}ms                              ║",
         config.total_ticks, config.tick_delay_ms
     );
-    eprintln!("╠════════════════════════════════════════════════════════════════╣");
+    eprintln!("╠═══════════════════════════════════════════════════════════════════════╣");
+    eprintln!("║  Tier 1 Agents (specified minimums):                                  ║");
     eprintln!(
-        "║  Market Makers: {:2}  │  Cash: ${:>12.2} each              ║",
-        config.num_market_makers,
-        config.mm_initial_cash.to_float()
+        "║    Market Makers:   {:2}  │  Noise Traders:    {:2}                      ║",
+        config.num_market_makers, config.num_noise_traders
     );
     eprintln!(
-        "║  Noise Traders: {:2}  │  Cash: ${:>12.2} each              ║",
-        config.num_noise_traders,
-        config.nt_initial_cash.to_float()
+        "║    Momentum (RSI):  {:2}  │  Trend Followers:  {:2}                      ║",
+        config.num_momentum_traders, config.num_trend_followers
     );
     eprintln!(
-        "║  Total Agents:  {:2}  │  Total Cash: ${:>12.2}             ║",
-        config.total_agents(),
+        "║    MACD Crossover:  {:2}  │  Bollinger:        {:2}                      ║",
+        config.num_macd_traders, config.num_bollinger_traders
+    );
+    eprintln!(
+        "║    VWAP Executors:  {:2}  │                                              ║",
+        config.num_vwap_executors
+    );
+    eprintln!("╠═══════════════════════════════════════════════════════════════════════╣");
+    eprintln!(
+        "║  Tier 1 Minimum: {:2}  │  Random Fill: {:2}  │  Total: {:2}              ║",
+        config.min_tier1_agents,
+        config.random_tier1_count(),
+        config.total_agents()
+    );
+    eprintln!(
+        "║  Total Starting Cash: ${:>14.2}                              ║",
         config.total_starting_cash().to_float()
     );
-    eprintln!("╚════════════════════════════════════════════════════════════════╝");
+    eprintln!("╚═══════════════════════════════════════════════════════════════════════╝");
 
     // Create bounded channel (backpressure if TUI falls behind)
     let (tx, rx) = bounded::<SimUpdate>(100);

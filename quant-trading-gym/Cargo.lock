@@ -370,6 +370,7 @@ dependencies = [
  "agents",
  "crossbeam-channel",
  "crossterm",
+ "rand",
  "ratatui",
  "sim-core",
  "simulation",
@@ -586,6 +587,7 @@ version = "0.1.0"
 dependencies = [
  "agents",
  "quant",
+ "rand",
  "sim-core",
  "types",
 ]

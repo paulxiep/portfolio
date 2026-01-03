@@ -8,6 +8,7 @@ use agents::{Agent, AgentAction, MarketData};
 use quant::{
     AgentRiskSnapshot, AgentRiskTracker, IndicatorCache, IndicatorEngine, IndicatorSnapshot,
 };
+use rand::seq::SliceRandom;
 use sim_core::{MatchingEngine, OrderBook};
 use types::{AgentId, Candle, Order, OrderId, Price, Quantity, Tick, Timestamp, Trade};
 
@@ -353,11 +354,17 @@ impl Simulation {
         // Build market data snapshot
         let market_data = self.build_market_data();
 
-        // Collect all agent actions first (to avoid borrow issues)
-        let actions: Vec<(AgentId, AgentAction)> = self
-            .agents
-            .iter_mut()
-            .map(|agent| {
+        // Shuffle agent processing order to eliminate ID-based priority bias.
+        // Without this, lower-indexed agents would always get their orders
+        // processed first within each tick, creating unfair advantages.
+        let mut indices: Vec<usize> = (0..self.agents.len()).collect();
+        indices.shuffle(&mut rand::rng());
+
+        // Collect all agent actions in randomized order (to avoid borrow issues)
+        let actions: Vec<(AgentId, AgentAction)> = indices
+            .iter()
+            .map(|&i| {
+                let agent = &mut self.agents[i];
                 let action = agent.on_tick(&market_data);
                 (agent.id(), action)
             })

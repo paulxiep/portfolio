@@ -35,6 +35,8 @@ pub struct RiskPanel {
     pub aggregate_sharpe: Option<f64>,
     /// Aggregate max drawdown.
     pub aggregate_max_drawdown: f64,
+    /// Scroll offset for the agent list.
+    pub scroll_offset: usize,
 }
 
 impl RiskPanel {
@@ -44,6 +46,7 @@ impl RiskPanel {
             agents: Vec::new(),
             aggregate_sharpe: None,
             aggregate_max_drawdown: 0.0,
+            scroll_offset: 0,
         }
     }
 
@@ -62,6 +65,12 @@ impl RiskPanel {
     /// Set aggregate max drawdown.
     pub fn aggregate_max_drawdown(mut self, dd: f64) -> Self {
         self.aggregate_max_drawdown = dd;
+        self
+    }
+
+    /// Set scroll offset.
+    pub fn scroll_offset(mut self, offset: usize) -> Self {
+        self.scroll_offset = offset;
         self
     }
 }
@@ -123,6 +132,11 @@ fn sharpe_color(val: Option<f64>) -> Color {
 
 impl Widget for RiskPanel {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        // Calculate available lines for agents (area height - border - header lines)
+        // Border: 2 lines (top + bottom), Header: 5 lines (title, blank, agg metrics, blank, column headers)
+        let header_lines = 5;
+        let available_lines = area.height.saturating_sub(2 + header_lines as u16) as usize;
+
         // Header line with aggregate metrics
         let mut lines = vec![
             Line::from(vec![
@@ -151,7 +165,7 @@ impl Widget for RiskPanel {
             Line::from(""),
         ];
 
-        // Per-agent risk (show top agents by equity)
+        // Per-agent risk (scrollable)
         if !self.agents.is_empty() {
             // Header row
             lines.push(Line::from(vec![
@@ -181,8 +195,13 @@ impl Widget for RiskPanel {
                 ),
             ]));
 
-            // Show up to 10 agents (more space now)
-            for agent in self.agents.iter().take(10) {
+            // Calculate visible range with scroll offset
+            let total_agents = self.agents.len();
+            let scroll_offset = self.scroll_offset.min(total_agents.saturating_sub(1));
+            let visible_count = available_lines;
+
+            // Show agents from scroll_offset
+            for agent in self.agents.iter().skip(scroll_offset).take(visible_count) {
                 let name = if agent.name.len() > 10 {
                     format!("{}…", &agent.name[..9])
                 } else {
@@ -204,13 +223,6 @@ impl Widget for RiskPanel {
                         Style::default().fg(sharpe_color(agent.sharpe)),
                     ),
                 ]));
-            }
-
-            if self.agents.len() > 10 {
-                lines.push(Line::from(vec![Span::styled(
-                    format!("... and {} more", self.agents.len() - 10),
-                    Style::default().fg(Color::DarkGray),
-                )]));
             }
         } else {
             lines.push(Line::from(vec![Span::styled(

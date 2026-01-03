@@ -1,0 +1,386 @@
+//! VWAP Executor - executes orders targeting Volume Weighted Average Price.
+//!
+//! A trade execution algorithm that aims to match or beat the VWAP benchmark
+//! by spreading order execution across time periods.
+//!
+//! # Strategy Logic
+//! - Calculates current VWAP from trade history
+//! - For buy orders: executes when price < VWAP (favorable)
+//! - For sell orders: executes when price > VWAP (favorable)
+//! - Slices large orders into smaller chunks to minimize market impact
+//!
+//! # Use Case
+//! VWAP execution is commonly used by institutional traders who need to
+//! execute large orders without significant market impact. The algorithm
+//! ensures average execution price is close to VWAP.
+//!
+//! # Configuration
+//! The strategy is fully declarative via [`VwapExecutorConfig`].
+
+use crate::state::AgentState;
+use crate::{Agent, AgentAction, MarketData};
+use types::{AgentId, Cash, Order, OrderSide, Price, Quantity, Trade};
+
+/// Configuration for a VWAP Executor.
+#[derive(Debug, Clone)]
+pub struct VwapExecutorConfig {
+    /// Symbol to trade.
+    pub symbol: String,
+    /// Total quantity to execute.
+    pub target_quantity: u64,
+    /// Order side (Buy or Sell).
+    pub side: OrderSide,
+    /// Maximum order size per slice.
+    pub max_slice_size: u64,
+    /// Starting cash balance.
+    pub initial_cash: Cash,
+    /// Initial price reference when market is empty.
+    pub initial_price: Price,
+    /// Price tolerance: how much above/below VWAP to accept (as fraction).
+    pub price_tolerance: f64,
+    /// Minimum ticks between order slices.
+    pub slice_interval: u64,
+}
+
+impl Default for VwapExecutorConfig {
+    fn default() -> Self {
+        Self {
+            symbol: "ACME".to_string(),
+            target_quantity: 1000,
+            side: OrderSide::Buy,
+            max_slice_size: 100,
+            initial_cash: Cash::from_float(1_000_000.0),
+            initial_price: Price::from_float(100.0),
+            price_tolerance: 0.002, // 0.2% tolerance
+            slice_interval: 10,     // Wait 10 ticks between slices
+        }
+    }
+}
+
+/// VWAP Executor that executes orders at favorable prices relative to VWAP.
+///
+/// VWAP (Volume Weighted Average Price) is a benchmark that represents
+/// the average price weighted by volume. Executing at or better than
+/// VWAP is a common institutional trading goal.
+pub struct VwapExecutor {
+    /// Unique agent identifier.
+    id: AgentId,
+    /// Configuration.
+    config: VwapExecutorConfig,
+    /// Common agent state (position, cash, metrics).
+    state: AgentState,
+    /// Remaining quantity to execute.
+    remaining_quantity: u64,
+    /// Last tick when we placed an order.
+    last_order_tick: u64,
+    /// Running VWAP calculation: total value traded.
+    total_value: f64,
+    /// Running VWAP calculation: total volume traded.
+    total_volume: u64,
+}
+
+impl VwapExecutor {
+    /// Create a new VwapExecutor with the given configuration.
+    pub fn new(id: AgentId, config: VwapExecutorConfig) -> Self {
+        let initial_cash = config.initial_cash;
+        let remaining = config.target_quantity;
+        Self {
+            id,
+            config,
+            state: AgentState::new(initial_cash),
+            remaining_quantity: remaining,
+            last_order_tick: 0,
+            total_value: 0.0,
+            total_volume: 0,
+        }
+    }
+
+    /// Create a VwapExecutor with default buy configuration.
+    pub fn with_defaults(id: AgentId) -> Self {
+        Self::new(id, VwapExecutorConfig::default())
+    }
+
+    /// Create a VWAP Executor for selling.
+    pub fn new_seller(id: AgentId, symbol: &str, target_quantity: u64) -> Self {
+        let config = VwapExecutorConfig {
+            symbol: symbol.to_string(),
+            target_quantity,
+            side: OrderSide::Sell,
+            ..Default::default()
+        };
+        Self::new(id, config)
+    }
+
+    /// Check if execution is complete.
+    pub fn is_complete(&self) -> bool {
+        self.remaining_quantity == 0
+    }
+
+    /// Get remaining quantity to execute.
+    pub fn remaining(&self) -> u64 {
+        self.remaining_quantity
+    }
+
+    /// Calculate current VWAP from recent trades.
+    fn calculate_vwap(&self, recent_trades: &[Trade]) -> Option<f64> {
+        if recent_trades.is_empty() && self.total_volume == 0 {
+            return None;
+        }
+
+        // Combine historical total with recent trades
+        let mut total_value = self.total_value;
+        let mut total_volume = self.total_volume;
+
+        for trade in recent_trades {
+            let trade_value = trade.price.to_float() * trade.quantity.raw() as f64;
+            total_value += trade_value;
+            total_volume += trade.quantity.raw();
+        }
+
+        if total_volume == 0 {
+            None
+        } else {
+            Some(total_value / total_volume as f64)
+        }
+    }
+
+    /// Update running VWAP with new trades.
+    fn update_vwap(&mut self, recent_trades: &[Trade]) {
+        for trade in recent_trades {
+            let trade_value = trade.price.to_float() * trade.quantity.raw() as f64;
+            self.total_value += trade_value;
+            self.total_volume += trade.quantity.raw();
+        }
+    }
+
+    /// Determine the reference price for orders.
+    fn get_reference_price(&self, market: &MarketData) -> Price {
+        market
+            .mid_price()
+            .or(market.last_price)
+            .unwrap_or(self.config.initial_price)
+    }
+
+    /// Check if current price is favorable relative to VWAP.
+    fn is_price_favorable(&self, current_price: f64, vwap: f64) -> bool {
+        match self.config.side {
+            // For buying: favorable when price is at or below VWAP (+ tolerance)
+            OrderSide::Buy => current_price <= vwap * (1.0 + self.config.price_tolerance),
+            // For selling: favorable when price is at or above VWAP (- tolerance)
+            OrderSide::Sell => current_price >= vwap * (1.0 - self.config.price_tolerance),
+        }
+    }
+
+    /// Calculate order size for this slice.
+    fn calculate_slice_size(&self) -> u64 {
+        self.remaining_quantity.min(self.config.max_slice_size)
+    }
+
+    /// Check if enough time has passed since last order.
+    fn can_place_order(&self, current_tick: u64) -> bool {
+        current_tick == 0 || current_tick >= self.last_order_tick + self.config.slice_interval
+    }
+
+    /// Generate an order at the reference price.
+    fn generate_order(&self, market: &MarketData) -> Order {
+        let price = self.get_reference_price(market);
+        let quantity = Quantity(self.calculate_slice_size());
+
+        // Price adjustment based on side to improve fill probability
+        let order_price = match self.config.side {
+            OrderSide::Buy => Price::from_float(price.to_float() * 1.001),
+            OrderSide::Sell => Price::from_float(price.to_float() * 0.999),
+        };
+
+        Order::limit(
+            self.id,
+            &self.config.symbol,
+            self.config.side,
+            order_price,
+            quantity,
+        )
+    }
+}
+
+impl Agent for VwapExecutor {
+    fn id(&self) -> AgentId {
+        self.id
+    }
+
+    fn on_tick(&mut self, market: &MarketData) -> AgentAction {
+        // Update running VWAP calculation
+        self.update_vwap(&market.recent_trades);
+
+        // Check if we're done
+        if self.is_complete() {
+            return AgentAction::none();
+        }
+
+        // Check timing constraint
+        if !self.can_place_order(market.tick) {
+            return AgentAction::none();
+        }
+
+        // Get current price
+        let current_price = match market.last_price {
+            Some(p) => p.to_float(),
+            None => return AgentAction::none(),
+        };
+
+        // Calculate VWAP and check if price is favorable
+        if let Some(vwap) = self.calculate_vwap(&[]) {
+            // Don't include recent_trades again, already in total
+            if !self.is_price_favorable(current_price, vwap) {
+                return AgentAction::none();
+            }
+        }
+        // If no VWAP yet (no trades), execute to get started
+
+        let order = self.generate_order(market);
+        self.state.record_order();
+        self.last_order_tick = market.tick;
+
+        AgentAction::single(order)
+    }
+
+    fn on_fill(&mut self, trade: &Trade) {
+        let filled_qty = trade.quantity.raw();
+
+        // Update remaining quantity
+        self.remaining_quantity = self.remaining_quantity.saturating_sub(filled_qty);
+
+        if trade.buyer_id == self.id {
+            self.state.on_buy(filled_qty, trade.value());
+        } else if trade.seller_id == self.id {
+            self.state.on_sell(filled_qty, trade.value());
+        }
+    }
+
+    fn name(&self) -> &str {
+        "VWAP"
+    }
+
+    fn position(&self) -> i64 {
+        self.state.position()
+    }
+
+    fn cash(&self) -> Cash {
+        self.state.cash()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use types::BookSnapshot;
+
+    fn make_market_data(tick: u64, last_price: Option<Price>, trades: Vec<Trade>) -> MarketData {
+        MarketData {
+            tick,
+            timestamp: tick * 100,
+            book_snapshot: BookSnapshot {
+                symbol: "ACME".to_string(),
+                bids: vec![types::BookLevel {
+                    price: Price::from_float(99.0),
+                    quantity: Quantity(100),
+                    order_count: 1,
+                }],
+                asks: vec![types::BookLevel {
+                    price: Price::from_float(101.0),
+                    quantity: Quantity(100),
+                    order_count: 1,
+                }],
+                timestamp: tick * 100,
+                tick,
+            },
+            recent_trades: trades,
+            last_price,
+            candles: vec![],
+            indicators: None,
+        }
+    }
+
+    #[test]
+    fn test_vwap_initial_order() {
+        let mut executor = VwapExecutor::with_defaults(AgentId(1));
+        let market = make_market_data(0, Some(Price::from_float(100.0)), vec![]);
+
+        let action = executor.on_tick(&market);
+
+        // Should place initial order even without VWAP
+        assert_eq!(action.orders.len(), 1);
+        assert_eq!(action.orders[0].side, OrderSide::Buy);
+    }
+
+    #[test]
+    fn test_vwap_respects_interval() {
+        let mut executor = VwapExecutor::with_defaults(AgentId(1));
+
+        // First order at tick 0
+        let market0 = make_market_data(0, Some(Price::from_float(100.0)), vec![]);
+        let _ = executor.on_tick(&market0);
+
+        // Should not order at tick 5 (interval is 10)
+        let market5 = make_market_data(5, Some(Price::from_float(100.0)), vec![]);
+        let action5 = executor.on_tick(&market5);
+        assert!(action5.orders.is_empty());
+
+        // Should order at tick 10
+        let market10 = make_market_data(10, Some(Price::from_float(100.0)), vec![]);
+        let action10 = executor.on_tick(&market10);
+        assert_eq!(action10.orders.len(), 1);
+    }
+
+    #[test]
+    fn test_vwap_completes_execution() {
+        use types::{OrderId, TradeId};
+
+        let config = VwapExecutorConfig {
+            target_quantity: 100,
+            max_slice_size: 100, // Complete in one fill
+            slice_interval: 1,
+            ..Default::default()
+        };
+        let mut executor = VwapExecutor::new(AgentId(1), config);
+
+        // Place order
+        let market = make_market_data(0, Some(Price::from_float(100.0)), vec![]);
+        let _ = executor.on_tick(&market);
+
+        // Simulate fill
+        let trade = Trade {
+            id: TradeId(1),
+            symbol: "ACME".to_string(),
+            price: Price::from_float(100.0),
+            quantity: Quantity(100),
+            buyer_id: AgentId(1),
+            seller_id: AgentId(999),
+            buyer_order_id: OrderId(1),
+            seller_order_id: OrderId(2),
+            timestamp: 100,
+            tick: 1,
+        };
+        executor.on_fill(&trade);
+
+        assert!(executor.is_complete());
+        assert_eq!(executor.remaining(), 0);
+    }
+
+    #[test]
+    fn test_vwap_stops_when_complete() {
+        let config = VwapExecutorConfig {
+            target_quantity: 100,
+            max_slice_size: 100,
+            ..Default::default()
+        };
+        let mut executor = VwapExecutor::new(AgentId(1), config);
+
+        // Manually mark as complete
+        executor.remaining_quantity = 0;
+
+        let market = make_market_data(0, Some(Price::from_float(100.0)), vec![]);
+        let action = executor.on_tick(&market);
+
+        assert!(action.orders.is_empty());
+    }
+}
