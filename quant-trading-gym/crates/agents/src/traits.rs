@@ -3,7 +3,8 @@
 //! This module defines the core `Agent` trait that all trading agents must implement,
 //! as well as the `MarketData` context they receive each tick.
 
-use types::{AgentId, Order};
+use quant::IndicatorSnapshot;
+use types::{AgentId, Candle, IndicatorType, Order};
 
 // Re-export context from simulation crate once available
 // For now, we define a minimal trait that the simulation crate will use
@@ -133,6 +134,12 @@ pub struct MarketData {
 
     /// Last trade price (None if no trades yet).
     pub last_price: Option<types::Price>,
+
+    /// Historical candles (oldest to newest, if available).
+    pub candles: Vec<Candle>,
+
+    /// Pre-computed indicator values (if available).
+    pub indicators: Option<IndicatorSnapshot>,
 }
 
 impl MarketData {
@@ -154,6 +161,18 @@ impl MarketData {
     /// Get the spread.
     pub fn spread(&self) -> Option<types::Price> {
         self.book_snapshot.spread()
+    }
+
+    /// Get a specific indicator value.
+    pub fn get_indicator(&self, indicator_type: IndicatorType) -> Option<f64> {
+        self.indicators
+            .as_ref()
+            .and_then(|s| s.get(&self.book_snapshot.symbol, indicator_type))
+    }
+
+    /// Get the most recent candle.
+    pub fn last_candle(&self) -> Option<&Candle> {
+        self.candles.last()
     }
 }
 
@@ -203,6 +222,8 @@ mod tests {
             },
             recent_trades: vec![],
             last_price: Some(Price::from_float(100.0)),
+            candles: vec![],
+            indicators: None,
         };
 
         assert_eq!(market.best_bid(), Some(Price::from_float(99.0)));

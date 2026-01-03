@@ -3,8 +3,9 @@
 //! The simulation holds the order book, agents, and coordinates the tick loop.
 
 use agents::{Agent, AgentAction, MarketData};
+use quant::{IndicatorCache, IndicatorEngine, IndicatorSnapshot};
 use sim_core::{MatchingEngine, OrderBook};
-use types::{AgentId, Order, OrderId, Tick, Timestamp, Trade};
+use types::{AgentId, Candle, Order, OrderId, Price, Quantity, Tick, Timestamp, Trade};
 
 use crate::config::SimulationConfig;
 
@@ -62,6 +63,69 @@ pub struct Simulation {
 
     /// Simulation statistics.
     stats: SimulationStats,
+
+    /// Historical candles for indicator calculations.
+    candles: Vec<Candle>,
+
+    /// Current candle being built (OHLCV within candle interval).
+    current_candle: Option<CandleBuilder>,
+
+    /// Indicator engine for computing technical indicators.
+    indicator_engine: IndicatorEngine,
+
+    /// Indicator cache for current tick (reserved for future per-tick caching).
+    #[allow(dead_code)]
+    indicator_cache: IndicatorCache,
+}
+
+/// Helper for building candles incrementally.
+#[derive(Debug, Clone)]
+struct CandleBuilder {
+    symbol: String,
+    open: Price,
+    high: Price,
+    low: Price,
+    close: Price,
+    volume: Quantity,
+    #[allow(dead_code)] // Used for debugging/future candle timing features
+    start_tick: Tick,
+    trade_count: usize,
+}
+
+impl CandleBuilder {
+    fn new(symbol: &str, price: Price, tick: Tick) -> Self {
+        Self {
+            symbol: symbol.to_string(),
+            open: price,
+            high: price,
+            low: price,
+            close: price,
+            volume: Quantity::ZERO,
+            start_tick: tick,
+            trade_count: 0,
+        }
+    }
+
+    fn update(&mut self, trade: &Trade) {
+        self.high = self.high.max(trade.price);
+        self.low = self.low.min(trade.price);
+        self.close = trade.price;
+        self.volume += trade.quantity;
+        self.trade_count += 1;
+    }
+
+    fn finalize(self, end_tick: Tick, timestamp: Timestamp) -> Candle {
+        Candle {
+            symbol: self.symbol,
+            open: self.open,
+            high: self.high,
+            low: self.low,
+            close: self.close,
+            volume: self.volume,
+            timestamp,
+            tick: end_tick,
+        }
+    }
 }
 
 impl Simulation {
@@ -78,6 +142,10 @@ impl Simulation {
             recent_trades: Vec::new(),
             next_order_id: 1,
             stats: SimulationStats::default(),
+            candles: Vec::new(),
+            current_candle: None,
+            indicator_engine: IndicatorEngine::with_common_indicators(),
+            indicator_cache: IndicatorCache::new(),
         }
     }
 
@@ -130,6 +198,21 @@ impl Simulation {
         &self.recent_trades
     }
 
+    /// Get historical candles.
+    pub fn candles(&self) -> &[Candle] {
+        &self.candles
+    }
+
+    /// Get a reference to the indicator engine.
+    pub fn indicator_engine(&self) -> &IndicatorEngine {
+        &self.indicator_engine
+    }
+
+    /// Get a mutable reference to the indicator engine for registration.
+    pub fn indicator_engine_mut(&mut self) -> &mut IndicatorEngine {
+        &mut self.indicator_engine
+    }
+
     /// Generate the next order ID.
     fn next_order_id(&mut self) -> OrderId {
         let id = OrderId(self.next_order_id);
@@ -137,8 +220,29 @@ impl Simulation {
         id
     }
 
+    /// Build indicator snapshot for current tick.
+    fn build_indicator_snapshot(&mut self) -> Option<IndicatorSnapshot> {
+        if self.candles.is_empty() {
+            return None;
+        }
+
+        let mut snapshot = IndicatorSnapshot::new(self.tick);
+        let symbol = self.config.symbol.clone();
+
+        // Compute all registered indicators
+        let values = self.indicator_engine.compute_all(&self.candles);
+        if !values.is_empty() {
+            snapshot.insert(symbol, values);
+        }
+
+        Some(snapshot)
+    }
+
     /// Build market data snapshot for agents.
-    fn build_market_data(&self) -> MarketData {
+    fn build_market_data(&mut self) -> MarketData {
+        // Build indicator snapshot
+        let indicators = self.build_indicator_snapshot();
+
         MarketData {
             tick: self.tick,
             timestamp: self.timestamp,
@@ -149,6 +253,41 @@ impl Simulation {
             ),
             recent_trades: self.recent_trades.clone(),
             last_price: self.book.last_price(),
+            candles: self.candles.clone(),
+            indicators,
+        }
+    }
+
+    /// Update candle with trade data.
+    fn update_candles(&mut self, trades: &[Trade]) {
+        for trade in trades {
+            // Initialize candle builder if needed
+            if self.current_candle.is_none() {
+                self.current_candle = Some(CandleBuilder::new(
+                    &self.config.symbol,
+                    trade.price,
+                    self.tick,
+                ));
+            }
+
+            // Update current candle
+            if let Some(ref mut builder) = self.current_candle {
+                builder.update(trade);
+            }
+        }
+
+        // Check if we should finalize the candle (every candle_interval ticks)
+        if self.tick > 0
+            && self.tick.is_multiple_of(self.config.candle_interval)
+            && let Some(builder) = self.current_candle.take()
+        {
+            let candle = builder.finalize(self.tick, self.timestamp);
+            self.candles.push(candle);
+
+            // Limit candle history
+            if self.candles.len() > self.config.max_candles {
+                self.candles.remove(0);
+            }
         }
     }
 
@@ -235,6 +374,9 @@ impl Simulation {
         if self.recent_trades.len() > self.config.max_recent_trades {
             self.recent_trades.truncate(self.config.max_recent_trades);
         }
+
+        // Update candles with trade data
+        self.update_candles(&tick_trades);
 
         // Notify agents of fills
         for (agent_id, trade) in fill_notifications {

@@ -1,5 +1,116 @@
 # Development Log
 
+## 2026-01-03: V1.1 - Quant Layer (Indicators)
+
+### Completed
+- ✅ **quant crate**: Technical analysis and quantitative tools
+  - New crate at `crates/quant/` with modular architecture
+  - Pure math calculations for indicators, risk, and statistics
+  - Thread-safe design (`Send + Sync`) for future parallelization
+
+- ✅ **Indicators module** (`indicators.rs`): 6 technical indicators
+  - `Sma` — Simple Moving Average with configurable period
+  - `Ema` — Exponential Moving Average with smoothing factor
+  - `Rsi` — Relative Strength Index (bounded 0-100)
+  - `Macd` — Moving Average Convergence Divergence (signal line + histogram)
+  - `BollingerBands` — Upper/middle/lower bands with configurable std devs
+  - `Atr` — Average True Range for volatility measurement
+  - Factory function `create_indicator()` for runtime construction
+
+- ✅ **Engine module** (`engine.rs`): Indicator management
+  - `IndicatorEngine` — registers and computes indicators
+  - `IndicatorCache` — per-tick caching to avoid redundant computation
+  - `IndicatorSnapshot` — frozen indicator values for MarketData
+  - `with_common_indicators()` preset for standard setup
+
+- ✅ **Rolling window** (`rolling.rs`): Efficient data structure
+  - O(1) push with automatic oldest-value eviction
+  - Running sum/mean for incremental computation
+  - Variance, std_dev, min, max accessors
+
+- ✅ **Statistics** (`stats.rs`): Statistical utilities
+  - `mean`, `variance`, `std_dev`, `sample_variance`, `sample_std_dev`
+  - `returns`, `log_returns` for price series
+  - `covariance`, `correlation` for pair analysis
+  - `percentile` for distribution analysis
+
+- ✅ **Risk metrics** (`risk.rs`): Foundation for V1.2
+  - `max_drawdown` — peak-to-trough analysis
+  - `sharpe_ratio`, `sortino_ratio` — risk-adjusted returns
+  - `historical_var` — Value at Risk at configurable confidence
+  - `annualized_volatility` — for portfolio analysis
+  - `RiskMetrics` struct aggregates common metrics
+
+- ✅ **Type additions** (`types` crate): New market data types
+  - `Candle` — OHLCV candle with timestamp
+  - `IndicatorType` — enum for all indicator variants
+  - `MacdOutput`, `BollingerOutput` — multi-value indicator results
+
+- ✅ **Simulation integration**: Indicators available to agents
+  - `CandleBuilder` builds candles from trade stream
+  - `MarketData` now includes `candles` and `indicators` fields
+  - `get_indicator()` helper for easy access in strategies
+
+### Rust Concepts Demonstrated
+- **Trait objects** — `Box<dyn Indicator>` for polymorphic indicator storage
+- **Associated types** — `Indicator::Output` for flexible return types
+- **Factory pattern** — `create_indicator()` constructs from enum variant
+- **Builder pattern** — `CandleBuilder` accumulates trades into candles
+- **Caching** — `IndicatorCache` prevents redundant expensive calculations
+- **Module organization** — `pub mod` + re-exports at crate root
+
+### SOLID Compliance
+- **S**: Each indicator has single responsibility (compute one metric)
+- **O**: `Indicator` trait open for extension, closed for modification
+- **L**: All indicators safely return `None` for insufficient data
+- **I**: `Indicator` trait is minimal (3 methods)
+- **D**: Engine depends on `Indicator` abstraction, not concrete types
+
+### Module Structure Decision
+Kept `rolling`, `risk`, `stats` in `quant` crate because:
+1. Dependency graph shows `quant` is shared by gym (rewards), data service (risk APIs), and agents
+2. All modules are coherent — part of quantitative analysis domain
+3. RL gym rewards (Phase 15) will call `quant::sharpe_ratio()`, `quant::max_drawdown()`
+4. Data service `/risk/*` endpoints will use same functions
+
+### Exit Criteria
+```
+cargo fmt --check     # ✅ No formatting issues
+cargo clippy          # ✅ No warnings
+cargo test --workspace # ✅ 102 tests pass
+                       # 16 agents + 30 quant + 4 binary + 24 sim-core
+                       # + 6 simulation + 4 integration + 8 tui + 10 types
+```
+
+### Files Created
+| File | Purpose |
+|------|---------|
+| `crates/quant/Cargo.toml` | Quant crate manifest |
+| `crates/quant/src/lib.rs` | Crate root with re-exports |
+| `crates/quant/src/indicators.rs` | 6 technical indicator implementations |
+| `crates/quant/src/engine.rs` | IndicatorEngine and caching |
+| `crates/quant/src/rolling.rs` | Rolling window data structure |
+| `crates/quant/src/stats.rs` | Statistical utility functions |
+| `crates/quant/src/risk.rs` | Risk metrics (Sharpe, VaR, drawdown) |
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `Cargo.toml` | Added quant crate to workspace |
+| `crates/types/src/lib.rs` | Added Candle, IndicatorType, MacdOutput, BollingerOutput |
+| `crates/agents/Cargo.toml` | Added quant dependency |
+| `crates/agents/src/traits.rs` | Added candles/indicators to MarketData |
+| `crates/simulation/Cargo.toml` | Added quant dependency |
+| `crates/simulation/src/runner.rs` | Added candle building, indicator computation |
+| `src/config.rs` | Fixed hard-coded tests to be resilient to default changes |
+
+### Design Notes
+- **Fixed-Point Precision**: Indicators compute with `f64` internally, converting from/to `Price`/`Cash` newtypes as needed. This maintains monetary precision while allowing statistical operations.
+- **Lazy Computation**: `IndicatorCache` ensures expensive calculations (like MACD which needs 26+ candles) only run once per tick, regardless of how many agents query them.
+- **Candle Building**: `CandleBuilder` aggregates trades into OHLCV candles. Default interval is 100 ticks; configurable for different timeframes.
+
+---
+
 ## 2026-01-03: V0.4 - TUI Visualization
 
 ### Completed

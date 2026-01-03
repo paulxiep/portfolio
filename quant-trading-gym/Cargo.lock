@@ -6,6 +6,7 @@ version = 4
 name = "agents"
 version = "0.1.0"
 dependencies = [
+ "quant",
  "rand",
  "sim-core",
  "types",
@@ -355,6 +356,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "quant"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "types",
+]
+
+[[package]]
 name = "quant-trading-gym"
 version = "0.1.0"
 dependencies = [
@@ -576,6 +585,7 @@ name = "simulation"
 version = "0.1.0"
 dependencies = [
  "agents",
+ "quant",
  "sim-core",
  "types",
 ]

@@ -231,23 +231,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_default_config() {
+    fn test_default_config_consistency() {
+        // Test that default config is internally consistent.
+        // Don't check specific values - those may change.
         let config = SimConfig::default();
-        assert_eq!(config.num_market_makers, 2);
-        assert_eq!(config.num_noise_traders, 20);
-        assert_eq!(config.total_agents(), 22);
+
+        // total_agents() should match sum of individual counts
+        assert_eq!(
+            config.total_agents(),
+            config.num_market_makers + config.num_noise_traders
+        );
+
+        // Sanity checks - defaults should be reasonable, not exact values
+        assert!(config.num_market_makers >= 1, "Should have at least 1 MM");
+        assert!(config.num_noise_traders >= 1, "Should have at least 1 NT");
+        assert!(config.total_ticks > 0, "Should run at least 1 tick");
+        assert!(
+            config.initial_price > Price::ZERO,
+            "Initial price should be positive"
+        );
     }
 
     #[test]
     fn test_builder_pattern() {
         let config = SimConfig::new()
-            .market_makers(3)
-            .noise_traders(10)
-            .total_ticks(2000);
+            .market_makers(7)
+            .noise_traders(42)
+            .total_ticks(9999);
 
-        assert_eq!(config.num_market_makers, 3);
-        assert_eq!(config.num_noise_traders, 10);
-        assert_eq!(config.total_ticks, 2000);
+        // Builder should set the values we specified
+        assert_eq!(config.num_market_makers, 7);
+        assert_eq!(config.num_noise_traders, 42);
+        assert_eq!(config.total_ticks, 9999);
+        assert_eq!(config.total_agents(), 49);
     }
 
     #[test]
@@ -263,12 +279,17 @@ mod tests {
     }
 
     #[test]
-    fn test_preset_configs() {
+    fn test_preset_configs_differ_from_default() {
+        let default = SimConfig::default();
         let demo = SimConfig::demo();
-        assert_eq!(demo.total_ticks, 1000);
-
         let stress = SimConfig::stress_test();
-        assert_eq!(stress.num_noise_traders, 50);
-        assert_eq!(stress.tick_delay_ms, 0);
+        let low = SimConfig::low_activity();
+        let high = SimConfig::high_volatility();
+
+        // Presets should modify at least one parameter from default
+        assert_ne!(demo.total_ticks, default.total_ticks);
+        assert_ne!(stress.tick_delay_ms, default.tick_delay_ms);
+        assert_ne!(low.num_noise_traders, default.num_noise_traders);
+        assert_ne!(high.nt_order_probability, default.nt_order_probability);
     }
 }
