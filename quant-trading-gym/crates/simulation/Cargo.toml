@@ -9,3 +9,5 @@ description = "Simulation runner for the quant-trading-gym"
 types.workspace = true
 sim-core.workspace = true
 agents.workspace = true
+quant.workspace = true
+rand.workspace = true

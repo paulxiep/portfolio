@@ -19,11 +19,13 @@ The project is built vertically in iterative stages, ensuring a runnable simulat
 | Version | Focus | Goal |
 |---------|-------|------|
 | **V0** (completed) | **The MVP Simulation** | Single-threaded simulation with TUI visualization showing agents trading. |
-| **V1** | **Quant Layer** | Add indicators (SMA, RSI), risk metrics (Sharpe, Drawdown), and real strategies. |
+| **V1** (completed) | **Quant Strategy Agents** | Add indicators (SMA, RSI), risk metrics (Sharpe, Drawdown), and real strategies. |
 | **V2** | **Agent Scaling** | Implement tiered architecture (Smart, Reactive, Background) for 100k+ agent scale. |
 | **V3** | **Persistence & Events** | Add SQLite storage for trade history and news event generation. |
 | **V4** | **RL or Game Track** | **RL:** Gym env, PyO3 bindings, training. <br> **Game:** Services, API, Web Frontend. |
 | **V5** | **Full Integration** | RL agents as opponents in the multiplayer game. |
+
+![v1](qtgv1.jpg)
 
 ## Key Features
 

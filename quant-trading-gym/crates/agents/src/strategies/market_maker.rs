@@ -236,6 +236,8 @@ mod tests {
             book_snapshot: book,
             recent_trades: vec![],
             last_price: mid_price,
+            candles: vec![],
+            indicators: None,
         }
     }
 

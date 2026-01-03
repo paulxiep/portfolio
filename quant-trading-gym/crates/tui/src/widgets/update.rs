@@ -5,6 +5,8 @@
 
 use types::{BookLevel, Cash, Price, Tick, Trade};
 
+use crate::widgets::RiskInfo;
+
 /// Agent state summary for TUI display.
 #[derive(Debug, Clone)]
 pub struct AgentInfo {
@@ -16,6 +18,10 @@ pub struct AgentInfo {
     pub realized_pnl: Cash,
     /// Current cash balance.
     pub cash: Cash,
+    /// Whether this is a market maker (for sorting to bottom).
+    pub is_market_maker: bool,
+    /// Current equity (cash + position value) for sorting.
+    pub equity: f64,
 }
 
 /// Update message sent from simulation to TUI.
@@ -45,6 +51,8 @@ pub struct SimUpdate {
     pub total_orders: u64,
     /// Simulation is complete.
     pub finished: bool,
+    /// Per-agent risk metrics.
+    pub risk_metrics: Vec<RiskInfo>,
 }
 
 impl SimUpdate {

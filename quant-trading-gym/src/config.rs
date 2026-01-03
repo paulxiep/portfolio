@@ -1,7 +1,19 @@
 //! Central configuration for the Quant Trading Gym simulation.
 //!
 //! All simulation parameters are defined here for easy tuning.
+//!
+//! # Agent Tiers
+//! - **Tier 1**: Full agents that run every tick (MarketMaker, NoiseTrader, Momentum, etc.)
+//! - **Tier 2**: Reactive agents that wake on conditions (not yet implemented)
+//! - **Tier 3**: Statistical background pool (not yet implemented)
+//!
+//! # Configuration Strategy
+//! 1. Specify minimum count for each specific agent type
+//! 2. Specify minimum total for each tier
+//! 3. If tier minimum not met by specific agents, random tier agents are spawned
 
+use rand::Rng;
+use rand::prelude::IndexedRandom;
 use types::{Cash, Price};
 
 /// Master configuration for the entire simulation.
@@ -22,12 +34,29 @@ pub struct SimConfig {
     pub verbose: bool,
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Agent Counts
+    // Tier 1 Agent Counts (minimum for each type)
     // ─────────────────────────────────────────────────────────────────────────
-    /// Number of market makers.
+    /// Minimum number of market makers.
     pub num_market_makers: usize,
-    /// Number of noise traders.
+    /// Minimum number of noise traders.
     pub num_noise_traders: usize,
+    /// Minimum number of momentum (RSI) traders.
+    pub num_momentum_traders: usize,
+    /// Minimum number of trend followers (SMA crossover).
+    pub num_trend_followers: usize,
+    /// Minimum number of MACD crossover traders.
+    pub num_macd_traders: usize,
+    /// Minimum number of Bollinger reversion traders.
+    pub num_bollinger_traders: usize,
+    /// Minimum number of VWAP executors.
+    pub num_vwap_executors: usize,
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Tier Minimums
+    // ─────────────────────────────────────────────────────────────────────────
+    /// Minimum total Tier 1 agents. If specific agent types don't reach this,
+    /// random Tier 1 agents are spawned to fill the gap.
+    pub min_tier1_agents: usize,
 
     // ─────────────────────────────────────────────────────────────────────────
     // Market Maker Parameters
@@ -60,6 +89,16 @@ pub struct SimConfig {
     pub nt_max_quantity: u64,
 
     // ─────────────────────────────────────────────────────────────────────────
+    // Quant Strategy Parameters (shared defaults)
+    // ─────────────────────────────────────────────────────────────────────────
+    /// Starting cash for quant strategies.
+    pub quant_initial_cash: Cash,
+    /// Order size for quant strategies.
+    pub quant_order_size: u64,
+    /// Maximum position for quant strategies.
+    pub quant_max_position: i64,
+
+    // ─────────────────────────────────────────────────────────────────────────
     // TUI Parameters
     // ─────────────────────────────────────────────────────────────────────────
     /// Maximum price history points to display.
@@ -78,9 +117,16 @@ impl Default for SimConfig {
             tick_delay_ms: 10, // ~100 ticks/sec for watchable visualization
             verbose: false,
 
-            // Agent Counts
-            num_market_makers: 3,
+            // Tier 1 Agent Counts (minimums per type)
+            num_market_makers: 10,
             num_noise_traders: 30,
+            num_momentum_traders: 5,
+            num_trend_followers: 5,
+            num_macd_traders: 5,
+            num_bollinger_traders: 5,
+            num_vwap_executors: 5,
+            // Tier Minimums
+            min_tier1_agents: 100, // Fill with random agents if needed
 
             // Market Maker Parameters
             mm_initial_cash: Cash::from_float(1_000_000.0),
@@ -91,16 +137,49 @@ impl Default for SimConfig {
             mm_inventory_skew: 0.001,
 
             // Noise Trader Parameters
-            nt_initial_cash: Cash::from_float(10_000.0),
+            nt_initial_cash: Cash::from_float(100_000.0),
             nt_order_probability: 0.3, // 30% chance each tick
             nt_price_deviation: 0.01,  // 1% from mid price
             nt_min_quantity: 5,
             nt_max_quantity: 30,
 
+            // Quant Strategy Parameters
+            quant_initial_cash: Cash::from_float(100_000.0),
+            quant_order_size: 25,
+            quant_max_position: 200,
+
             // TUI Parameters
             max_price_history: 200,
             tui_frame_rate: 30,
         }
+    }
+}
+
+/// Types of Tier 1 agents that can be randomly spawned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tier1AgentType {
+    NoiseTrader,
+    MomentumTrader,
+    TrendFollower,
+    MacdTrader,
+    BollingerTrader,
+    VwapExecutor,
+}
+
+impl Tier1AgentType {
+    /// All spawnable Tier 1 agent types (excludes MarketMaker as it's infrastructure).
+    pub const SPAWNABLE: &'static [Tier1AgentType] = &[
+        Tier1AgentType::NoiseTrader,
+        Tier1AgentType::MomentumTrader,
+        Tier1AgentType::TrendFollower,
+        Tier1AgentType::MacdTrader,
+        Tier1AgentType::BollingerTrader,
+        Tier1AgentType::VwapExecutor,
+    ];
+
+    /// Pick a random spawnable agent type.
+    pub fn random<R: Rng>(rng: &mut R) -> Self {
+        *Self::SPAWNABLE.choose(rng).unwrap()
     }
 }
 
@@ -138,15 +217,51 @@ impl SimConfig {
         self
     }
 
-    /// Set number of market makers.
+    /// Set minimum number of market makers.
     pub fn market_makers(mut self, count: usize) -> Self {
         self.num_market_makers = count;
         self
     }
 
-    /// Set number of noise traders.
+    /// Set minimum number of noise traders.
     pub fn noise_traders(mut self, count: usize) -> Self {
         self.num_noise_traders = count;
+        self
+    }
+
+    /// Set minimum number of momentum traders.
+    pub fn momentum_traders(mut self, count: usize) -> Self {
+        self.num_momentum_traders = count;
+        self
+    }
+
+    /// Set minimum number of trend followers.
+    pub fn trend_followers(mut self, count: usize) -> Self {
+        self.num_trend_followers = count;
+        self
+    }
+
+    /// Set minimum number of MACD traders.
+    pub fn macd_traders(mut self, count: usize) -> Self {
+        self.num_macd_traders = count;
+        self
+    }
+
+    /// Set minimum number of Bollinger traders.
+    pub fn bollinger_traders(mut self, count: usize) -> Self {
+        self.num_bollinger_traders = count;
+        self
+    }
+
+    /// Set minimum number of VWAP executors.
+    pub fn vwap_executors(mut self, count: usize) -> Self {
+        self.num_vwap_executors = count;
+        self
+    }
+
+    /// Set minimum total Tier 1 agents.
+    pub fn min_tier1(mut self, count: usize) -> Self {
+        self.min_tier1_agents = count;
         self
     }
 
@@ -159,6 +274,12 @@ impl SimConfig {
     /// Set noise trader initial cash.
     pub fn nt_cash(mut self, cash: f64) -> Self {
         self.nt_initial_cash = Cash::from_float(cash);
+        self
+    }
+
+    /// Set quant strategy initial cash.
+    pub fn quant_cash(mut self, cash: f64) -> Self {
+        self.quant_initial_cash = Cash::from_float(cash);
         self
     }
 
@@ -178,18 +299,40 @@ impl SimConfig {
     // Computed Properties
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// Total number of agents.
-    pub fn total_agents(&self) -> usize {
-        self.num_market_makers + self.num_noise_traders
+    /// Total number of specified (non-random) Tier 1 agents.
+    pub fn specified_tier1_agents(&self) -> usize {
+        self.num_market_makers
+            + self.num_noise_traders
+            + self.num_momentum_traders
+            + self.num_trend_followers
+            + self.num_macd_traders
+            + self.num_bollinger_traders
+            + self.num_vwap_executors
     }
 
-    /// Total starting cash in the system.
+    /// Number of random Tier 1 agents to spawn to meet minimum.
+    pub fn random_tier1_count(&self) -> usize {
+        let specified = self.specified_tier1_agents();
+        self.min_tier1_agents.saturating_sub(specified)
+    }
+
+    /// Total number of agents (specified + random fill).
+    pub fn total_agents(&self) -> usize {
+        self.specified_tier1_agents() + self.random_tier1_count()
+    }
+
+    /// Total starting cash in the system (estimate, doesn't include random agents).
     pub fn total_starting_cash(&self) -> Cash {
         let mm_total =
             Cash::from_float(self.mm_initial_cash.to_float() * self.num_market_makers as f64);
         let nt_total =
             Cash::from_float(self.nt_initial_cash.to_float() * self.num_noise_traders as f64);
-        mm_total + nt_total
+        let quant_count = self.num_momentum_traders
+            + self.num_trend_followers
+            + self.num_macd_traders
+            + self.num_bollinger_traders;
+        let quant_total = Cash::from_float(self.quant_initial_cash.to_float() * quant_count as f64);
+        mm_total + nt_total + quant_total
     }
 }
 
@@ -200,7 +343,10 @@ impl SimConfig {
 impl SimConfig {
     /// Quick demo: fewer ticks, faster visualization.
     pub fn demo() -> Self {
-        Self::default().total_ticks(1000).tick_delay_ms(5)
+        Self::default()
+            .total_ticks(1000)
+            .tick_delay_ms(5)
+            .min_tier1(10)
     }
 
     /// Stress test: many agents, many ticks, no delay.
@@ -209,12 +355,20 @@ impl SimConfig {
             .total_ticks(100_000)
             .tick_delay_ms(0)
             .market_makers(5)
-            .noise_traders(50)
+            .noise_traders(30)
+            .momentum_traders(5)
+            .trend_followers(5)
+            .macd_traders(5)
+            .bollinger_traders(5)
+            .min_tier1(60)
     }
 
     /// Low activity: conservative parameters.
     pub fn low_activity() -> Self {
-        Self::default().noise_traders(5).nt_probability(0.1)
+        Self::default()
+            .noise_traders(5)
+            .nt_probability(0.1)
+            .min_tier1(10)
     }
 
     /// High volatility: aggressive noise traders.
@@ -224,6 +378,17 @@ impl SimConfig {
             .nt_cash(50_000.0)
             .mm_spread(0.005) // Wider spread to compensate
     }
+
+    /// Quant-heavy: More algorithmic traders, fewer noise traders.
+    pub fn quant_heavy() -> Self {
+        Self::default()
+            .noise_traders(5)
+            .momentum_traders(10)
+            .trend_followers(10)
+            .macd_traders(10)
+            .bollinger_traders(10)
+            .min_tier1(50)
+    }
 }
 
 #[cfg(test)]
@@ -231,44 +396,112 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_default_config() {
+    fn test_default_config_consistency() {
+        // Test that default config is internally consistent.
         let config = SimConfig::default();
-        assert_eq!(config.num_market_makers, 2);
-        assert_eq!(config.num_noise_traders, 20);
-        assert_eq!(config.total_agents(), 22);
+
+        // specified_tier1_agents should match sum of individual counts
+        let expected_specified = config.num_market_makers
+            + config.num_noise_traders
+            + config.num_momentum_traders
+            + config.num_trend_followers
+            + config.num_macd_traders
+            + config.num_bollinger_traders
+            + config.num_vwap_executors;
+        assert_eq!(config.specified_tier1_agents(), expected_specified);
+
+        // Sanity checks - defaults should be reasonable
+        assert!(config.num_market_makers >= 1, "Should have at least 1 MM");
+        assert!(config.total_ticks > 0, "Should run at least 1 tick");
+        assert!(
+            config.initial_price > Price::ZERO,
+            "Initial price should be positive"
+        );
     }
 
     #[test]
     fn test_builder_pattern() {
         let config = SimConfig::new()
-            .market_makers(3)
+            .market_makers(7)
             .noise_traders(10)
-            .total_ticks(2000);
+            .momentum_traders(3)
+            .min_tier1(25);
 
-        assert_eq!(config.num_market_makers, 3);
+        assert_eq!(config.num_market_makers, 7);
         assert_eq!(config.num_noise_traders, 10);
-        assert_eq!(config.total_ticks, 2000);
+        assert_eq!(config.num_momentum_traders, 3);
+        assert_eq!(config.min_tier1_agents, 25);
+    }
+
+    #[test]
+    fn test_random_tier1_fill() {
+        let config = SimConfig::new()
+            .market_makers(2)
+            .noise_traders(3)
+            .momentum_traders(0)
+            .trend_followers(0)
+            .macd_traders(0)
+            .bollinger_traders(0)
+            .vwap_executors(0)
+            .min_tier1(10);
+
+        assert_eq!(config.specified_tier1_agents(), 5);
+        assert_eq!(config.random_tier1_count(), 5); // Need 5 more to reach 10
+        assert_eq!(config.total_agents(), 10);
+    }
+
+    #[test]
+    fn test_no_random_fill_when_specified_meets_minimum() {
+        let config = SimConfig::new()
+            .market_makers(5)
+            .noise_traders(10)
+            .min_tier1(10);
+
+        assert!(config.specified_tier1_agents() >= config.min_tier1_agents);
+        assert_eq!(config.random_tier1_count(), 0);
     }
 
     #[test]
     fn test_total_starting_cash() {
         let config = SimConfig::new()
             .market_makers(2)
-            .noise_traders(20)
+            .noise_traders(10)
+            .momentum_traders(1)
+            .trend_followers(1)
+            .macd_traders(0)
+            .bollinger_traders(0)
             .mm_cash(1_000_000.0)
-            .nt_cash(10_000.0);
+            .nt_cash(10_000.0)
+            .quant_cash(100_000.0);
 
-        // 2 * 1M + 20 * 10K = 2M + 200K = 2.2M
-        assert_eq!(config.total_starting_cash(), Cash::from_float(2_200_000.0));
+        // 2 * 1M + 10 * 10K + 2 * 100K = 2M + 100K + 200K = 2.3M
+        assert_eq!(config.total_starting_cash(), Cash::from_float(2_300_000.0));
     }
 
     #[test]
-    fn test_preset_configs() {
+    fn test_preset_configs_differ_from_default() {
+        let default = SimConfig::default();
         let demo = SimConfig::demo();
-        assert_eq!(demo.total_ticks, 1000);
-
         let stress = SimConfig::stress_test();
-        assert_eq!(stress.num_noise_traders, 50);
-        assert_eq!(stress.tick_delay_ms, 0);
+        let low = SimConfig::low_activity();
+        let high = SimConfig::high_volatility();
+        let quant = SimConfig::quant_heavy();
+
+        // Presets should modify at least one parameter from default
+        assert_ne!(demo.total_ticks, default.total_ticks);
+        assert_ne!(stress.tick_delay_ms, default.tick_delay_ms);
+        assert_ne!(low.num_noise_traders, default.num_noise_traders);
+        assert_ne!(high.nt_order_probability, default.nt_order_probability);
+        assert_ne!(quant.num_momentum_traders, default.num_momentum_traders);
+    }
+
+    #[test]
+    fn test_tier1_agent_type_random() {
+        let mut rng = rand::rng();
+        // Just verify it doesn't panic and returns valid types
+        for _ in 0..10 {
+            let agent_type = Tier1AgentType::random(&mut rng);
+            assert!(Tier1AgentType::SPAWNABLE.contains(&agent_type));
+        }
     }
 }

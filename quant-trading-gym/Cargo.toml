@@ -2,6 +2,7 @@
 members = [
     "crates/types",
     "crates/sim-core",
+    "crates/quant",
     "crates/agents",
     "crates/simulation",
     "crates/tui",
@@ -24,6 +25,7 @@ rand = "0.9"
 # Internal crates
 types = { path = "crates/types" }
 sim-core = { path = "crates/sim-core" }
+quant = { path = "crates/quant" }
 agents = { path = "crates/agents" }
 simulation = { path = "crates/simulation" }
 tui = { path = "crates/tui" }
@@ -48,3 +50,4 @@ tui.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 crossbeam-channel.workspace = true
+rand.workspace = true

@@ -17,6 +17,12 @@ pub struct SimulationConfig {
     /// Maximum number of recent trades to keep in market data.
     pub max_recent_trades: usize,
 
+    /// Number of ticks per candle (for OHLCV aggregation).
+    pub candle_interval: u64,
+
+    /// Maximum number of candles to keep in history.
+    pub max_candles: usize,
+
     /// Enable verbose logging.
     pub verbose: bool,
 }
@@ -28,6 +34,8 @@ impl Default for SimulationConfig {
             initial_price: Price::from_float(100.0),
             snapshot_depth: 10,
             max_recent_trades: 100,
+            candle_interval: 10, // Candle every 10 ticks
+            max_candles: 200,    // Keep 200 candles (~2000 ticks of history)
             verbose: false,
         }
     }
@@ -57,6 +65,18 @@ impl SimulationConfig {
     /// Set the maximum recent trades.
     pub fn with_max_recent_trades(mut self, max: usize) -> Self {
         self.max_recent_trades = max;
+        self
+    }
+
+    /// Set the candle interval (ticks per candle).
+    pub fn with_candle_interval(mut self, interval: u64) -> Self {
+        self.candle_interval = interval;
+        self
+    }
+
+    /// Set the maximum number of candles to keep.
+    pub fn with_max_candles(mut self, max: usize) -> Self {
+        self.max_candles = max;
         self
     }
 

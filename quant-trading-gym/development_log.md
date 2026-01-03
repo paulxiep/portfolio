@@ -1,5 +1,320 @@
 # Development Log
 
+## 2026-01-04: V1.3 - Phase 7-8 Strategies, Tier Configuration & TUI Scrolling
+
+### Completed
+
+#### Phase 7 Strategies (4 new indicator-based agents)
+- ✅ `MomentumTrader` (`momentum.rs`): RSI-based strategy
+  - Buys when RSI < 30 (oversold), sells when RSI > 70 (overbought)
+  - Configurable thresholds and position limits
+- ✅ `TrendFollower` (`trend_follower.rs`): SMA crossover strategy
+  - Golden cross (fast > slow): bullish signal → buy
+  - Death cross (fast < slow): bearish signal → sell
+  - Uses SMA(10) and SMA(50) by default
+- ✅ `MacdCrossover` (`macd_crossover.rs`): MACD/Signal line crossover
+  - Buys when MACD crosses above signal line
+  - Sells when MACD crosses below signal line
+  - Tracks previous state to detect crossovers
+- ✅ `BollingerReversion` (`bollinger_reversion.rs`): Mean reversion at bands
+  - Buys when price touches lower band (oversold)
+  - Sells when price touches upper band (overbought)
+  - Uses Bollinger(20, 2.0) by default
+
+#### Phase 8 Strategy (partial)
+- ✅ `VwapExecutor` (`vwap_executor.rs`): VWAP-targeting execution algorithm
+  - Executes target quantity over configurable time horizon
+  - Slices orders into intervals to minimize market impact
+  - Uses limit orders near mid price to avoid crossing spread
+
+#### Tier-Based Configuration System
+- ✅ `Tier1AgentType` enum: `NoiseTrader`, `MarketMaker`, `Momentum`, `TrendFollower`, `Macd`, `Bollinger`
+- ✅ Per-type minimums: `num_noise_traders`, `num_market_makers`, `num_momentum_traders`, etc.
+- ✅ Tier minimum: `min_tier1_agents` ensures minimum total agent count
+- ✅ Random fill: If specified agents < tier minimum, randomly selects from `SPAWNABLE` types
+- ✅ Shared quant config: `quant_initial_cash`, `quant_order_size`, `quant_max_position`
+- ✅ Agent numbering fix: Dynamic width based on agent count (`digit_width()` function)
+
+#### TUI Scrollable Panels with Mouse Support
+- ✅ **Visual Scrollbars**: `ratatui::Scrollbar` widget on both Risk and Agent P&L panels
+  - Scrollbar renders on right edge (▲, █, ▼ track/thumb)
+  - Scrollbar position reflects current scroll offset vs total items
+- ✅ **Mouse Wheel Scrolling**: Hover over a panel and scroll with mouse wheel
+  - Enabled via `crossterm::EnableMouseCapture`
+  - Area tracking (`risk_area`, `agent_area`) to detect which panel mouse is over
+- ✅ **Scrollbar Click/Drag**: Click on track to jump, drag thumb for continuous scrolling
+- ✅ **Footer**: `q Quit │ 🖱 Scroll Mouse wheel or drag scrollbar`
+
+### Analysis: Momentum vs NoiseTrader Metrics
+
+**Observation**: Momentum traders show better returns but lower equity than NoiseTraders.
+
+**Explanation**: This is **intentional by design** - the two panels measure different things:
+
+| Panel | Metric | What It Measures |
+|-------|--------|------------------|
+| Risk | `total_return` | Percentage gain from initial equity |
+| P&L | `equity` | Absolute wealth (cash + position × price) |
+
+NoiseTraders accumulate large positions through frequent random trading. Even with poor percentage returns, their absolute equity can be higher because:
+1. They hold more shares
+2. Price appreciation on large positions compounds
+3. `equity = cash + position × mark_price`
+
+**Not a bug** - sorting by return (performance) vs equity (wealth) are both valid views.
+
+### Un-Implemented Phase 8 Strategies
+
+| Strategy | Blocker | When to Add |
+|----------|---------|-------------|
+| **Pairs Trading** | Requires two correlated symbols | V2+ (multi-symbol support) |
+| **Factor Long-Short** | Requires factor infrastructure | V2+ (factor engine) |
+| **News Reactive** | Requires news event system | V3+ (per project plan) |
+
+### Files Created
+| File | Purpose |
+|------|---------|
+| `crates/agents/src/strategies/momentum.rs` | RSI-based momentum trader |
+| `crates/agents/src/strategies/trend_follower.rs` | SMA crossover trend following |
+| `crates/agents/src/strategies/macd_crossover.rs` | MACD/signal line crossover |
+| `crates/agents/src/strategies/bollinger_reversion.rs` | Bollinger Bands mean reversion |
+| `crates/agents/src/strategies/vwap_executor.rs` | VWAP execution algorithm |
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `crates/agents/src/strategies/mod.rs` | Exported 5 new strategy modules |
+| `src/config.rs` | Tier1AgentType enum, per-type minimums, random fill logic |
+| `src/main.rs` | spawn_agent(), two-phase spawn, dynamic agent numbering |
+| `crates/tui/src/app.rs` | Mouse capture, `handle_mouse_event()`, scrollbar rendering |
+| `crates/tui/src/widgets/risk_panel.rs` | Added scroll_offset, dynamic visible rows |
+| `crates/tui/src/widgets/agent_table.rs` | Converted to Widget with scroll_offset, scrollbar |
+| `Cargo.toml` | Added `rand.workspace = true` |
+
+### Rust Concepts Demonstrated
+- **Enum dispatch**: `Tier1AgentType` with `random()` and `SPAWNABLE` const array
+- **Mouse event handling**: `crossterm::event::MouseEvent` with button/position tracking
+- **Area-based hit testing**: Storing `Rect` for each panel to detect mouse position
+- **ratatui Scrollbar widget**: `Scrollbar::new(ScrollbarOrientation::VerticalRight)` with `ScrollbarState`
+- **Saturating arithmetic**: `saturating_sub()` for safe bounds checking
+
+### Exit Criteria
+```
+cargo fmt --check     # ✅ No formatting issues
+cargo clippy          # ✅ No warnings
+cargo test --workspace # ✅ 132 tests pass
+```
+
+---
+
+## 2026-01-03: V1.2 - Risk Metrics & Per-Agent Tracking
+
+### Completed
+- ✅ **AgentRiskTracker** (`quant/tracker.rs`): Per-agent risk monitoring
+  - `AgentRiskTracker` struct tracks equity history using rolling windows
+  - `RiskTrackerConfig` for configurable window size and parameters
+  - `AgentRiskSnapshot` captures point-in-time risk metrics per agent
+  - Computes: Sharpe ratio, Sortino ratio, max drawdown, VaR (95%), total return, volatility
+  - Efficient O(1) equity recording with bounded memory usage
+
+- ✅ **Agent equity computation**: Added `equity()` method to Agent trait
+  - Computes mark-to-market equity: `cash + (position × price)`
+  - Handles both long and short positions correctly
+  - Default implementation uses existing `cash()` and `position()` methods
+
+- ✅ **Simulation risk integration**:
+  - `Simulation` struct now holds `AgentRiskTracker`
+  - Records equity for all agents after each tick
+  - New methods: `agent_risk_metrics()`, `agent_risk()`
+  - Uses last trade price for mark-to-market valuation
+
+- ✅ **TUI RiskPanel widget** (`tui/widgets/risk_panel.rs`):
+  - Color-coded display of per-agent risk metrics
+  - Shows: Return, Max DD, Sharpe for up to 10 agents
+  - Aggregate metrics: Average Sharpe, worst max drawdown (excludes market makers)
+  - Color coding: green (good), yellow (caution), red (risk)
+
+- ✅ **TUI layout improvements**:
+  - Rebalanced left column: Stats (top), Order book (fixed 14 lines), Risk panel (expanded)
+  - Risk panel shows up to 10 agents sorted by total return
+  - Market makers sorted to bottom as "infrastructure" agents
+
+- ✅ **Agent identification & sorting**:
+  - Agent names prefixed with ID: `"{:02}-{name}"` (e.g., "04-NoiseTrader")
+  - `is_market_maker` flag distinguishes infrastructure vs trading agents
+  - **P&L table**: Sorted by equity (descending), market makers at bottom
+  - **Risk panel**: Sorted by total return (descending), market makers at bottom
+  - Aggregate metrics computed excluding market makers (focus on trader performance)
+
+- ✅ **SimUpdate extended**: Added `risk_metrics: Vec<RiskInfo>`, `equity`, `is_market_maker`
+  - `RiskInfo` struct: name, sharpe, max_drawdown, total_return, var_95, equity, is_market_maker
+  - `AgentInfo` struct: Added `equity: f64`, `is_market_maker: bool` fields
+  - Main binary populates from simulation's `agent_risk_metrics()`
+
+### Rust Concepts Demonstrated
+- **Composition**: `AgentRiskTracker` composes `RollingWindow` for memory-bounded history
+- **Trait default methods**: `equity()` provides default implementation using other trait methods
+- **HashMap with newtype keys**: `HashMap<AgentId, RollingWindow>` for per-agent tracking
+- **Builder pattern**: `RiskPanel::new().agents(vec![...]).aggregate_sharpe(Some(1.2))`
+- **Tiered sorting**: Multi-key sorting with `sort_by(|a, b| a.is_mm.cmp(&b.is_mm).then(equity_cmp))`
+
+### SOLID Compliance
+- **S**: `AgentRiskTracker` only tracks equity and computes metrics (single responsibility)
+- **O**: New risk widget added without modifying existing widgets
+- **L**: `RiskInfo` and `AgentRiskSnapshot` are interchangeable data carriers
+- **I**: `AgentRiskTracker` exposes minimal interface (record, compute)
+- **D**: Simulation depends on `AgentRiskTracker` abstraction, not concrete risk calculations
+
+### Exit Criteria
+```
+cargo fmt --check     # ✅ No formatting issues
+cargo clippy          # ✅ No warnings
+cargo test --workspace # ✅ 113 tests pass
+                       # 16 agents + 38 quant + 4 binary + 24 sim-core
+                       # + 6 simulation + 4 integration + 11 tui + 10 types
+```
+
+### Files Created
+| File | Purpose |
+|------|---------|
+| `crates/quant/src/tracker.rs` | Per-agent risk tracking and metrics |
+| `crates/tui/src/widgets/risk_panel.rs` | Risk metrics TUI widget |
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `crates/quant/src/lib.rs` | Added tracker module and exports |
+| `crates/agents/src/traits.rs` | Added `equity()` method to Agent trait |
+| `crates/simulation/src/runner.rs` | Added AgentRiskTracker, equity tracking in step() |
+| `crates/tui/src/widgets/mod.rs` | Added risk_panel module export |
+| `crates/tui/src/widgets/update.rs` | Added RiskInfo, AgentInfo with is_market_maker & equity |
+| `crates/tui/src/widgets/agent_table.rs` | Tiered sorting: MMs at bottom, sort by equity |
+| `crates/tui/src/app.rs` | Rebalanced layout, tiered sorting for risk panel |
+| `crates/tui/src/lib.rs` | Re-export RiskInfo |
+| `src/main.rs` | ID-prefixed names, is_market_maker flag, equity calculation |
+
+### Design Notes
+- **Rolling window vs full history**: Using `RollingWindow` (default 500 observations) prevents unbounded memory growth while keeping enough data for meaningful statistics
+- **Mark-to-market**: Risk metrics use last trade price for position valuation; if no trades, uses initial price
+- **Market maker treatment**: MMs are infrastructure agents that start with high capital; sorting them to bottom keeps focus on actual trading agents
+- **Agent naming**: ID prefix (`04-NoiseTrader`) makes agents distinguishable across panels
+- **Aggregate metrics**: Exclude market makers—computed only for trading agents to reflect true performance
+- **Minimum observations**: Risk metrics require 20+ data points before computing Sharpe/Sortino/VaR to avoid meaningless early values
+- **Sorting rationale**: Risk panel sorts by total return (performance measure); P&L table sorts by equity (wealth measure); both put MMs at bottom
+
+---
+
+## 2026-01-03: V1.1 - Quant Layer (Indicators)
+
+### Completed
+- ✅ **quant crate**: Technical analysis and quantitative tools
+  - New crate at `crates/quant/` with modular architecture
+  - Pure math calculations for indicators, risk, and statistics
+  - Thread-safe design (`Send + Sync`) for future parallelization
+
+- ✅ **Indicators module** (`indicators.rs`): 6 technical indicators
+  - `Sma` — Simple Moving Average with configurable period
+  - `Ema` — Exponential Moving Average with smoothing factor
+  - `Rsi` — Relative Strength Index (bounded 0-100)
+  - `Macd` — Moving Average Convergence Divergence (signal line + histogram)
+  - `BollingerBands` — Upper/middle/lower bands with configurable std devs
+  - `Atr` — Average True Range for volatility measurement
+  - Factory function `create_indicator()` for runtime construction
+
+- ✅ **Engine module** (`engine.rs`): Indicator management
+  - `IndicatorEngine` — registers and computes indicators
+  - `IndicatorCache` — per-tick caching to avoid redundant computation
+  - `IndicatorSnapshot` — frozen indicator values for MarketData
+  - `with_common_indicators()` preset for standard setup
+
+- ✅ **Rolling window** (`rolling.rs`): Efficient data structure
+  - O(1) push with automatic oldest-value eviction
+  - Running sum/mean for incremental computation
+  - Variance, std_dev, min, max accessors
+
+- ✅ **Statistics** (`stats.rs`): Statistical utilities
+  - `mean`, `variance`, `std_dev`, `sample_variance`, `sample_std_dev`
+  - `returns`, `log_returns` for price series
+  - `covariance`, `correlation` for pair analysis
+  - `percentile` for distribution analysis
+
+- ✅ **Risk metrics** (`risk.rs`): Foundation for V1.2
+  - `max_drawdown` — peak-to-trough analysis
+  - `sharpe_ratio`, `sortino_ratio` — risk-adjusted returns
+  - `historical_var` — Value at Risk at configurable confidence
+  - `annualized_volatility` — for portfolio analysis
+  - `RiskMetrics` struct aggregates common metrics
+
+- ✅ **Type additions** (`types` crate): New market data types
+  - `Candle` — OHLCV candle with timestamp
+  - `IndicatorType` — enum for all indicator variants
+  - `MacdOutput`, `BollingerOutput` — multi-value indicator results
+
+- ✅ **Simulation integration**: Indicators available to agents
+  - `CandleBuilder` builds candles from trade stream
+  - `MarketData` now includes `candles` and `indicators` fields
+  - `get_indicator()` helper for easy access in strategies
+
+### Rust Concepts Demonstrated
+- **Trait objects** — `Box<dyn Indicator>` for polymorphic indicator storage
+- **Associated types** — `Indicator::Output` for flexible return types
+- **Factory pattern** — `create_indicator()` constructs from enum variant
+- **Builder pattern** — `CandleBuilder` accumulates trades into candles
+- **Caching** — `IndicatorCache` prevents redundant expensive calculations
+- **Module organization** — `pub mod` + re-exports at crate root
+
+### SOLID Compliance
+- **S**: Each indicator has single responsibility (compute one metric)
+- **O**: `Indicator` trait open for extension, closed for modification
+- **L**: All indicators safely return `None` for insufficient data
+- **I**: `Indicator` trait is minimal (3 methods)
+- **D**: Engine depends on `Indicator` abstraction, not concrete types
+
+### Module Structure Decision
+Kept `rolling`, `risk`, `stats` in `quant` crate because:
+1. Dependency graph shows `quant` is shared by gym (rewards), data service (risk APIs), and agents
+2. All modules are coherent — part of quantitative analysis domain
+3. RL gym rewards (Phase 15) will call `quant::sharpe_ratio()`, `quant::max_drawdown()`
+4. Data service `/risk/*` endpoints will use same functions
+
+### Exit Criteria
+```
+cargo fmt --check     # ✅ No formatting issues
+cargo clippy          # ✅ No warnings
+cargo test --workspace # ✅ 102 tests pass
+                       # 16 agents + 30 quant + 4 binary + 24 sim-core
+                       # + 6 simulation + 4 integration + 8 tui + 10 types
+```
+
+### Files Created
+| File | Purpose |
+|------|---------|
+| `crates/quant/Cargo.toml` | Quant crate manifest |
+| `crates/quant/src/lib.rs` | Crate root with re-exports |
+| `crates/quant/src/indicators.rs` | 6 technical indicator implementations |
+| `crates/quant/src/engine.rs` | IndicatorEngine and caching |
+| `crates/quant/src/rolling.rs` | Rolling window data structure |
+| `crates/quant/src/stats.rs` | Statistical utility functions |
+| `crates/quant/src/risk.rs` | Risk metrics (Sharpe, VaR, drawdown) |
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `Cargo.toml` | Added quant crate to workspace |
+| `crates/types/src/lib.rs` | Added Candle, IndicatorType, MacdOutput, BollingerOutput |
+| `crates/agents/Cargo.toml` | Added quant dependency |
+| `crates/agents/src/traits.rs` | Added candles/indicators to MarketData |
+| `crates/simulation/Cargo.toml` | Added quant dependency |
+| `crates/simulation/src/runner.rs` | Added candle building, indicator computation |
+| `src/config.rs` | Fixed hard-coded tests to be resilient to default changes |
+
+### Design Notes
+- **Fixed-Point Precision**: Indicators compute with `f64` internally, converting from/to `Price`/`Cash` newtypes as needed. This maintains monetary precision while allowing statistical operations.
+- **Lazy Computation**: `IndicatorCache` ensures expensive calculations (like MACD which needs 26+ candles) only run once per tick, regardless of how many agents query them.
+- **Candle Building**: `CandleBuilder` aggregates trades into OHLCV candles. Default interval is 100 ticks; configurable for different timeframes.
+
+---
+
 ## 2026-01-03: V0.4 - TUI Visualization
 
 ### Completed

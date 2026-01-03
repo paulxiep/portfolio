@@ -5,7 +5,10 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton,
+        MouseEventKind,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -15,10 +18,10 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 
-use crate::widgets::{AgentTable, BookDepth, PriceChart, SimUpdate, StatsPanel};
+use crate::widgets::{AgentTable, BookDepth, PriceChart, RiskPanel, SimUpdate, StatsPanel};
 
 /// TUI application state.
 pub struct TuiApp {
@@ -30,6 +33,14 @@ pub struct TuiApp {
     finished: bool,
     /// Target frame rate.
     frame_rate: u64,
+    /// Risk panel scroll offset.
+    risk_scroll: usize,
+    /// Agent P&L scroll offset.
+    agent_scroll: usize,
+    /// Last known risk panel area (for mouse detection).
+    risk_area: Option<Rect>,
+    /// Last known agent panel area (for mouse detection).
+    agent_area: Option<Rect>,
 }
 
 impl TuiApp {
@@ -42,6 +53,10 @@ impl TuiApp {
             state: SimUpdate::default(),
             finished: false,
             frame_rate: 30, // 30 FPS
+            risk_scroll: 0,
+            agent_scroll: 0,
+            risk_area: None,
+            agent_area: None,
         }
     }
 
@@ -55,10 +70,10 @@ impl TuiApp {
     ///
     /// Blocks until the user presses 'q' or the simulation finishes.
     pub fn run(mut self) -> io::Result<()> {
-        // Setup terminal
+        // Setup terminal with mouse support
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen)?;
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
@@ -66,7 +81,11 @@ impl TuiApp {
 
         // Restore terminal
         disable_raw_mode()?;
-        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )?;
         terminal.show_cursor()?;
 
         result
@@ -86,12 +105,15 @@ impl TuiApp {
                 .checked_sub(last_tick.elapsed())
                 .unwrap_or_else(|| Duration::from_secs(0));
 
-            if event::poll(timeout)?
-                && let Event::Key(key) = event::read()?
-                && key.kind == KeyEventKind::Press
-            {
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+            if event::poll(timeout)? {
+                match event::read()? {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                        _ => {}
+                    },
+                    Event::Mouse(mouse) => {
+                        self.handle_mouse_event(mouse);
+                    }
                     _ => {}
                 }
             }
@@ -109,6 +131,98 @@ impl TuiApp {
         }
     }
 
+    /// Handle mouse events for scrolling.
+    fn handle_mouse_event(&mut self, mouse: crossterm::event::MouseEvent) {
+        let x = mouse.column;
+        let y = mouse.row;
+
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                // Check which panel the mouse is over
+                if let Some(area) = self.risk_area
+                    && x >= area.x
+                    && x < area.x + area.width
+                    && y >= area.y
+                    && y < area.y + area.height
+                {
+                    self.risk_scroll = self.risk_scroll.saturating_sub(1);
+                    return;
+                }
+                if let Some(area) = self.agent_area
+                    && x >= area.x
+                    && x < area.x + area.width
+                    && y >= area.y
+                    && y < area.y + area.height
+                {
+                    self.agent_scroll = self.agent_scroll.saturating_sub(1);
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                // Check which panel the mouse is over
+                if let Some(area) = self.risk_area
+                    && x >= area.x
+                    && x < area.x + area.width
+                    && y >= area.y
+                    && y < area.y + area.height
+                {
+                    let max_scroll = self.state.risk_metrics.len().saturating_sub(1);
+                    self.risk_scroll = (self.risk_scroll + 1).min(max_scroll);
+                    return;
+                }
+                if let Some(area) = self.agent_area
+                    && x >= area.x
+                    && x < area.x + area.width
+                    && y >= area.y
+                    && y < area.y + area.height
+                {
+                    let max_scroll = self.state.agents.len().saturating_sub(1);
+                    self.agent_scroll = (self.agent_scroll + 1).min(max_scroll);
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                // Handle scrollbar click-to-scroll
+                self.handle_scrollbar_click(x, y);
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                // Handle scrollbar drag
+                self.handle_scrollbar_click(x, y);
+            }
+            _ => {}
+        }
+    }
+
+    /// Handle scrollbar click/drag for direct position jumping.
+    fn handle_scrollbar_click(&mut self, x: u16, y: u16) {
+        // Check if click is on the right edge of risk panel (scrollbar area)
+        if let Some(area) = self.risk_area {
+            let scrollbar_x = area.x + area.width - 1;
+            if x == scrollbar_x && y > area.y && y < area.y + area.height - 1 {
+                let total = self.state.risk_metrics.len();
+                if total > 0 {
+                    let scrollbar_height = (area.height - 2) as usize;
+                    let click_pos = (y - area.y - 1) as usize;
+                    let new_scroll = (click_pos * total) / scrollbar_height.max(1);
+                    self.risk_scroll = new_scroll.min(total.saturating_sub(1));
+                }
+                return;
+            }
+        }
+
+        // Check if click is on the right edge of agent panel (scrollbar area)
+        if let Some(area) = self.agent_area {
+            let scrollbar_x = area.x + area.width - 1;
+            if x == scrollbar_x && y > area.y && y < area.y + area.height - 1 {
+                let total = self.state.agents.len();
+                if total > 0 {
+                    let scrollbar_height = (area.height - 2) as usize;
+                    let click_pos = (y - area.y - 1) as usize;
+                    let new_scroll = (click_pos * total) / scrollbar_height.max(1);
+                    self.agent_scroll = new_scroll.min(total.saturating_sub(1));
+                }
+            }
+        }
+    }
+
     /// Poll for updates from the simulation channel (non-blocking).
     fn poll_updates(&mut self) {
         // Drain all currently available updates, keep the latest
@@ -122,7 +236,7 @@ impl TuiApp {
     }
 
     /// Draw the UI.
-    fn draw(&self, frame: &mut Frame) {
+    fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area();
 
         // Main layout: header + content
@@ -138,16 +252,20 @@ impl TuiApp {
         // Render header
         self.draw_header(frame, main_chunks[0]);
 
-        // Content layout: left panel (stats + book) + right panel (chart + agents)
+        // Content layout: left panel (stats + book + risk) + right panel (chart + agents)
         let content_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
             .split(main_chunks[1]);
 
-        // Left panel: stats + order book
+        // Left panel: stats + order book + risk panel
         let left_chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(9), Constraint::Min(0)])
+            .constraints([
+                Constraint::Length(9),  // Stats
+                Constraint::Length(14), // Order book (reduced)
+                Constraint::Min(10),    // Risk panel (expanded)
+            ])
             .split(content_chunks[0]);
 
         // Right panel: price chart + agent table
@@ -156,9 +274,14 @@ impl TuiApp {
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(content_chunks[1]);
 
+        // Store areas for mouse detection
+        self.risk_area = Some(left_chunks[2]);
+        self.agent_area = Some(right_chunks[1]);
+
         // Draw widgets
         self.draw_stats(frame, left_chunks[0]);
         self.draw_book_depth(frame, left_chunks[1]);
+        self.draw_risk_panel(frame, left_chunks[2]);
         self.draw_price_chart(frame, right_chunks[0]);
         self.draw_agent_table(frame, right_chunks[1]);
 
@@ -205,7 +328,10 @@ impl TuiApp {
     fn draw_footer(&self, frame: &mut Frame, area: Rect) {
         let footer = Paragraph::new(Line::from(vec![
             Span::styled(" q", Style::default().fg(Color::Yellow)),
-            Span::raw(" Quit"),
+            Span::raw(" Quit  "),
+            Span::raw("│ "),
+            Span::styled("🖱 Scroll", Style::default().fg(Color::Cyan)),
+            Span::raw(" Mouse wheel or drag scrollbar"),
         ]))
         .style(Style::default().bg(Color::DarkGray));
         frame.render_widget(footer, area);
@@ -247,9 +373,98 @@ impl TuiApp {
     }
 
     /// Draw the agent P&L table.
-    fn draw_agent_table(&self, frame: &mut Frame, area: Rect) {
-        let table = AgentTable::new(&self.state.agents);
+    fn draw_agent_table(&mut self, frame: &mut Frame, area: Rect) {
+        let total = self.state.agents.len();
+        let table = AgentTable::new(&self.state.agents).scroll_offset(self.agent_scroll);
         frame.render_widget(table, area);
+
+        // Render scrollbar if there are items
+        if total > 0 {
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("▲"))
+                .end_symbol(Some("▼"))
+                .track_symbol(Some("│"))
+                .thumb_symbol("█");
+
+            let mut scrollbar_state = ScrollbarState::new(total).position(self.agent_scroll);
+
+            // Render scrollbar in the inner area (inside the border)
+            let scrollbar_area = Rect {
+                x: area.x,
+                y: area.y,
+                width: area.width,
+                height: area.height,
+            };
+            frame.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
+        }
+    }
+
+    /// Draw the risk metrics panel.
+    fn draw_risk_panel(&self, frame: &mut Frame, area: Rect) {
+        // Sort: noise traders by total return (desc), market makers at bottom
+        let mut sorted_metrics = self.state.risk_metrics.clone();
+        sorted_metrics.sort_by(|a, b| {
+            // Market makers always go to bottom
+            match (a.is_market_maker, b.is_market_maker) {
+                (true, false) => std::cmp::Ordering::Greater,
+                (false, true) => std::cmp::Ordering::Less,
+                _ => {
+                    // Within same category, sort by total return (descending)
+                    b.total_return
+                        .partial_cmp(&a.total_return)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }
+            }
+        });
+
+        // Calculate aggregate metrics from noise traders only (exclude MMs)
+        let noise_traders: Vec<_> = sorted_metrics
+            .iter()
+            .filter(|r| !r.is_market_maker)
+            .collect();
+
+        let aggregate_sharpe = if !noise_traders.is_empty() {
+            let valid_sharpes: Vec<f64> = noise_traders
+                .iter()
+                .filter_map(|r| r.sharpe)
+                .filter(|s| s.is_finite())
+                .collect();
+            if valid_sharpes.is_empty() {
+                None
+            } else {
+                Some(valid_sharpes.iter().sum::<f64>() / valid_sharpes.len() as f64)
+            }
+        } else {
+            None
+        };
+
+        let aggregate_max_drawdown = noise_traders
+            .iter()
+            .map(|r| r.max_drawdown)
+            .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap_or(0.0);
+
+        let risk_panel = RiskPanel::new()
+            .agents(sorted_metrics.clone())
+            .aggregate_sharpe(aggregate_sharpe)
+            .aggregate_max_drawdown(aggregate_max_drawdown)
+            .scroll_offset(self.risk_scroll);
+
+        frame.render_widget(risk_panel, area);
+
+        // Render scrollbar if there are items
+        let total = sorted_metrics.len();
+        if total > 0 {
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("▲"))
+                .end_symbol(Some("▼"))
+                .track_symbol(Some("│"))
+                .thumb_symbol("█");
+
+            let mut scrollbar_state = ScrollbarState::new(total).position(self.risk_scroll);
+
+            frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
+        }
     }
 }
 
@@ -257,6 +472,10 @@ impl TuiApp {
 pub struct SimpleTui {
     /// Current state to display.
     state: SimUpdate,
+    /// Risk panel scroll offset.
+    risk_scroll: usize,
+    /// Agent P&L scroll offset.
+    agent_scroll: usize,
 }
 
 impl SimpleTui {
@@ -264,6 +483,8 @@ impl SimpleTui {
     pub fn new() -> Self {
         Self {
             state: SimUpdate::default(),
+            risk_scroll: 0,
+            agent_scroll: 0,
         }
     }
 
@@ -273,14 +494,18 @@ impl SimpleTui {
     }
 
     /// Draw a single frame to the given terminal.
-    pub fn draw(&self, frame: &mut Frame) {
+    pub fn draw(&mut self, frame: &mut Frame) {
         // Create a dummy channel just for drawing (never used)
         let (_tx, rx) = crossbeam_channel::unbounded::<SimUpdate>();
-        let app = TuiApp {
+        let mut app = TuiApp {
             receiver: rx,
             state: self.state.clone(),
             finished: self.state.finished,
             frame_rate: 30,
+            risk_scroll: self.risk_scroll,
+            agent_scroll: self.agent_scroll,
+            risk_area: None,
+            agent_area: None,
         };
         app.draw(frame);
     }
