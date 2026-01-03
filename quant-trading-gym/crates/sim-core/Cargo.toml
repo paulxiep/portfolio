@@ -1,0 +1,13 @@
+[package]
+name = "sim-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Core market mechanics for the quant-trading-gym simulation"
+
+[dependencies]
+types.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+rand.workspace = true
