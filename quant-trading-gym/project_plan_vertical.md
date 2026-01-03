@@ -14,6 +14,25 @@ Instead of completing all types → all matching → all agents → all viz, we 
 
 ---
 
+## Guiding Mantra
+
+> **"Declarative, Modular, SoC"**
+
+Every implementation decision should be evaluated against these three principles:
+
+| Principle | Meaning | Example |
+|-----------|---------|----------|
+| **Declarative** | Describe *what*, not *how*. Config over code. Data-driven behavior. | Strategies declare indicators they need; the system provides them. Agent behavior defined by config/trait impl, not hardcoded logic. |
+| **Modular** | Components are self-contained, swappable, and independently testable. | Each crate compiles alone. Strategies are plugins. Swap `NoiseTrader` for `RLAgent` without touching simulation. |
+| **SoC** (Separation of Concerns) | Each module has ONE job. No god objects. Clear boundaries. | `types/` = data. `sim-core/` = matching. `agents/` = behavior. `simulation/` = orchestration. No crate does two things. |
+
+**Before writing code, ask:**
+1. Am I describing behavior or implementing mechanics? (Declarative)
+2. Can this be swapped out without ripple effects? (Modular)
+3. Does this component have exactly one responsibility? (SoC)
+
+---
+
 ## V0: The Steel Thread (4 Weeks)
 
 **Goal:** A single-threaded simulation with TUI visualization showing agents trading.
@@ -256,6 +275,8 @@ These are independent — add based on interest, not obligation.
 - Trade history persistence
 - Candle aggregation
 - Portfolio snapshots
+- **Game snapshots for save/resume** (`GameSnapshot`, `AgentSnapshot` structs)
+- **Trade log** (append-only, for post-game analysis)
 
 ### V3.3: Hooks System (~3 days)
 - `SimulationHook` trait
@@ -297,24 +318,133 @@ V4-RL.5: Training (1 wk)
 
 ### V4-Game: Multiplayer Game Track (+8 weeks)
 
+**Critical Insight:** Humans cannot compete at AI tick speeds (<10ms). The game track MUST include time controls and a quant dashboard, otherwise humans lose before they can comprehend the market state.
+
+**Service Architecture:** 4 services (consolidated from original 8)
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      SIMULATION                             │
+│  (sync, computes everything for agents)                     │
+│  - Matching engine, agent tick loop                         │
+│  - Lightweight indicators (for agents)                      │
+│  - News generation                                          │
+│  - Emits: TickEvent { prices, trades, portfolios }          │
+└──────────────────────────┬──────────────────────────────────┘
+                           │ broadcast
+         ┌─────────────────┼─────────────────┐
+         ▼                 ▼                 ▼
+  ┌─────────────┐   ┌─────────────┐   ┌─────────────┐
+  │    DATA     │   │    GAME     │   │   STORAGE   │
+  │   SERVICE   │   │   SERVICE   │   │   SERVICE   │
+  │   :8001     │   │   :8002     │   │   :8003     │
+  │             │   │             │   │             │
+  │ /analytics/*│   │ /game/*     │   │ /storage/*  │
+  │ /portfolio/*│   │ WebSocket   │   │ Snapshots   │
+  │ /risk/*     │   │ Sessions    │   │ Trade log   │
+  │ /news/*     │   │ Time ctrl   │   │ Queries     │
+  │             │   │ Orders      │   │             │
+  └─────────────┘   └─────────────┘   └─────────────┘
+         │                 │
+         └────────┬────────┘
+                  ▼
+           ┌─────────────┐
+           │   CHATBOT   │
+           │   :8004     │
+           │  NLP → API  │
+           └─────────────┘
+```
+
 ```
 V4-G.1: Services Foundation (1 wk)
     └─► Axum, async bridge, error handling
     
-V4-G.2: Core Services (2 wks)
-    └─► Exchange, Portfolio, Agents APIs
+V4-G.2: Data Service (1.5 wks)
+    └─► /analytics/* (candles, indicator history, charts)
+    └─► /portfolio/* (positions, P&L, equity curves)
+    └─► /risk/* (VaR, drawdown, exposure, alerts)
+    └─► /news/* (event history, sentiment)
     
-V4-G.3: Advanced Services (1.5 wks)
-    └─► Analytics, Risk, News, Chatbot
+V4-G.3: Game Service + Dashboard BFF (2 wks)
+    └─► WebSocket stream (real-time tick updates)
+    └─► Sessions, matchmaking, lobby
+    └─► Time control system (pause/step/speed)
+    └─► Order submission
+    └─► BFF aggregation (combines Data + Storage for frontend)
+    └─► Save/Resume system:
+        - `Simulation::to_snapshot()` / `from_snapshot()`
+        - Auto-save every N ticks (configurable, default 10k)
+        - Manual save (game continues)
+        - Save & Exit (save + pause + lobby)
+        - Resume from lobby (load snapshot, continue)
     
-V4-G.4: Game Infrastructure (1.5 wks)
-    └─► Lobby, matchmaking, sessions
+V4-G.4: Chatbot Service (1 wk)
+    └─► NLP intent parsing (LLM function calling)
+    └─► Routes to Game/Data/Storage
+    └─► "Buy 100 ACME" → Game service
+    └─► "What's my P&L?" → Data service
+    └─► "Show my trades" → Storage service
     
-V4-G.5: Frontend (2 wks)
-    └─► React/TypeScript UI
+V4-G.5: Frontend + Human Dashboard (2.5 wks)
+    └─► React/TypeScript base UI
+    └─► Order book, chart, portfolio views
+    └─► Time controls UI (pause, step, speed slider)
+    └─► Indicator panel (SMA, RSI, MACD, Bollinger)
+    └─► Factor gauges (momentum, value, volatility)
+    └─► Risk dashboard (VaR, drawdown, exposure)
+    └─► Signal summary (aggregate buy/sell/hold)
+    └─► Quick trade buttons, alert banners
+    └─► Save/load UI, leaderboard, game lobby
 ```
 
-**Maps to Original:** Phases 13-22 (Game Track)
+#### Dashboard Integration Architecture
+
+The frontend calls Game service, which acts as **BFF (Backend-For-Frontend)**:
+
+```
+Frontend (React)
+      │
+      │ Single WebSocket + REST
+      ▼
+Game Service :8002  (/game/dashboard, /game/stream)
+      │
+      ├──► Data :8001    →  indicators, portfolio, risk, news
+      └──► Storage :8003 →  snapshots, trade history
+```
+
+**Benefits:** Single connection, consistent tick data, no CORS complexity, simplified frontend.
+
+#### Human Player Requirements
+
+| Requirement | Implementation |
+|-------------|----------------|
+| **Time Controls** | Pause/Step/Slow(1 tick/s)/Normal(10 tick/s)/Fast(100 tick/s) |
+| **Quant Dashboard** | Same indicators AI sees, visualized |
+| **Decision Support** | Quick trade buttons, risk preview, bracket orders |
+| **Information Parity** | Humans see everything AI observes |
+
+#### Time Control Modes
+
+| Mode | Speed | Use Case |
+|------|-------|----------|
+| Paused | Frozen | Analysis, planning |
+| Step | Manual | Learning, debugging |
+| Slow | 1 tick/sec | Comfortable play |
+| Normal | 10 tick/sec | Engaged play |
+| Fast | 100 tick/sec | Skip boring periods |
+
+#### Dashboard Panels
+
+| Panel | Shows | Source (via BFF) |
+|-------|-------|------------------|
+| Indicator Panel | SMA, EMA, RSI, MACD, Bollinger, ATR | Data :8001 → /analytics/* |
+| Factor Gauges | Momentum, Value, Volatility scores | Data :8001 → /analytics/* |
+| Risk Dashboard | VaR, Sharpe, max drawdown | Data :8001 → /risk/* |
+| Portfolio | Holdings, P&L, equity curve | Data :8001 → /portfolio/* |
+| Signal Summary | Strong Buy → Strong Sell | Game :8002 → aggregated |
+| News Feed | Active events with sentiment | Data :8001 → /news/* |
+
+**Maps to Original:** Phases 13-22 (Game Track) + Part 11 (Human Player Interface)
 
 ---
 
@@ -324,6 +454,7 @@ If you did BOTH V4-RL and V4-Game:
 - RL agents as game opponents
 - Leaderboards with RL baselines
 - "Beat the Bot" game mode
+
 
 **Maps to Original:** Phase 23 (RL Game Integration)
 
@@ -338,7 +469,7 @@ If you did BOTH V4-RL and V4-Game:
 | V2 | Agent Scaling | 2 wks | 8 wks |
 | V3 | Persistence & Events | 2 wks | 10 wks |
 | V4-RL | RL Track | 5 wks | 15 wks |
-| V4-Game | Game Track | 8 wks | 18 wks |
+| V4-Game | Game Track (4 services + frontend) | 8 wks | 18 wks |
 | V5 | Full Integration | 1 wk | 19 wks |
 
 **Key Decision Points:**
@@ -478,7 +609,8 @@ Strategies can be added independently once the indicator pipeline (V1) exists:
 - **V1 Success:** "My agents use real indicators and I see risk metrics"
 - **V2 Success:** "I can run 100k agents without OOM"
 - **V3 Success:** "Trades persist across runs; news moves markets"
-- **V4 Success:** "I trained an RL agent" OR "I can play via web UI"
+- **V4-RL Success:** "I trained an RL agent with observation parity"
+- **V4-Game Success:** "I can play meaningfully — pause, analyze indicators, make informed trades"
 - **V5 Success:** "I can play against my trained RL agent"
 
 ---

@@ -20,10 +20,21 @@ A quantitative trading simulation built in Rust with RL training capabilities, m
 | Python | 10% | Training scripts, experiments (via PyO3) |
 | TypeScript | 5% | Frontend (Phase 22 G) |
 
+## Guiding Mantra
+
+> **"Declarative, Modular, SoC"**
+
+Every implementation decision should be evaluated against these three principles. Before writing code, ask:
+1. Am I describing behavior or implementing mechanics? (Declarative)
+2. Can this be swapped out without ripple effects? (Modular)
+3. Does this component have exactly one responsibility? (SoC)
+
 ## Design Principles
 
 | Principle | Implementation |
 |-----------|----------------|
+| **Declarative** | Config-driven behavior, strategies declare needs, data-driven logic |
+| **Modular** | Crates compile independently, strategies are plugins, components swappable |
 | Separation of Concerns | Each crate has single responsibility |
 | Modularity | Strategies, observations, rewards are plugins |
 | Trait Boundaries | Crates communicate through traits, not concrete types |
@@ -34,6 +45,7 @@ A quantitative trading simulation built in Rust with RL training capabilities, m
 | Realistic Latency | Order latency prevents look-ahead bias |
 | Agent Tiering | Smart/Reactive/Background tiers for 100k+ scale |
 | Statistical Modeling | Background agents modeled statistically, not individually |
+| Human-Playable Design | Time controls + quant dashboard for meaningful human gameplay |
 
 ## Scaling Targets
 
@@ -234,7 +246,8 @@ quant-trading-gym/
 │   │   ├── builder.rs          # SimulationBuilder
 │   │   ├── hooks.rs
 │   │   ├── metrics.rs          # TickMetrics, MetricsHook
-│   │   └── warmup.rs           # Warm-up tick logic
+│   │   ├── warmup.rs           # Warm-up tick logic
+│   │   └── snapshot.rs         # to_snapshot(), from_snapshot()
 │   │
 │   ├── gym/                    # RL environment (SYNC)
 │   │   ├── lib.rs
@@ -280,13 +293,10 @@ quant-trading-gym/
 │       │   ├── errors.rs
 │       │   ├── middleware.rs
 │       │   └── bridge.rs       # Sync/async bridge
-│       ├── exchange/
-│       ├── agents/
-│       ├── portfolio/
-│       ├── analytics/
-│       ├── risk/
-│       ├── news/
-│       └── chatbot/
+│       ├── data/               # Consolidated: analytics, portfolio, risk, news
+│       ├── game/               # WebSocket, sessions, time control, orders, BFF
+│       ├── storage/            # Snapshots, trade log, queries
+│       └── chatbot/            # NLP → API routing
 │
 ├── python/
 │   ├── quant_trading_gym/      # PyO3 module
@@ -573,6 +583,57 @@ pub struct AgentConfig {
 }
 ```
 
+## Game Save/Resume Types
+
+| Type | Fields |
+|------|--------|
+| `GameId` | `Uuid` |
+| `GameStatus` | `InProgress`, `Paused`, `Completed` |
+| `GameSnapshot` | `game_id`, `tick`, `timestamp`, `market_state`, `agents`, `price_history`, `config` |
+| `AgentSnapshot` | `agent_id`, `agent_type`, `portfolio`, `strategy_state` |
+
+### GameSnapshot
+
+```rust
+/// Complete simulation state for save/resume.
+/// Saved on: auto-save (every N ticks), manual save, save & exit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GameSnapshot {
+    pub game_id: GameId,
+    pub tick: Tick,
+    pub saved_at: Timestamp,
+    
+    // Market state
+    pub prices: HashMap<Symbol, Price>,
+    pub books: HashMap<Symbol, BookSnapshot>,
+    
+    // Agent states
+    pub agents: Vec<AgentSnapshot>,
+    
+    // Rolling window history (needed for indicators on resume)
+    pub price_history: HashMap<Symbol, Vec<Price>>,  // Last N prices
+    
+    // Game configuration
+    pub config: GameConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentSnapshot {
+    pub agent_id: AgentId,
+    pub agent_type: String,  // Strategy name for reconstruction
+    pub portfolio: Portfolio,
+    pub strategy_params: serde_json::Value,  // Strategy-specific state
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GameConfig {
+    pub symbols: Vec<SymbolConfig>,
+    pub auto_save_interval: Tick,  // Default: 10_000
+    pub duration_ticks: Option<Tick>,
+    pub ai_opponents: Vec<AgentConfig>,
+}
+```
+
 ## Fixed-Point Helpers & Financial Precision
 
 ```rust
@@ -844,6 +905,8 @@ impl PortfolioStore {
 **Cost Basis Method:** Weighted average (not FIFO/LIFO) for simplicity and consistency.
 | `RiskStore` | struct | `store_metrics()`, `query_history()` |
 | `SnapshotStore` | struct | `save()`, `restore()` |
+| `GameSnapshotStore` | struct | `save_game()`, `load_game()`, `list_saves()` |
+| `TradeLogStore` | struct | `append()`, `query_game()` |
 | `Storage` | struct | Aggregates all stores |
 | `PersistenceHook` | struct | Implements `SimulationHook` |
 
@@ -1274,24 +1337,71 @@ impl Default for SimulationConfig {
 
 # Part 10: Services Layer
 
+## Service Architecture (Consolidated)
+
+4 services instead of 8, same API surface:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      SIMULATION                             │
+│  (sync, computes everything for agents)                     │
+└──────────────────────────┬──────────────────────────────────┘
+                           │ broadcast
+         ┌─────────────────┼─────────────────┐
+         ▼                 ▼                 ▼
+  ┌─────────────┐   ┌─────────────┐   ┌─────────────┐
+  │    DATA     │   │    GAME     │   │   STORAGE   │
+  │   SERVICE   │   │   SERVICE   │   │   SERVICE   │
+  │   :8001     │   │   :8002     │   │   :8003     │
+  │             │   │             │   │             │
+  │ /analytics/*│   │ /game/*     │   │ /storage/*  │
+  │ /portfolio/*│   │ WebSocket   │   │ Snapshots   │
+  │ /risk/*     │   │ Sessions    │   │ Trade log   │
+  │ /news/*     │   │ Time ctrl   │   │ Queries     │
+  │             │   │ Orders      │   │             │
+  └─────────────┘   └─────────────┘   └─────────────┘
+         │                 │
+         └────────┬────────┘
+                  ▼
+           ┌─────────────┐
+           │   CHATBOT   │
+           │   :8004     │
+           │  NLP → API  │
+           └─────────────┘
+```
+
 ## Service Overview
 
 | Service | Port | Responsibility | Sync/Async |
 |---------|------|----------------|------------|
-| exchange | 8001 | Order submission, book queries | Async (bridges to sync) |
-| agents | 8002 | Agent management | Async (bridges to sync) |
-| portfolio | 8003 | Holdings, P&L | Async (reads from storage) |
-| analytics | 8004 | Candles, indicators, factors | Async (reads from storage) |
-| risk | 8005 | Risk metrics, limits | Async (bridges to sync) |
-| news | 8006 | Event injection, feed | Async (bridges to sync) |
-| chatbot | 8007 | Natural language interface | Async |
+| data | 8001 | Analytics, portfolio, risk, news queries | Async (subscribes to sim) |
+| game | 8002 | WebSocket, sessions, time control, orders, BFF | Async (bridges to sync) |
+| storage | 8003 | Snapshots, trade log, historical queries | Async |
+| chatbot | 8004 | Natural language interface | Async |
 
-**Note:** All services should be configurable via environment variables (e.g., `EXCHANGE_PORT=8001`). Consider using a shared config crate or `.env` file for service discovery.
+**Consolidation Rationale:**
+- Analytics, portfolio, risk, news all have similar scaling needs (query-heavy, read-mostly)
+- Single Data service with internal modules: `analytics.rs`, `portfolio.rs`, `risk.rs`, `news.rs`
+- Same API surface as 8 services, fewer deployment units
 
-## Service Architecture
+**Note:** All services should be configurable via environment variables (e.g., `DATA_PORT=8001`). Consider using a shared config crate or `.env` file for service discovery.
+
+## Data Service Internal Structure
 
 ```rust
-// crates/services/exchange/main.rs
+// crates/services/data/src/
+├── lib.rs
+├── main.rs
+├── analytics.rs   // /analytics/* handlers
+├── portfolio.rs   // /portfolio/* handlers
+├── risk.rs        // /risk/* handlers
+└── news.rs        // /news/* handlers
+```
+
+## Game Service Architecture
+
+```rust
+// crates/services/game/main.rs
 
 use axum::{Router, routing::{get, post}};
 use std::sync::Arc;
@@ -1332,67 +1442,72 @@ async fn main() {
 
 ## API Endpoints
 
-### exchange
+### data service (/analytics/*)
 
 | Method | Path | Request | Response |
 |--------|------|---------|----------|
-| POST | /order | `Order` | `OrderId` |
-| DELETE | /order/{id} | - | `OrderStatus` |
-| GET | /book/{symbol} | - | `BookSnapshot` |
-| GET | /price/{symbol} | - | `Price` |
-| GET | /trades | `?since=timestamp` | `Vec<Trade>` |
+| GET | /analytics/candles/{symbol} | `?interval=1m&limit=100` | `Vec<Candle>` |
+| GET | /analytics/indicators/{symbol} | `?types=RSI,MACD` | `Vec<IndicatorValue>` |
+| GET | /analytics/factors | - | `Vec<FactorScore>` |
+| GET | /analytics/correlation | - | `CorrelationMatrix` |
 
-### agents
-
-| Method | Path | Request | Response |
-|--------|------|---------|----------|
-| POST | /spawn | `SpawnRequest` | `Vec<AgentId>` |
-| GET | /agents | - | `Vec<AgentSummary>` |
-| GET | /agent/{id} | - | `AgentDetail` |
-| DELETE | /agent/{id} | - | `()` |
-| POST | /tick | - | `TickResult` |
-
-### portfolio
+### data service (/portfolio/*)
 
 | Method | Path | Request | Response |
 |--------|------|---------|----------|
 | GET | /portfolio/{agent_id} | - | `Portfolio` |
-| GET | /pnl/{agent_id} | - | `PnL` |
-| GET | /leaderboard | `?limit=n` | `Vec<LeaderboardEntry>` |
-| GET | /history/{agent_id} | `?since=timestamp` | `Vec<Trade>` |
+| GET | /portfolio/{agent_id}/pnl | - | `PnL` |
+| GET | /portfolio/{agent_id}/history | `?since=timestamp` | `Vec<Trade>` |
+| GET | /portfolio/leaderboard | `?limit=n` | `Vec<LeaderboardEntry>` |
 
-### analytics
-
-| Method | Path | Request | Response |
-|--------|------|---------|----------|
-| GET | /candles/{symbol} | `?interval=1m&limit=100` | `Vec<Candle>` |
-| GET | /indicators/{symbol} | `?types=RSI,MACD` | `Vec<IndicatorValue>` |
-| GET | /factors | - | `Vec<FactorScore>` |
-| GET | /correlation | - | `CorrelationMatrix` |
-
-### risk
+### data service (/risk/*)
 
 | Method | Path | Request | Response |
 |--------|------|---------|----------|
-| GET | /metrics/{agent_id} | - | `RiskMetrics` |
-| GET | /exposure/{agent_id} | - | `ExposureReport` |
-| POST | /limits/{agent_id} | `PositionLimits` | `()` |
-| GET | /alerts | - | `Vec<RiskViolation>` |
+| GET | /risk/metrics/{agent_id} | - | `RiskMetrics` |
+| GET | /risk/exposure/{agent_id} | - | `ExposureReport` |
+| POST | /risk/limits/{agent_id} | `PositionLimits` | `()` |
+| GET | /risk/alerts | - | `Vec<RiskViolation>` |
 
-### news
+### data service (/news/*)
 
 | Method | Path | Request | Response |
 |--------|------|---------|----------|
-| POST | /event | `NewsEvent` | `EventId` |
-| GET | /feed | `?since=timestamp` | `Vec<NewsEvent>` |
-| GET | /scheduled | - | `Vec<NewsEvent>` |
+| GET | /news/feed | `?since=timestamp` | `Vec<NewsEvent>` |
+| GET | /news/scheduled | - | `Vec<NewsEvent>` |
 
-### chatbot
+### game service
+
+| Method | Path | Request | Response |
+|--------|------|---------|----------|
+| POST | /game/order | `Order` | `OrderId` |
+| DELETE | /game/order/{id} | - | `OrderStatus` |
+| GET | /game/book/{symbol} | - | `BookSnapshot` |
+| GET | /game/price/{symbol} | - | `Price` |
+| GET | /game/dashboard | - | `DashboardSnapshot` |
+| WS | /game/stream | - | Real-time tick updates |
+| POST | /game/time | `{ speed: "slow" }` | `()` |
+| POST | /game/step | - | `TickResult` |
+| POST | /game/save | - | `SnapshotId` |
+| POST | /game/session | `GameConfig` | `SessionId` |
+| GET | /game/session/{id} | - | `SessionState` |
+
+### storage service
+
+| Method | Path | Request | Response |
+|--------|------|---------|----------|
+| POST | /storage/snapshots | `GameSnapshot` | `SnapshotId` |
+| GET | /storage/snapshots/{game_id} | - | `Vec<SnapshotMeta>` |
+| GET | /storage/snapshots/{game_id}/{tick} | - | `GameSnapshot` |
+| GET | /storage/trades/{game_id} | `?since=tick` | `Vec<Trade>` |
+| GET | /storage/games | - | `Vec<GameMeta>` |
+
+### chatbot service
 
 | Method | Path | Request | Response |
 |--------|------|---------|----------|
 | POST | /chat | `ChatRequest` | `ChatResponse` |
-| GET | /history | - | `Vec<Message>` |
+| GET | /chat/history | - | `Vec<Message>` |
 
 ### Health Check (All Services)
 
@@ -1412,7 +1527,325 @@ Health checks are essential for Docker orchestration, load balancers, and Kubern
 
 ---
 
-# Part 11: Storage Design
+# Part 11: Human Player Interface
+
+## The Problem
+
+AI agents operate at tick speeds (potentially <10ms per decision). Humans cannot compete at this pace. Without careful design, the "game" becomes unwatchable chaos where the human has already lost before comprehending the market state.
+
+## Design Requirements
+
+| Requirement | Purpose |
+|-------------|----------|
+| Time Controls | Pause, step, speed adjustment so humans can think |
+| Quant Dashboard | Expose the same indicators/factors AI agents see |
+| Decision Support | Order entry, position management, risk alerts |
+| Information Parity | Humans must not be informationally disadvantaged vs AI |
+
+## Time Control System
+
+### Simulation Speed Modes
+
+| Mode | Behavior | Use Case |
+|------|----------|----------|
+| Paused | Simulation frozen, full inspection | Analysis, order planning |
+| Step | Advance exactly 1 tick per click | Debugging, learning |
+| Slow | 1 tick per second | Comfortable human play |
+| Normal | 10 ticks per second | Engaged play |
+| Fast | 100 ticks per second | Skip boring periods |
+| Max | As fast as possible | AI-only training |
+
+### Implementation
+
+```rust
+// crates/simulation/time_control.rs
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SimulationSpeed {
+    Paused,
+    Step,           // Manual advance
+    Slow,           // 1 tick/sec
+    Normal,         // 10 ticks/sec  
+    Fast,           // 100 ticks/sec
+    Max,            // Unbounded
+}
+
+pub struct TimeController {
+    speed: SimulationSpeed,
+    tick_interval_ms: u64,
+    pending_step: bool,
+}
+
+impl TimeController {
+    pub fn should_tick(&mut self) -> bool {
+        match self.speed {
+            SimulationSpeed::Paused => false,
+            SimulationSpeed::Step => {
+                let should = self.pending_step;
+                self.pending_step = false;
+                should
+            }
+            _ => true, // Timer-based in game loop
+        }
+    }
+    
+    pub fn request_step(&mut self) {
+        self.pending_step = true;
+    }
+    
+    pub fn tick_interval(&self) -> Option<Duration> {
+        match self.speed {
+            SimulationSpeed::Paused | SimulationSpeed::Step => None,
+            SimulationSpeed::Slow => Some(Duration::from_millis(1000)),
+            SimulationSpeed::Normal => Some(Duration::from_millis(100)),
+            SimulationSpeed::Fast => Some(Duration::from_millis(10)),
+            SimulationSpeed::Max => Some(Duration::from_millis(0)),
+        }
+    }
+}
+```
+
+### WebSocket Commands
+
+| Command | Effect |
+|---------|--------|
+| `{ "type": "pause" }` | Freeze simulation |
+| `{ "type": "step" }` | Advance one tick (when paused) |
+| `{ "type": "speed", "value": "slow" }` | Set speed mode |
+| `{ "type": "resume" }` | Resume from pause |
+
+## Quant Dashboard
+
+Humans need visual access to the same quantitative data that AI agents receive in `StrategyContext`.
+
+### Dashboard Panels
+
+| Panel | Data Source | Update Frequency |
+|-------|-------------|------------------|
+| Price Chart | `MarketView::candles()` | Every tick |
+| Order Book Depth | `MarketView::book()` | Every tick |
+| Technical Indicators | `IndicatorCache` | Every tick |
+| Factor Scores | `FactorScores` | Every tick |
+| Risk Metrics | `RiskCalculator` | Every tick |
+| News Feed | `NewsGenerator::active_events()` | On event |
+| Portfolio Summary | `Portfolio` | On trade |
+| P&L Chart | `PnL` history | Every tick |
+
+### Indicator Display
+
+```typescript
+// frontend/src/components/IndicatorPanel.tsx
+
+interface IndicatorPanelProps {
+  indicators: {
+    sma_20: number;
+    sma_50: number;
+    ema_12: number;
+    ema_26: number;
+    rsi_14: number;
+    macd: { value: number; signal: number; histogram: number };
+    bollinger: { upper: number; middle: number; lower: number };
+    atr_14: number;
+  };
+  factors: {
+    momentum: number;    // -1 to +1
+    value: number;       // -1 to +1
+    volatility: number;  // 0 to +1
+    mean_reversion: number; // -1 to +1
+  };
+}
+```
+
+### Signal Summary
+
+Aggregate indicators into human-readable signals:
+
+| Signal | Color | Meaning |
+|--------|-------|----------|
+| Strong Buy | Green | Multiple indicators bullish |
+| Buy | Light Green | Net bullish |
+| Neutral | Gray | Mixed signals |
+| Sell | Light Red | Net bearish |
+| Strong Sell | Red | Multiple indicators bearish |
+
+## Decision Support UI
+
+### Order Entry Panel
+
+| Feature | Description |
+|---------|-------------|
+| Quick buttons | Buy/Sell 10%, 25%, 50%, 100% of buying power |
+| Limit price helper | Click on order book level to set price |
+| Risk preview | Show position size, new exposure before confirm |
+| Bracket orders | Set stop-loss and take-profit with single entry |
+
+### Position Management
+
+| Feature | Description |
+|---------|-------------|
+| One-click flatten | Close all positions instantly |
+| Scale out buttons | Reduce position by 25%, 50% |
+| Break-even line | Visual line on chart showing avg entry |
+| P&L watermark | Unrealized P&L overlaid on chart |
+
+### Risk Alerts
+
+| Alert | Trigger | Action |
+|-------|---------|--------|
+| Drawdown Warning | Drawdown > 5% | Yellow banner |
+| Drawdown Critical | Drawdown > 10% | Red banner, audio |
+| Position Limit | Near max position | Prevent over-buying |
+| Buying Power Low | Cash < 10% of initial | Warning banner |
+
+## Information Parity Contract
+
+**Principle:** Humans must have access to ALL information that AI agents can observe.
+
+| AI Observation | Human Equivalent |
+|----------------|------------------|
+| `StrategyContext.view` | Price chart, order book display |
+| `StrategyContext.indicators` | Indicator panel with values |
+| `StrategyContext.factors` | Factor score gauges |
+| `StrategyContext.risk` | Risk metrics panel |
+| `StrategyContext.events` | News feed with sentiment |
+| `StrategyContext.portfolio` | Portfolio summary |
+| Order book depth (N levels) | Visual depth chart |
+| Historical candles | Scrollable chart history |
+
+**What humans get that AI doesn't:**
+- Visual pattern recognition on charts
+- Intuition from real-world knowledge
+- Ability to pause and think indefinitely
+
+**What AI gets that humans don't:**
+- Perfect recall of all historical data
+- Instant calculation (no mental math)
+- Consistent execution (no fat fingers)
+
+## Game Service as Dashboard BFF (Backend-For-Frontend)
+
+The frontend shouldn't call 5+ services directly. The `services/game` crate acts as an **aggregation layer** for human player data:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     Frontend (React)                        │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐       │
+│  │TimeCtrl  │ │Indicators│ │  Risk    │ │Portfolio │       │
+│  └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘       │
+│       └────────────┴────────────┴────────────┘              │
+│                         │                                   │
+│              WebSocket + REST                               │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────────┐
+│              Game Service (BFF) :8008                       │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │  GET /game/dashboard  →  DashboardSnapshot          │   │
+│  │  WS  /game/stream     →  Real-time updates          │   │
+│  └─────────────────────────────────────────────────────┘   │
+│       │           │           │           │                 │
+│   analytics    risk      portfolio    exchange             │
+│   (internal)  (internal)  (internal)  (internal)           │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Dashboard Aggregation Endpoint
+
+| Endpoint | Method | Purpose |
+|----------|--------|----------|
+| `/game/dashboard` | GET | **Aggregated snapshot** of all dashboard data |
+| `/game/stream` | WS | Real-time dashboard updates (push on each tick) |
+| `/game/time` | POST | Set simulation speed |
+| `/game/step` | POST | Advance one tick (when paused) |
+
+### DashboardSnapshot Response
+
+```rust
+// crates/services/game/dashboard.rs
+
+#[derive(Serialize)]
+pub struct DashboardSnapshot {
+    pub tick: Tick,
+    pub timestamp: Timestamp,
+    
+    // Price data
+    pub prices: HashMap<Symbol, Price>,
+    pub book_snapshots: HashMap<Symbol, BookSnapshot>,
+    
+    // Quant data (from analytics service)
+    pub indicators: HashMap<Symbol, IndicatorSet>,
+    pub factors: Vec<FactorScore>,
+    
+    // Risk data (from risk service)
+    pub risk_metrics: RiskMetrics,
+    pub alerts: Vec<RiskViolation>,
+    
+    // Portfolio data (from portfolio service)
+    pub portfolio: Portfolio,
+    pub pnl: PnL,
+    
+    // News (from news service)
+    pub active_events: Vec<NewsEvent>,
+    
+    // Aggregated signals
+    pub signals: HashMap<Symbol, Signal>,
+    
+    // Time control state
+    pub speed: SimulationSpeed,
+    pub paused: bool,
+}
+
+#[derive(Serialize)]
+pub struct IndicatorSet {
+    pub sma_20: Option<f64>,
+    pub sma_50: Option<f64>,
+    pub ema_12: Option<f64>,
+    pub ema_26: Option<f64>,
+    pub rsi_14: Option<f64>,
+    pub macd: Option<MacdValue>,
+    pub bollinger: Option<BollingerValue>,
+    pub atr_14: Option<f64>,
+}
+```
+
+### WebSocket Stream Messages
+
+```typescript
+// Frontend receives these on /game/stream
+
+type DashboardUpdate = 
+  | { type: 'tick', data: DashboardSnapshot }
+  | { type: 'trade', data: Trade }
+  | { type: 'news', data: NewsEvent }
+  | { type: 'alert', data: RiskViolation }
+  | { type: 'speed_changed', data: SimulationSpeed };
+```
+
+### Why BFF Pattern?
+
+| Benefit | Explanation |
+|---------|-------------|
+| Single connection | Frontend opens 1 WebSocket, not 5 |
+| Consistent tick | All data from same simulation tick |
+| Reduced latency | Internal service calls, not network |
+| Simplified frontend | No aggregation logic in React |
+| CORS simplicity | Single origin to configure |
+
+## Frontend Components (Phase 22 G Extension)
+
+| Component | Purpose |
+|-----------|----------|
+| `TimeControls.tsx` | Pause/play/step/speed buttons |
+| `IndicatorPanel.tsx` | Technical indicator values |
+| `FactorGauges.tsx` | Visual factor score display |
+| `RiskDashboard.tsx` | VaR, drawdown, exposure |
+| `SignalSummary.tsx` | Aggregated buy/sell/hold signal |
+| `QuickTradeButtons.tsx` | % of portfolio quick entry |
+| `AlertBanner.tsx` | Risk warnings, news alerts |
+
+---
+
+# Part 12: Storage Design
 
 ## Database Split
 
@@ -1650,7 +2083,7 @@ impl PersistenceHook {
 
 ---
 
-# Part 12: Simulation Flow
+# Part 13: Simulation Flow
 
 ## Tick Sequence
 
@@ -1686,7 +2119,7 @@ Before smart agents activate:
 
 ---
 
-# Part 13: Observation System
+# Part 14: Observation System
 
 ## Observation Builders
 
@@ -1715,7 +2148,7 @@ Contract ensures Rust == Python for training parity.
 
 ---
 
-# Part 14: Project Phases
+# Part 15: Project Phases
 
 **Phase Structure:**
 
@@ -1752,29 +2185,25 @@ These tracks do NOT depend on each other. The RL Agent (Phase 18 RL) is a Strate
 | 17 (RL) | Training Scripts | RL | 1 wk | DQN, PPO, ONNX export |
 | 18 (RL) | RL Agent Strategy | RL | 5 days | ONNX runtime, adds Strategy to agents |
 | 13 (G) | Services Foundation | Game | 4 days | Bridge, middleware, telemetry |
-| 14 (G) | Exchange Service | Game | 3 days | Order/book APIs |
-| 15 (G) | Agents Service | Game | 3 days | Spawn/list/delete, tier management |
-| 16 (G) | Portfolio Service | Game | 2 days | Holdings, P&L, leaderboard |
-| 17 (G) | Analytics Service | Game | 3 days | Candles, indicators, microstructure |
-| 18 (G) | Risk Service | Game | 2 days | Metrics, limits |
-| 19 (G) | News Service | Game | 2 days | Event injection, feed |
-| 20 (G) | Chatbot Service | Game | 1 wk | LLM function calling |
-| 21 (G) | Game Infrastructure | Game | 1.5 wks | Auth, WebSocket, sessions |
-| 22 (G) | Game Frontend | Game | 2.5 wks | React UI, real-time updates |
-| 23 | RL Game Integration | Both | 1 wk | RL agents as game opponents |
+| 14 (G) | Data Service | Game | 1 wk | Analytics, portfolio, risk, news APIs |
+| 15 (G) | Game Service | Game | 1 wk | WebSocket, sessions, time control, orders, BFF |
+| 16 (G) | Storage Service | Game | 3 days | Snapshots, trade log, queries |
+| 17 (G) | Chatbot Service | Game | 1 wk | LLM function calling |
+| 18 (G) | Game Frontend | Game | 2.5 wks | React UI, real-time dashboard |
+| 19 | RL Game Integration | Both | 1 wk | RL agents as game opponents |
 
 **Parallel Development:**
 ```
                               ┌─── RL Track (13-18 RL) ─────────────────┐
                               │                                          │
-Phase 12 (Scale) ────────────┤                                          ├─── Phase 23 (RL Game Integration)
+Phase 12 (Scale) ────────────┤                                          ├─── Phase 19 (RL Game Integration)
                               │                                          │    (requires both tracks)
-                              └─── Game Track (13-22 G) ────────────────┘
+                              └─── Game Track (13-18 G) ────────────────┘
 ```
 
 ---
 
-# Part 15: Phase Details
+# Part 16: Phase Details
 
 ## Phase 1: Types
 
@@ -2171,19 +2600,25 @@ impl SimulationRunner {
 | `crates/storage/stores/candles.rs` | `CandleStore` with aggregation |
 | `crates/storage/stores/portfolios.rs` | `PortfolioStore` with event sourcing |
 | `crates/storage/stores/risk.rs` | `RiskStore` |
-| `crates/storage/stores/snapshots.rs` | `SnapshotStore` |
+| `crates/storage/stores/snapshots.rs` | `SnapshotStore` (market snapshots) |
+| `crates/storage/stores/game_snapshots.rs` | `GameSnapshotStore` (save/resume) |
+| `crates/storage/stores/trade_log.rs` | `TradeLogStore` (append-only game log) |
 | `crates/storage/persistence_hook.rs` | `PersistenceHook` |
 | `crates/storage/lib.rs` | Module exports |
 
 **Key Features:**
 - Decimal values stored as TEXT strings
 - Proper decimal parsing on read
+- Game snapshots for save/resume (auto-save every N ticks, manual save)
+- Trade log for post-game analysis
 
 **Exit Criteria:**
 - Trades append and query correctly
 - Candles aggregate on write
 - Portfolios rebuild from trades
 - Snapshots save/restore market state
+- **Game snapshots save/load correctly**
+- **Trade log appends and queries by game**
 - Decimal precision preserved
 
 **Tests:**
@@ -2191,6 +2626,8 @@ impl SimulationRunner {
 - `test_candle_aggregation`
 - `test_portfolio_rebuild`
 - `test_snapshot_restore`
+- `test_game_snapshot_roundtrip`
+- `test_trade_log_query`
 - `test_decimal_roundtrip`
 
 **Effort:** 2 weeks
@@ -2627,47 +3064,51 @@ impl From<Price> for PriceResponse {
 
 ---
 
-## Phase 14 (G): Exchange Service
+## Phase 14 (G): Data Service
 
-**Goal:** Order and book APIs work
+**Goal:** Consolidated analytics, portfolio, risk, news APIs work
 
 **Context Required:**
 - `services/common` (bridge)
-- `sim-core` (`Market`)
-- `storage` (`TradeStore`)
+- `quant` (`IndicatorEngine`, `FactorEngine`, `RiskCalculator`)
+- `storage` (`CandleStore`, `PortfolioStore`, `TradeStore`, `RiskStore`)
 - `types` crate
 
 **Deliverables:**
 
 | File | Contents |
 |------|----------|
-| `crates/services/exchange/Cargo.toml` | Dependencies |
-| `crates/services/exchange/routes.rs` | API endpoints |
-| `crates/services/exchange/handlers.rs` | Request handlers using bridge |
-| `crates/services/exchange/main.rs` | Service entry |
+| `crates/services/data/Cargo.toml` | Dependencies |
+| `crates/services/data/main.rs` | Service entry |
+| `crates/services/data/analytics.rs` | `/analytics/*` handlers - candles, indicators, factors |
+| `crates/services/data/portfolio.rs` | `/portfolio/*` handlers - holdings, P&L, leaderboard |
+| `crates/services/data/risk.rs` | `/risk/*` handlers - metrics, exposure, limits |
+| `crates/services/data/news.rs` | `/news/*` handlers - feed, scheduled events |
 
 **Exit Criteria:**
-- Orders submit via bridge and match
-- Book queries return correct data
-- Trades persist
-- Decimal prices serialize correctly in JSON
+- Analytics: Candle queries work with intervals, indicators compute on demand
+- Portfolio: Holdings return with Decimal values, P&L calculates correctly
+- Risk: Metrics query works, exposure breakdown works, limits can be set
+- News: Feed returns recent events
 
 **Tests:**
-- `test_order_submission`
-- `test_book_query`
-- `test_decimal_json_serialization`
+- `test_candle_queries`
+- `test_indicator_calculation`
+- `test_portfolio_pnl`
+- `test_risk_metrics`
 
-**Effort:** 3 days
+**Effort:** 1 week
 
 ---
 
-## Phase 15 (G): Agents Service
+## Phase 15 (G): Game Service
 
-**Goal:** Agent management APIs work
+**Goal:** WebSocket, sessions, time control, orders, BFF for frontend
 
 **Context Required:**
 - `services/common` (bridge)
-- `agents` (`AgentOrchestrator`, `StrategyRegistry`)
+- `sim-core` (`Market`, `SimulationEngine`)
+- `agents` (`AgentOrchestrator`)
 - `storage` (`SnapshotStore`)
 - `types` crate
 
@@ -2675,137 +3116,72 @@ impl From<Price> for PriceResponse {
 
 | File | Contents |
 |------|----------|
-| `crates/services/agents/Cargo.toml` | Dependencies |
-| `crates/services/agents/routes.rs` | API endpoints |
-| `crates/services/agents/handlers.rs` | Request handlers |
-| `crates/services/agents/main.rs` | Service entry |
+| `crates/services/game/Cargo.toml` | Dependencies |
+| `crates/services/game/main.rs` | Service entry |
+| `crates/services/game/websocket.rs` | Real-time tick streaming |
+| `crates/services/game/session.rs` | Session management, GameConfig |
+| `crates/services/game/time_control.rs` | Speed control, step, pause |
+| `crates/services/game/orders.rs` | Order submission via bridge |
+| `crates/services/game/dashboard.rs` | BFF aggregation endpoint |
 
 **Exit Criteria:**
-- Agents spawn with specified strategies and latency
-- List/delete work
-- Tick advances all agents
+- WebSocket streams tick updates to frontend
+- Sessions create/resume with GameConfig
+- Time control: play, pause, step, speed adjustment
+- Orders submit via bridge and match
+- Dashboard endpoint aggregates from Data + Storage services
+
+**Tests:**
+- `test_websocket_connection`
+- `test_session_lifecycle`
+- `test_time_control`
+- `test_order_submission`
+- `test_dashboard_aggregation`
+
+**Effort:** 1 week
+
+---
+
+## Phase 16 (G): Storage Service
+
+**Goal:** Snapshots, trade log, historical queries work
+
+**Context Required:**
+- `services/common`
+- `storage` (`SnapshotStore`, `TradeStore`)
+- `types` crate
+
+**Deliverables:**
+
+| File | Contents |
+|------|----------|
+| `crates/services/storage/Cargo.toml` | Dependencies |
+| `crates/services/storage/main.rs` | Service entry |
+| `crates/services/storage/snapshots.rs` | Save/load game snapshots |
+| `crates/services/storage/trades.rs` | Trade log queries |
+| `crates/services/storage/games.rs` | Game metadata listing |
+
+**Exit Criteria:**
+- Snapshots save and load correctly
+- Trade log queries filter by tick range
+- Game listing returns metadata
+
+**Tests:**
+- `test_snapshot_save_load`
+- `test_trade_queries`
+- `test_game_listing`
 
 **Effort:** 3 days
 
 ---
 
-## Phase 16 (G): Portfolio Service
-
-**Goal:** Holdings and P&L APIs work
-
-**Context Required:**
-- `services/common`
-- `storage` (`PortfolioStore`, `TradeStore`)
-- `types` crate
-
-**Deliverables:**
-
-| File | Contents |
-|------|----------|
-| `crates/services/portfolio/Cargo.toml` | Dependencies |
-| `crates/services/portfolio/routes.rs` | API endpoints |
-| `crates/services/portfolio/handlers.rs` | Request handlers |
-| `crates/services/portfolio/main.rs` | Service entry |
-
-**Exit Criteria:**
-- Portfolio queries return holdings with Decimal values
-- P&L calculates correctly
-- Leaderboard ranks agents
-
-**Effort:** 2 days
-
----
-
-## Phase 17 (G): Analytics Service
-
-**Goal:** Candles, indicators, factors APIs work
-
-**Context Required:**
-- `services/common`
-- `quant` (`IndicatorEngine`, `FactorEngine`)
-- `storage` (`CandleStore`)
-- `types` crate
-
-**Deliverables:**
-
-| File | Contents |
-|------|----------|
-| `crates/services/analytics/Cargo.toml` | Dependencies |
-| `crates/services/analytics/routes.rs` | API endpoints |
-| `crates/services/analytics/handlers.rs` | Request handlers |
-| `crates/services/analytics/main.rs` | Service entry |
-
-**Exit Criteria:**
-- Candle queries work with intervals
-- Indicators compute on demand
-- Factors return current scores
-
-**Effort:** 3 days
-
----
-
-## Phase 18 (G): Risk Service
-
-**Goal:** Risk metrics and limits APIs work
-
-**Context Required:**
-- `services/common` (bridge)
-- `quant` (`RiskCalculator`)
-- `storage` (`RiskStore`)
-- `types` crate
-
-**Deliverables:**
-
-| File | Contents |
-|------|----------|
-| `crates/services/risk/Cargo.toml` | Dependencies |
-| `crates/services/risk/routes.rs` | API endpoints |
-| `crates/services/risk/handlers.rs` | Request handlers |
-| `crates/services/risk/main.rs` | Service entry |
-
-**Exit Criteria:**
-- Risk metrics query works
-- Exposure breakdown works
-- Limits can be set and checked
-
-**Effort:** 2 days
-
----
-
-## Phase 19 (G): News Service
-
-**Goal:** Event APIs work
-
-**Context Required:**
-- `services/common` (bridge)
-- `news` (`NewsGenerator`)
-- `storage` (event log)
-- `types` crate
-
-**Deliverables:**
-
-| File | Contents |
-|------|----------|
-| `crates/services/news/Cargo.toml` | Dependencies |
-| `crates/services/news/routes.rs` | API endpoints |
-| `crates/services/news/handlers.rs` | Request handlers |
-| `crates/services/news/main.rs` | Service entry |
-
-**Exit Criteria:**
-- Events can be injected via bridge
-- Feed returns recent events
-
-**Effort:** 2 days
-
----
-
-## Phase 20 (G): Chatbot Service
+## Phase 17 (G): Chatbot Service
 
 **Goal:** Natural language interface works
 
 **Context Required:**
 - `services/common`
-- All other service APIs (as HTTP clients)
+- Data, Game, Storage service APIs (as HTTP clients)
 - LLM API documentation (Claude/OpenAI)
 
 **Deliverables:**
@@ -2813,11 +3189,11 @@ impl From<Price> for PriceResponse {
 | File | Contents |
 |------|----------|
 | `crates/services/chatbot/Cargo.toml` | Dependencies |
+| `crates/services/chatbot/main.rs` | Service entry |
 | `crates/services/chatbot/routes.rs` | Chat endpoint |
 | `crates/services/chatbot/llm.rs` | LLM client |
 | `crates/services/chatbot/functions.rs` | Function schemas |
 | `crates/services/chatbot/handlers.rs` | Function execution |
-| `crates/services/chatbot/main.rs` | Service entry |
 
 **Exit Criteria:**
 - Natural language maps to function calls
@@ -2825,64 +3201,22 @@ impl From<Price> for PriceResponse {
 - Errors handled gracefully
 
 **Example Interactions:**
-- "Buy 100 ACME" → exchange order
-- "What's my portfolio?" → portfolio query
-- "Show RSI for TECH" → analytics query
-- "Deploy my RL bot with 1 tick latency" → agent spawn
+- "Buy 100 ACME" → game service order
+- "What's my portfolio?" → data service portfolio query
+- "Show RSI for TECH" → data service analytics query
+- "Deploy my RL bot with 1 tick latency" → game service agent spawn
+- "Save the game" → game service save → storage service snapshot
 
 **Effort:** 1 week
 
 ---
 
-## Phase 21 (G): Game Infrastructure
-
-**Goal:** Authentication, sessions, real-time communication for game mode
-
-**Context Required:**
-- `services/common` (bridge)
-- `storage` (SQLite for players/sessions)
-- Auth/JWT libraries (jsonwebtoken crate)
-- WebSocket (axum's ws support)
-
-**Deliverables:**
-
-| File | Contents |
-|------|----------|
-| `crates/services/auth/Cargo.toml` | Dependencies |
-| `crates/services/auth/routes.rs` | Register, login, logout endpoints |
-| `crates/services/auth/jwt.rs` | Token generation/validation |
-| `crates/services/auth/handlers.rs` | Request handlers |
-| `crates/services/auth/main.rs` | Service entry |
-| `crates/services/game/Cargo.toml` | Dependencies |
-| `crates/services/game/session.rs` | Game session management |
-| `crates/services/game/websocket.rs` | Real-time price broadcast |
-| `crates/services/game/matchmaking.rs` | Game creation, player matching |
-| `crates/services/game/main.rs` | Service entry |
-
-**Exit Criteria:**
-- Players can register and login
-- JWT tokens issued and validated
-- Game sessions created with configurable parameters
-- WebSocket broadcasts price updates to connected players
-- Matchmaking places players into games
-
-**Tests:**
-- `player_registration_creates_account`
-- `login_returns_valid_jwt_token`
-- `game_session_created_with_config`
-- `websocket_broadcasts_price_updates`
-
-**Effort:** 1.5 weeks
-
----
-
-## Phase 22 (G): Game Frontend
+## Phase 18 (G): Game Frontend
 
 **Goal:** Playable trading game UI against AI opponents
 
 **Context Required:**
-- Phase 21 (G) services (auth, game)
-- All core services (exchange, portfolio, analytics)
+- Phase 14-17 (G) services (Data, Game, Storage, Chatbot)
 - React/TypeScript
 
 **Deliverables:**
@@ -2896,6 +3230,11 @@ impl From<Price> for PriceResponse {
 | `frontend/src/components/Portfolio.tsx` | Holdings, P&L display |
 | `frontend/src/components/OrderEntry.tsx` | Trade submission form |
 | `frontend/src/components/Leaderboard.tsx` | Rankings display |
+| `frontend/src/components/SaveControls.tsx` | Save/Save & Exit buttons |
+| `frontend/src/components/ResumeDialog.tsx` | Resume game selection in lobby |
+| `frontend/src/components/TimeControls.tsx` | Play/Pause/Step/Speed controls |
+| `frontend/src/components/RiskPanel.tsx` | VaR, exposure, drawdown display |
+| `frontend/src/components/NewsPanel.tsx` | Real-time news feed |
 | `frontend/src/hooks/useWebSocket.ts` | WebSocket connection management |
 | `frontend/src/api/client.ts` | REST API client |
 
@@ -2907,28 +3246,30 @@ impl From<Price> for PriceResponse {
 **Exit Criteria:**
 - Players can trade against AI opponents
 - Real-time price updates via WebSocket
-- Order book, chart, portfolio, leaderboard displayed
-- Rounds end after configurable ticks
-- Winner determined by P&L
+- Full dashboard: order book, chart, portfolio, risk, news, leaderboard
+- Time controls work (pause, step, speed adjustment)
+- Auto-save and manual save work
+- Resume from snapshot works
 
 **Tests:**
 - `player_can_submit_order_via_ui`
 - `websocket_updates_chart_in_realtime`
 - `leaderboard_shows_rankings`
-- `game_ends_after_configured_ticks`
+- `time_controls_pause_resume`
+- `save_resume_workflow`
 
 **Effort:** 2.5 weeks
 
 ---
 
-## Phase 23: RL Game Integration
+## Phase 19: RL Game Integration
 
 **Goal:** Add trained RL agents as premium opponents in game mode
 
 **Context Required:**
 - Phase 18 (RL) (RL Agent Strategy with ONNX)
-- Phase 22 (G) (Game Frontend)
-- All game services
+- Phase 18 (G) (Game Frontend)
+- All game services (Data, Game, Storage, Chatbot)
 
 **Deliverables:**
 
@@ -2958,9 +3299,9 @@ impl From<Price> for PriceResponse {
 
 ---
 
-# Part 16: Timeline Summary
+# Part 17: Timeline Summary
 
-**Phase Structure:** Core (1-12) → Parallel tracks (13+ RL/G) → Integration (23)
+**Phase Structure:** Core (1-12) → Parallel tracks (13+ RL/G) → Integration (19)
 
 | Phase | Name | Track | Effort | Track Cumulative |
 |-------|------|-------|--------|------------------|
@@ -2986,18 +3327,14 @@ impl From<Price> for PriceResponse {
 | 18 (RL) | RL Agent Strategy | RL | 5 days | 5.4 wks |
 | **RL Track Total** | | | **5.4 wks** ||
 | 13 (G) | Services Foundation | Game | 4 days | 4 days |
-| 14 (G) | Exchange Service | Game | 3 days | 1.4 wks |
-| 15 (G) | Agents Service | Game | 3 days | 2 wks |
-| 16 (G) | Portfolio Service | Game | 2 days | 2.4 wks |
-| 17 (G) | Analytics Service | Game | 3 days | 3 wks |
-| 18 (G) | Risk Service | Game | 2 days | 3.4 wks |
-| 19 (G) | News Service | Game | 2 days | 3.8 wks |
-| 20 (G) | Chatbot Service | Game | 1 wk | 4.8 wks |
-| 21 (G) | Game Infrastructure | Game | 1.5 wks | 6.3 wks |
-| 22 (G) | Game Frontend | Game | 2.5 wks | 8.8 wks |
-| **Game Track Total** | | | **8.8 wks** ||
-| 23 | RL Game Integration | Both | 1 wk | 1 wk |
-| **Phase 23 Total** | | | **1 wk** ||
+| 14 (G) | Data Service | Game | 1 wk | 1.8 wks |
+| 15 (G) | Game Service | Game | 1 wk | 2.8 wks |
+| 16 (G) | Storage Service | Game | 3 days | 3.4 wks |
+| 17 (G) | Chatbot Service | Game | 1 wk | 4.4 wks |
+| 18 (G) | Game Frontend | Game | 2.5 wks | 6.9 wks |
+| **Game Track Total** | | | **6.9 wks** ||
+| 19 | RL Game Integration | Both | 1 wk | 1 wk |
+| **Phase 19 Total** | | | **1 wk** ||
 
 **Duration Totals:**
 
@@ -3005,8 +3342,8 @@ impl From<Price> for PriceResponse {
 |-----------|----------|
 | Core (1-12) | 14.8 wks |
 | RL Track (13-18 RL) | 5.4 wks |
-| Game Track (13-22 G) | 8.8 wks |
-| RL Game Integration (23) | 1 wk |
+| Game Track (13-18 G) | 6.9 wks |
+| RL Game Integration (19) | 1 wk |
 
 **Timeline Scenarios:**
 
@@ -3014,13 +3351,13 @@ impl From<Price> for PriceResponse {
 |----------|------------|----------|------|
 | Core Only | Core | **14.8 wks** | Validated simulation with scale testing |
 | RL Only | Core + RL | **20.2 wks** | Train RL agents, no game UI |
-| Game Only | Core + Game | **23.6 wks** | Full playable game vs AI strategies |
-| Full (parallel dev) | Core + max(RL, Game) + 23 | **24.6 wks** | Everything (RL & Game in parallel) |
-| Full (sequential) | Core + RL + Game + 23 | **30 wks** | If one person does everything sequentially |
+| Game Only | Core + Game | **21.7 wks** | Full playable game vs AI strategies |
+| Full (parallel dev) | Core + max(RL, Game) + 19 | **22.7 wks** | Everything (RL & Game in parallel) |
+| Full (sequential) | Core + RL + Game + 19 | **28.1 wks** | If one person does everything sequentially |
 
 ---
 
-# Part 17: MVP Milestones
+# Part 18: MVP Milestones
 
 | MVP | Phases | Demo | Portfolio Value |
 |-----|--------|------|-----------------|
@@ -3028,7 +3365,7 @@ impl From<Price> for PriceResponse {
 | MVP2 | 1-10 | "Persistent market with risk management" | Strong |
 | MVP3 | 1-12 | "Scale-tested simulation ready for extensions" | Strong+ |
 | MVP4-RL | 1-12, 13-18 (RL) | "RL agent trained with observation parity" | Very Strong |
-| MVP4-Game | 1-12, 13-22 (G) | "Playable trading game against AI strategies" | Very Strong |
+| MVP4-Game | 1-12, 13-18 (G) | "Playable trading game against AI strategies" | Very Strong |
 | Full | All phases | "Play against trained RL quant bots" | Flagship |
 
 **MVP Independence:**
@@ -3038,7 +3375,7 @@ impl From<Price> for PriceResponse {
 
 ---
 
-# Part 18: Context Requirements Per Phase
+# Part 19: Context Requirements Per Phase
 
 | Phase | Files to Load | Est. Lines |
 |-------|---------------|------------|
@@ -3062,17 +3399,19 @@ impl From<Price> for PriceResponse {
 | 18 (RL) | `agents/traits.rs`, `gym/observation/contract.rs`, ONNX docs | ~600 |
 | **Game Track** |||
 | 13 (G) | `simulation/runner.rs`, tokio/axum docs | ~700 |
-| 14-20 (G) | `services/common`, relevant crate's public API | ~500 each |
-| 21 (G) | `services/common`, auth/WebSocket docs | ~700 |
-| 22 (G) | Game services, React docs | ~900 |
+| 14 (G) | `services/common`, `quant`, `storage` public APIs | ~600 |
+| 15 (G) | `services/common`, `sim-core`, `agents`, WebSocket docs | ~700 |
+| 16 (G) | `services/common`, `storage` public API | ~400 |
+| 17 (G) | `services/common`, LLM API docs, Data/Game/Storage endpoints | ~600 |
+| 18 (G) | All game services, React docs | ~900 |
 | **Final** |||
-| 23 | Phase 18 (RL) outputs, Phase 22 (G) services | ~600 |
+| 19 | Phase 18 (RL) outputs, Phase 18 (G) services | ~600 |
 
 Each phase fits in one LLM context window.
 
 ---
 
-# Part 19: Technical Talking Points
+# Part 20: Technical Talking Points
 
 | Topic | What You Built |
 |-------|----------------|
@@ -3097,7 +3436,7 @@ Each phase fits in one LLM context window.
 
 ---
 
-# Part 20: Key Technical Decisions Summary
+# Part 21: Key Technical Decisions Summary
 
 | Decision | Rationale |
 |----------|-----------|
