@@ -4,6 +4,7 @@ members = [
     "crates/sim-core",
     "crates/agents",
     "crates/simulation",
+    "crates/tui",
 ]
 resolver = "2"
 
@@ -25,6 +26,12 @@ types = { path = "crates/types" }
 sim-core = { path = "crates/sim-core" }
 agents = { path = "crates/agents" }
 simulation = { path = "crates/simulation" }
+tui = { path = "crates/tui" }
+
+# TUI dependencies
+ratatui = "0.29"
+crossterm = "0.28"
+crossbeam-channel = "0.5"
 
 [package]
 name = "quant-trading-gym"
@@ -37,3 +44,7 @@ types.workspace = true
 sim-core.workspace = true
 agents.workspace = true
 simulation.workspace = true
+tui.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+crossbeam-channel.workspace = true

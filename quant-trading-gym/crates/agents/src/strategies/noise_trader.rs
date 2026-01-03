@@ -8,6 +8,7 @@
 //! mid price (empty book), it uses the last trade price. If neither exists,
 //! it falls back to a configured initial price.
 
+use crate::state::AgentState;
 use crate::{Agent, AgentAction, MarketData};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -46,19 +47,6 @@ impl Default for NoiseTraderConfig {
     }
 }
 
-/// Internal state tracking for NoiseTrader.
-#[derive(Debug, Clone, Default)]
-struct NoiseTraderState {
-    /// Current position in shares (positive = long, negative = short).
-    position: i64,
-    /// Current cash balance.
-    cash: Cash,
-    /// Total number of orders placed.
-    orders_placed: u64,
-    /// Total number of fills received.
-    fills_received: u64,
-}
-
 /// A random trader that generates market activity.
 ///
 /// NoiseTraders provide essential liquidity and price movement in the
@@ -68,8 +56,8 @@ pub struct NoiseTrader {
     id: AgentId,
     /// Configuration.
     config: NoiseTraderConfig,
-    /// Internal state.
-    state: NoiseTraderState,
+    /// Common agent state (position, cash, metrics).
+    state: AgentState,
     /// Random number generator (Send-compatible).
     rng: StdRng,
 }
@@ -81,10 +69,7 @@ impl NoiseTrader {
         Self {
             id,
             config,
-            state: NoiseTraderState {
-                cash: initial_cash,
-                ..Default::default()
-            },
+            state: AgentState::new(initial_cash),
             rng: StdRng::from_os_rng(),
         }
     }
@@ -95,10 +80,7 @@ impl NoiseTrader {
         Self {
             id,
             config,
-            state: NoiseTraderState {
-                cash: initial_cash,
-                ..Default::default()
-            },
+            state: AgentState::new(initial_cash),
             rng: StdRng::seed_from_u64(seed),
         }
     }
@@ -110,12 +92,12 @@ impl NoiseTrader {
 
     /// Get current position.
     pub fn position(&self) -> i64 {
-        self.state.position
+        self.state.position()
     }
 
     /// Get current cash balance.
     pub fn cash(&self) -> Cash {
-        self.state.cash
+        self.state.cash()
     }
 
     /// Determine the reference price for order generation.
@@ -166,28 +148,30 @@ impl Agent for NoiseTrader {
         let reference_price = self.get_reference_price(market);
         let order = self.generate_order(reference_price);
 
-        self.state.orders_placed += 1;
+        self.state.record_order();
         AgentAction::single(order)
     }
 
     fn on_fill(&mut self, trade: &Trade) {
-        self.state.fills_received += 1;
-
         let trade_value = trade.value();
 
         if trade.buyer_id == self.id {
-            // We bought: increase position, decrease cash
-            self.state.position += trade.quantity.raw() as i64;
-            self.state.cash -= trade_value;
+            self.state.on_buy(trade.quantity.raw(), trade_value);
         } else if trade.seller_id == self.id {
-            // We sold: decrease position, increase cash
-            self.state.position -= trade.quantity.raw() as i64;
-            self.state.cash += trade_value;
+            self.state.on_sell(trade.quantity.raw(), trade_value);
         }
     }
 
     fn name(&self) -> &str {
         "NoiseTrader"
+    }
+
+    fn position(&self) -> i64 {
+        self.state.position()
+    }
+
+    fn cash(&self) -> Cash {
+        self.state.cash()
     }
 }
 

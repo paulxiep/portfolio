@@ -116,6 +116,15 @@ impl Simulation {
         self.agents.len()
     }
 
+    /// Get agent summaries (name, position, cash) for display.
+    /// Returns a vec of (name, position, cash) tuples.
+    pub fn agent_summaries(&self) -> Vec<(&str, i64, types::Cash)> {
+        self.agents
+            .iter()
+            .map(|a| (a.name(), a.position(), a.cash()))
+            .collect()
+    }
+
     /// Get recent trades.
     pub fn recent_trades(&self) -> &[Trade] {
         &self.recent_trades

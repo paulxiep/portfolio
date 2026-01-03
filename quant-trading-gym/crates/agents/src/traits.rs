@@ -92,6 +92,25 @@ pub trait Agent: Send {
     fn name(&self) -> &str {
         "Agent"
     }
+
+    /// Get the agent's current position (shares held).
+    /// Positive = long, negative = short, zero = flat.
+    /// Default returns 0 (unknown/not tracked).
+    fn position(&self) -> i64 {
+        0
+    }
+
+    /// Get the agent's current cash balance.
+    /// Default returns zero (unknown/not tracked).
+    fn cash(&self) -> types::Cash {
+        types::Cash::ZERO
+    }
+
+    /// Get the agent's realized P&L.
+    /// Default returns zero (unknown/not tracked).
+    fn realized_pnl(&self) -> types::Cash {
+        types::Cash::ZERO
+    }
 }
 
 /// Market data snapshot passed to agents each tick.

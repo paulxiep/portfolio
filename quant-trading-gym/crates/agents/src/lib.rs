@@ -4,6 +4,7 @@
 //! - The `Agent` trait that all trading agents must implement
 //! - `MarketData` context passed to agents each tick
 //! - `AgentAction` for returning agent decisions
+//! - `AgentState` for common state tracking (position, cash, metrics)
 //! - Concrete strategy implementations (`strategies` module)
 //!
 //! # Architecture
@@ -33,8 +34,10 @@
 //! }
 //! ```
 
+mod state;
 pub mod strategies;
 mod traits;
 
+pub use state::AgentState;
 pub use strategies::{MarketMaker, MarketMakerConfig, NoiseTrader, NoiseTraderConfig};
 pub use traits::{Agent, AgentAction, MarketData};

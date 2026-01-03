@@ -9,6 +9,7 @@
 //! - Adjusts quotes based on inventory (skew away from large positions)
 //! - Cancels stale orders when prices move significantly
 
+use crate::state::AgentState;
 use crate::{Agent, AgentAction, MarketData};
 use types::{AgentId, Cash, Order, OrderSide, Price, Quantity, Trade};
 
@@ -48,23 +49,6 @@ impl Default for MarketMakerConfig {
     }
 }
 
-/// Internal state tracking for MarketMaker.
-#[derive(Debug, Clone, Default)]
-struct MarketMakerState {
-    /// Current position in shares (positive = long, negative = short).
-    position: i64,
-    /// Current cash balance.
-    cash: Cash,
-    /// Last tick when quotes were placed.
-    last_quote_tick: u64,
-    /// Total number of orders placed.
-    orders_placed: u64,
-    /// Total number of fills received.
-    fills_received: u64,
-    /// Total trading volume.
-    total_volume: u64,
-}
-
 /// A market maker that provides liquidity.
 ///
 /// MarketMakers are essential for a functioning market. They seed the
@@ -75,8 +59,12 @@ pub struct MarketMaker {
     id: AgentId,
     /// Configuration.
     config: MarketMakerConfig,
-    /// Internal state.
-    state: MarketMakerState,
+    /// Shared agent state (position, cash, metrics).
+    state: AgentState,
+    /// Last tick when quotes were placed.
+    last_quote_tick: u64,
+    /// Total trading volume.
+    total_volume: u64,
 }
 
 impl MarketMaker {
@@ -86,10 +74,9 @@ impl MarketMaker {
         Self {
             id,
             config,
-            state: MarketMakerState {
-                cash: initial_cash,
-                ..Default::default()
-            },
+            state: AgentState::new(initial_cash),
+            last_quote_tick: 0,
+            total_volume: 0,
         }
     }
 
@@ -100,12 +87,12 @@ impl MarketMaker {
 
     /// Get current position.
     pub fn position(&self) -> i64 {
-        self.state.position
+        self.state.position()
     }
 
     /// Get current cash balance.
     pub fn cash(&self) -> Cash {
-        self.state.cash
+        self.state.cash()
     }
 
     /// Determine the reference price for quoting.
@@ -128,7 +115,7 @@ impl MarketMaker {
         // Clamp inventory to avoid extreme skews
         let clamped_inventory = self
             .state
-            .position
+            .position()
             .clamp(-self.config.max_inventory, self.config.max_inventory);
 
         // Negative skew means lower prices (to sell inventory)
@@ -168,8 +155,7 @@ impl MarketMaker {
 
     /// Check if we should refresh quotes this tick.
     fn should_refresh(&self, current_tick: u64) -> bool {
-        current_tick == 0
-            || current_tick >= self.state.last_quote_tick + self.config.refresh_interval
+        current_tick == 0 || current_tick >= self.last_quote_tick + self.config.refresh_interval
     }
 }
 
@@ -187,31 +173,32 @@ impl Agent for MarketMaker {
         let reference_price = self.get_reference_price(market);
         let orders = self.generate_quotes(reference_price);
 
-        self.state.orders_placed += orders.len() as u64;
-        self.state.last_quote_tick = market.tick;
+        self.state.record_orders(orders.len() as u64);
+        self.last_quote_tick = market.tick;
 
         AgentAction::multiple(orders)
     }
 
     fn on_fill(&mut self, trade: &Trade) {
-        self.state.fills_received += 1;
-        self.state.total_volume += trade.quantity.raw();
-
-        let trade_value = trade.value();
+        self.total_volume += trade.quantity.raw();
 
         if trade.buyer_id == self.id {
-            // We bought: increase position, decrease cash
-            self.state.position += trade.quantity.raw() as i64;
-            self.state.cash -= trade_value;
+            self.state.on_buy(trade.quantity.raw(), trade.value());
         } else if trade.seller_id == self.id {
-            // We sold: decrease position, increase cash
-            self.state.position -= trade.quantity.raw() as i64;
-            self.state.cash += trade_value;
+            self.state.on_sell(trade.quantity.raw(), trade.value());
         }
     }
 
     fn name(&self) -> &str {
         "MarketMaker"
+    }
+
+    fn position(&self) -> i64 {
+        self.state.position()
+    }
+
+    fn cash(&self) -> Cash {
+        self.state.cash()
     }
 }
 
@@ -313,14 +300,14 @@ mod tests {
         let mut mm = MarketMaker::with_defaults(AgentId(1));
 
         // Simulate large long position
-        mm.state.position = 500;
+        mm.state.set_position(500);
 
         // Skew should be negative (lower prices to sell)
         let skew = mm.calculate_skew();
         assert!(skew < 0.0);
 
         // Simulate large short position
-        mm.state.position = -500;
+        mm.state.set_position(-500);
 
         // Skew should be positive (higher prices to buy)
         let skew = mm.calculate_skew();
@@ -348,7 +335,7 @@ mod tests {
         mm.on_fill(&trade);
 
         assert_eq!(mm.position(), 50);
-        assert_eq!(mm.state.total_volume, 50);
+        assert_eq!(mm.total_volume, 50);
         // Cash decreased by 50 * 100 = 5000
         assert_eq!(mm.cash(), Cash::from_float(995_000.0));
     }

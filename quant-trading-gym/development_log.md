@@ -1,5 +1,115 @@
 # Development Log
 
+## 2026-01-03: V0.4 - TUI Visualization
+
+### Completed
+- ✅ **tui crate**: Real-time terminal visualization
+  - `ratatui` v0.29 for terminal UI rendering
+  - `crossterm` v0.28 for cross-platform terminal control
+  - `crossbeam-channel` v0.5 for thread-safe communication
+
+- ✅ **PriceChart widget**: Line graph of price history
+  - Braille markers for smooth rendering
+  - Auto-scaling Y axis with min/max labels
+  - Handles empty state gracefully
+
+- ✅ **BookDepth widget**: Order book visualization
+  - Side-by-side bid/ask columns
+  - Horizontal quantity bars with relative scaling
+  - Color-coded (green bids, red asks)
+
+- ✅ **AgentTable widget**: Agent P&L summary
+  - Position, cash, realized P&L columns
+  - Color-coded positions (green long, red short)
+  - Auto-sizing columns
+
+- ✅ **StatsPanel widget**: Simulation statistics
+  - Tick counter, last price, spread
+  - Total trades and orders
+  - Agent count
+
+- ✅ **Multi-threaded architecture**: Channel-based design
+  - Simulation runs in dedicated thread
+  - TUI renders at 30fps without blocking simulation
+  - Bounded channel (100 capacity) for backpressure
+
+- ✅ **Agent trait extensions**: Added optional methods
+  - `position()` — returns agent's share position (default: 0)
+  - `cash()` — returns agent's cash balance (default: ZERO)
+  - `realized_pnl()` — returns realized P&L (default: ZERO, stub for V1)
+  - Defaults are intentional for agents that don't track state (LSP-compliant)
+
+- ✅ **AgentState struct** (DRY refactoring): Common state tracking
+  - Extracted from duplicated `NoiseTraderState` and `MarketMakerState`
+  - Encapsulates position, cash, orders_placed, fills_received
+  - Methods: `on_buy()`, `on_sell()`, `record_order()`, `record_orders()`
+  - Private fields with public getters for encapsulation
+  - NoiseTrader and MarketMaker now use shared AgentState
+
+### Rust Concepts Demonstrated
+- **External crate integration** — ratatui, crossterm for TUI
+- **Channels (Actor Model)** — `crossbeam_channel::bounded` for thread comm
+- **Trait default methods** — `position()`, `cash()` with safe fallback defaults
+- **Generic iterators** — `TuiApp<R: Iterator<Item = SimUpdate>>`
+- **DRY principle** — `AgentState` eliminates ~30 lines of duplication
+- **Encapsulation** — Private fields with getter methods
+- **Test-only methods** — `#[cfg(test)]` for `set_position()`
+
+### SOLID Compliance
+- **S**: Each struct has single responsibility (AgentState = state, Agent = behavior)
+- **O**: Agent trait open for new implementations, closed for modification
+- **L**: Default trait methods return safe fallbacks (0/ZERO) for any Agent impl
+- **I**: Optional methods via defaults — agents only override what they need
+- **D**: Simulation depends on Agent trait abstraction, not concrete types
+
+### Exit Criteria
+```
+cargo fmt --check     # ✅ No formatting issues
+cargo clippy          # ✅ No warnings
+cargo test --workspace # ✅ 68 tests pass (10 types + 24 sim-core + 16 agents + 6 simulation + 4 integration + 8 tui)
+cargo run             # ✅ Watch 22 agents trade in real-time TUI
+```
+
+### Files Created
+| File | Purpose |
+|------|---------|
+| `crates/tui/Cargo.toml` | TUI crate manifest |
+| `crates/tui/src/lib.rs` | Crate root exports |
+| `crates/tui/src/app.rs` | Main TUI application loop |
+| `crates/tui/src/widgets/mod.rs` | Widget module exports |
+| `crates/tui/src/widgets/update.rs` | SimUpdate message type |
+| `crates/tui/src/widgets/price_chart.rs` | Price chart widget |
+| `crates/tui/src/widgets/book_depth.rs` | Order book depth widget |
+| `crates/tui/src/widgets/agent_table.rs` | Agent P&L table widget |
+| `crates/tui/src/widgets/stats_panel.rs` | Statistics panel widget |
+| `crates/agents/src/state.rs` | AgentState shared struct |
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `Cargo.toml` | Added tui crate, ratatui, crossterm, crossbeam-channel deps |
+| `crates/agents/src/lib.rs` | Added `mod state` and export AgentState |
+| `crates/agents/src/traits.rs` | Added `position()`, `cash()`, `realized_pnl()` to Agent trait |
+| `crates/agents/src/strategies/noise_trader.rs` | Uses AgentState, implements trait methods |
+| `crates/agents/src/strategies/market_maker.rs` | Uses AgentState + MM-specific fields, implements trait methods |
+| `crates/simulation/src/runner.rs` | Added `agent_summaries()` method |
+| `src/main.rs` | Complete rewrite with TUI + channel integration |
+
+### Design Notes
+- **Channel Design**: Bounded channel (100 slots) prevents memory growth if TUI lags. Simulation thread sends updates every tick; TUI drains all updates each frame (keeps latest).
+- **Separation of Concerns**: `SimUpdate` is a pure data struct — TUI doesn't know about `Simulation`, just renders what it receives.
+- **Agent Count**: Increased to 22 agents (2 MM + 20 NoiseTraders) for more visual activity while keeping V0 practical.
+- **Frame Rate**: TUI renders at 30fps; simulation runs at ~100 ticks/sec with 10ms delay between ticks.
+
+### V0 MVP Simulation Complete! 🎉
+The simulation now produces a watchable TUI showing:
+- Price movements in real-time chart
+- Order book depth with bid/ask bars
+- All 22 agents with positions and cash
+- Running statistics (trades, orders, tick count)
+
+---
+
 ## 2026-01-03: V0.3 - Agent Strategies (NoiseTrader & MarketMaker)
 
 ### Completed

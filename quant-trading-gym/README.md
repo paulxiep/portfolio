@@ -4,13 +4,21 @@
 
 Quant Trading Gym is a high-performance quantitative trading simulation platform built primarily in Rust. It is designed to support large-scale simulations with over 100,000 agents using a tiered architecture. The system integrates Reinforcement Learning (RL) training capabilities, modular quantitative strategies, risk management, and a microservices architecture.
 
+## Getting Started
+
+- `cargo build --release`
+- `cargo run --release`
+- `q` to quit application.
+
 ## Development Roadmap
 
 The project is built vertically in iterative stages, ensuring a runnable simulation at each step.
 
+**[Development log](development_log.md)**
+
 | Version | Focus | Goal |
 |---------|-------|------|
-| **V0** | **The MVP Simulation** | Single-threaded simulation with TUI visualization showing agents trading. |
+| **V0** (completed) | **The MVP Simulation** | Single-threaded simulation with TUI visualization showing agents trading. |
 | **V1** | **Quant Layer** | Add indicators (SMA, RSI), risk metrics (Sharpe, Drawdown), and real strategies. |
 | **V2** | **Agent Scaling** | Implement tiered architecture (Smart, Reactive, Background) for 100k+ agent scale. |
 | **V3** | **Persistence & Events** | Add SQLite storage for trade history and news event generation. |
