@@ -10,19 +10,37 @@ use ratatui::{
 use super::update::AgentInfo;
 
 /// Agent P&L summary table widget.
-pub struct AgentTable<'a> {
-    /// Agent information to display.
-    agents: &'a [AgentInfo],
+///
+/// Sorts noise traders by equity (descending), market makers at bottom.
+pub struct AgentTable {
+    /// Agent information to display (sorted).
+    agents: Vec<AgentInfo>,
 }
 
-impl<'a> AgentTable<'a> {
+impl AgentTable {
     /// Create a new agent table widget.
-    pub fn new(agents: &'a [AgentInfo]) -> Self {
-        Self { agents }
+    ///
+    /// Agents are sorted: noise traders by equity (desc), then market makers at bottom.
+    pub fn new(agents: &[AgentInfo]) -> Self {
+        let mut sorted = agents.to_vec();
+        sorted.sort_by(|a, b| {
+            // Market makers always go to bottom
+            match (a.is_market_maker, b.is_market_maker) {
+                (true, false) => std::cmp::Ordering::Greater,
+                (false, true) => std::cmp::Ordering::Less,
+                _ => {
+                    // Within same category, sort by equity (descending)
+                    b.equity
+                        .partial_cmp(&a.equity)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }
+            }
+        });
+        Self { agents: sorted }
     }
 }
 
-impl Widget for AgentTable<'_> {
+impl Widget for AgentTable {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let header_cells = ["Agent", "Position", "Cash", "Realized P&L"]
             .iter()
@@ -100,16 +118,20 @@ mod tests {
     fn test_agent_table_with_data() {
         let agents = vec![
             AgentInfo {
-                name: "MM-1".to_string(),
+                name: "01-MarketMaker".to_string(),
                 position: 50,
                 realized_pnl: Cash::from_float(125.50),
                 cash: Cash::from_float(10_125.50),
+                is_market_maker: true,
+                equity: 10_125.50 + 50.0 * 100.0,
             },
             AgentInfo {
-                name: "Noise-1".to_string(),
+                name: "02-NoiseTrader".to_string(),
                 position: -20,
                 realized_pnl: Cash::from_float(-45.00),
                 cash: Cash::from_float(9_955.00),
+                is_market_maker: false,
+                equity: 9_955.00 - 20.0 * 100.0,
             },
         ];
         let widget = AgentTable::new(&agents);

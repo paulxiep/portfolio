@@ -2,8 +2,12 @@
 //!
 //! The simulation holds the order book, agents, and coordinates the tick loop.
 
+use std::collections::HashMap;
+
 use agents::{Agent, AgentAction, MarketData};
-use quant::{IndicatorCache, IndicatorEngine, IndicatorSnapshot};
+use quant::{
+    AgentRiskSnapshot, AgentRiskTracker, IndicatorCache, IndicatorEngine, IndicatorSnapshot,
+};
 use sim_core::{MatchingEngine, OrderBook};
 use types::{AgentId, Candle, Order, OrderId, Price, Quantity, Tick, Timestamp, Trade};
 
@@ -76,6 +80,9 @@ pub struct Simulation {
     /// Indicator cache for current tick (reserved for future per-tick caching).
     #[allow(dead_code)]
     indicator_cache: IndicatorCache,
+
+    /// Per-agent risk tracking.
+    risk_tracker: AgentRiskTracker,
 }
 
 /// Helper for building candles incrementally.
@@ -146,6 +153,7 @@ impl Simulation {
             current_candle: None,
             indicator_engine: IndicatorEngine::with_common_indicators(),
             indicator_cache: IndicatorCache::new(),
+            risk_tracker: AgentRiskTracker::with_defaults(),
         }
     }
 
@@ -191,6 +199,16 @@ impl Simulation {
             .iter()
             .map(|a| (a.name(), a.position(), a.cash()))
             .collect()
+    }
+
+    /// Get risk metrics for all agents.
+    pub fn agent_risk_metrics(&self) -> HashMap<AgentId, AgentRiskSnapshot> {
+        self.risk_tracker.compute_all_metrics()
+    }
+
+    /// Get risk metrics for a specific agent.
+    pub fn agent_risk(&self, agent_id: AgentId) -> AgentRiskSnapshot {
+        self.risk_tracker.compute_metrics(agent_id)
     }
 
     /// Get recent trades.
@@ -383,6 +401,14 @@ impl Simulation {
             if let Some(agent) = self.agents.iter_mut().find(|a| a.id() == agent_id) {
                 agent.on_fill(&trade);
             }
+        }
+
+        // Update risk tracking with current equity values
+        // Use last price or initial price for mark-to-market
+        let mark_price = self.book.last_price().unwrap_or(self.config.initial_price);
+        for agent in &self.agents {
+            let equity = agent.equity(mark_price).to_float();
+            self.risk_tracker.record_equity(agent.id(), equity);
         }
 
         // Advance time

@@ -21,7 +21,7 @@ use std::time::Duration;
 use agents::{MarketMaker, MarketMakerConfig, NoiseTrader, NoiseTraderConfig};
 use crossbeam_channel::{Sender, bounded};
 use simulation::{Simulation, SimulationConfig};
-use tui::{AgentInfo, SimUpdate, TuiApp};
+use tui::{AgentInfo, RiskInfo, SimUpdate, TuiApp};
 use types::{AgentId, Cash};
 
 pub use config::SimConfig;
@@ -32,16 +32,46 @@ fn build_update(sim: &Simulation, price_history: &[f64], finished: bool) -> SimU
     let book = sim.book();
     let snapshot = book.snapshot(sim.timestamp(), sim.tick(), 10);
 
+    // Get mark price for equity calculation
+    let mark_price = book.last_price().map(|p| p.to_float()).unwrap_or(100.0);
+
     // Build agent info from simulation
     let agents: Vec<AgentInfo> = sim
         .agent_summaries()
         .into_iter()
         .enumerate()
-        .map(|(i, (name, position, cash))| AgentInfo {
-            name: format!("{}-{}", name, i + 1),
-            position,
-            realized_pnl: Cash::ZERO, // TODO: track realized P&L
-            cash,
+        .map(|(i, (name, position, cash))| {
+            let is_mm = name.contains("Market");
+            let equity = cash.to_float() + (position as f64 * mark_price);
+            AgentInfo {
+                name: format!("{:02}-{}", i + 1, name),
+                position,
+                realized_pnl: Cash::ZERO, // TODO: track realized P&L
+                cash,
+                is_market_maker: is_mm,
+                equity,
+            }
+        })
+        .collect();
+
+    // Build risk metrics from simulation
+    let risk_metrics_map = sim.agent_risk_metrics();
+    let risk_metrics: Vec<RiskInfo> = sim
+        .agent_summaries()
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, (name, _, _))| {
+            let agent_id = AgentId((i + 1) as u64);
+            let is_mm = name.contains("Market");
+            risk_metrics_map.get(&agent_id).map(|metrics| RiskInfo {
+                name: format!("{:02}-{}", i + 1, name),
+                sharpe: metrics.sharpe,
+                max_drawdown: metrics.max_drawdown,
+                total_return: metrics.total_return,
+                var_95: metrics.var_95,
+                equity: metrics.equity,
+                is_market_maker: is_mm,
+            })
         })
         .collect();
 
@@ -56,6 +86,7 @@ fn build_update(sim: &Simulation, price_history: &[f64], finished: bool) -> SimU
         total_trades: stats.total_trades,
         total_orders: stats.total_orders,
         finished,
+        risk_metrics,
     }
 }
 

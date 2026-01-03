@@ -42,4 +42,4 @@ mod app;
 mod widgets;
 
 pub use app::{SimpleTui, TuiApp, check_quit};
-pub use widgets::{AgentInfo, SimUpdate};
+pub use widgets::{AgentInfo, RiskInfo, SimUpdate};

@@ -18,7 +18,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::widgets::{AgentTable, BookDepth, PriceChart, SimUpdate, StatsPanel};
+use crate::widgets::{AgentTable, BookDepth, PriceChart, RiskPanel, SimUpdate, StatsPanel};
 
 /// TUI application state.
 pub struct TuiApp {
@@ -138,16 +138,20 @@ impl TuiApp {
         // Render header
         self.draw_header(frame, main_chunks[0]);
 
-        // Content layout: left panel (stats + book) + right panel (chart + agents)
+        // Content layout: left panel (stats + book + risk) + right panel (chart + agents)
         let content_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
             .split(main_chunks[1]);
 
-        // Left panel: stats + order book
+        // Left panel: stats + order book + risk panel
         let left_chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(9), Constraint::Min(0)])
+            .constraints([
+                Constraint::Length(9),  // Stats
+                Constraint::Length(14), // Order book (reduced)
+                Constraint::Min(10),    // Risk panel (expanded)
+            ])
             .split(content_chunks[0]);
 
         // Right panel: price chart + agent table
@@ -159,6 +163,7 @@ impl TuiApp {
         // Draw widgets
         self.draw_stats(frame, left_chunks[0]);
         self.draw_book_depth(frame, left_chunks[1]);
+        self.draw_risk_panel(frame, left_chunks[2]);
         self.draw_price_chart(frame, right_chunks[0]);
         self.draw_agent_table(frame, right_chunks[1]);
 
@@ -250,6 +255,59 @@ impl TuiApp {
     fn draw_agent_table(&self, frame: &mut Frame, area: Rect) {
         let table = AgentTable::new(&self.state.agents);
         frame.render_widget(table, area);
+    }
+
+    /// Draw the risk metrics panel.
+    fn draw_risk_panel(&self, frame: &mut Frame, area: Rect) {
+        // Sort: noise traders by total return (desc), market makers at bottom
+        let mut sorted_metrics = self.state.risk_metrics.clone();
+        sorted_metrics.sort_by(|a, b| {
+            // Market makers always go to bottom
+            match (a.is_market_maker, b.is_market_maker) {
+                (true, false) => std::cmp::Ordering::Greater,
+                (false, true) => std::cmp::Ordering::Less,
+                _ => {
+                    // Within same category, sort by total return (descending)
+                    b.total_return
+                        .partial_cmp(&a.total_return)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }
+            }
+        });
+
+        // Calculate aggregate metrics from noise traders only (exclude MMs)
+        let noise_traders: Vec<_> = sorted_metrics
+            .iter()
+            .filter(|r| !r.is_market_maker)
+            .collect();
+
+        let aggregate_sharpe = if !noise_traders.is_empty() {
+            let valid_sharpes: Vec<f64> = noise_traders
+                .iter()
+                .filter_map(|r| r.sharpe)
+                .filter(|s| s.is_finite())
+                .collect();
+            if valid_sharpes.is_empty() {
+                None
+            } else {
+                Some(valid_sharpes.iter().sum::<f64>() / valid_sharpes.len() as f64)
+            }
+        } else {
+            None
+        };
+
+        let aggregate_max_drawdown = noise_traders
+            .iter()
+            .map(|r| r.max_drawdown)
+            .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap_or(0.0);
+
+        let risk_panel = RiskPanel::new()
+            .agents(sorted_metrics)
+            .aggregate_sharpe(aggregate_sharpe)
+            .aggregate_max_drawdown(aggregate_max_drawdown);
+
+        frame.render_widget(risk_panel, area);
     }
 }
 

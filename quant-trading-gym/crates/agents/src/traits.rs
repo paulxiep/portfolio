@@ -112,6 +112,18 @@ pub trait Agent: Send {
     fn realized_pnl(&self) -> types::Cash {
         types::Cash::ZERO
     }
+
+    /// Compute the agent's total equity at the given price.
+    /// Equity = cash + (position * price)
+    fn equity(&self, price: types::Price) -> types::Cash {
+        let position = self.position();
+        let position_value = if position >= 0 {
+            price * types::Quantity(position as u64)
+        } else {
+            -(price * types::Quantity((-position) as u64))
+        };
+        self.cash() + position_value
+    }
 }
 
 /// Market data snapshot passed to agents each tick.

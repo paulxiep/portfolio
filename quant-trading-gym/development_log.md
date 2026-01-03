@@ -1,5 +1,102 @@
 # Development Log
 
+## 2026-01-03: V1.2 - Risk Metrics & Per-Agent Tracking
+
+### Completed
+- ✅ **AgentRiskTracker** (`quant/tracker.rs`): Per-agent risk monitoring
+  - `AgentRiskTracker` struct tracks equity history using rolling windows
+  - `RiskTrackerConfig` for configurable window size and parameters
+  - `AgentRiskSnapshot` captures point-in-time risk metrics per agent
+  - Computes: Sharpe ratio, Sortino ratio, max drawdown, VaR (95%), total return, volatility
+  - Efficient O(1) equity recording with bounded memory usage
+
+- ✅ **Agent equity computation**: Added `equity()` method to Agent trait
+  - Computes mark-to-market equity: `cash + (position × price)`
+  - Handles both long and short positions correctly
+  - Default implementation uses existing `cash()` and `position()` methods
+
+- ✅ **Simulation risk integration**:
+  - `Simulation` struct now holds `AgentRiskTracker`
+  - Records equity for all agents after each tick
+  - New methods: `agent_risk_metrics()`, `agent_risk()`
+  - Uses last trade price for mark-to-market valuation
+
+- ✅ **TUI RiskPanel widget** (`tui/widgets/risk_panel.rs`):
+  - Color-coded display of per-agent risk metrics
+  - Shows: Return, Max DD, Sharpe for up to 10 agents
+  - Aggregate metrics: Average Sharpe, worst max drawdown (excludes market makers)
+  - Color coding: green (good), yellow (caution), red (risk)
+
+- ✅ **TUI layout improvements**:
+  - Rebalanced left column: Stats (top), Order book (fixed 14 lines), Risk panel (expanded)
+  - Risk panel shows up to 10 agents sorted by total return
+  - Market makers sorted to bottom as "infrastructure" agents
+
+- ✅ **Agent identification & sorting**:
+  - Agent names prefixed with ID: `"{:02}-{name}"` (e.g., "04-NoiseTrader")
+  - `is_market_maker` flag distinguishes infrastructure vs trading agents
+  - **P&L table**: Sorted by equity (descending), market makers at bottom
+  - **Risk panel**: Sorted by total return (descending), market makers at bottom
+  - Aggregate metrics computed excluding market makers (focus on trader performance)
+
+- ✅ **SimUpdate extended**: Added `risk_metrics: Vec<RiskInfo>`, `equity`, `is_market_maker`
+  - `RiskInfo` struct: name, sharpe, max_drawdown, total_return, var_95, equity, is_market_maker
+  - `AgentInfo` struct: Added `equity: f64`, `is_market_maker: bool` fields
+  - Main binary populates from simulation's `agent_risk_metrics()`
+
+### Rust Concepts Demonstrated
+- **Composition**: `AgentRiskTracker` composes `RollingWindow` for memory-bounded history
+- **Trait default methods**: `equity()` provides default implementation using other trait methods
+- **HashMap with newtype keys**: `HashMap<AgentId, RollingWindow>` for per-agent tracking
+- **Builder pattern**: `RiskPanel::new().agents(vec![...]).aggregate_sharpe(Some(1.2))`
+- **Tiered sorting**: Multi-key sorting with `sort_by(|a, b| a.is_mm.cmp(&b.is_mm).then(equity_cmp))`
+
+### SOLID Compliance
+- **S**: `AgentRiskTracker` only tracks equity and computes metrics (single responsibility)
+- **O**: New risk widget added without modifying existing widgets
+- **L**: `RiskInfo` and `AgentRiskSnapshot` are interchangeable data carriers
+- **I**: `AgentRiskTracker` exposes minimal interface (record, compute)
+- **D**: Simulation depends on `AgentRiskTracker` abstraction, not concrete risk calculations
+
+### Exit Criteria
+```
+cargo fmt --check     # ✅ No formatting issues
+cargo clippy          # ✅ No warnings
+cargo test --workspace # ✅ 113 tests pass
+                       # 16 agents + 38 quant + 4 binary + 24 sim-core
+                       # + 6 simulation + 4 integration + 11 tui + 10 types
+```
+
+### Files Created
+| File | Purpose |
+|------|---------|
+| `crates/quant/src/tracker.rs` | Per-agent risk tracking and metrics |
+| `crates/tui/src/widgets/risk_panel.rs` | Risk metrics TUI widget |
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `crates/quant/src/lib.rs` | Added tracker module and exports |
+| `crates/agents/src/traits.rs` | Added `equity()` method to Agent trait |
+| `crates/simulation/src/runner.rs` | Added AgentRiskTracker, equity tracking in step() |
+| `crates/tui/src/widgets/mod.rs` | Added risk_panel module export |
+| `crates/tui/src/widgets/update.rs` | Added RiskInfo, AgentInfo with is_market_maker & equity |
+| `crates/tui/src/widgets/agent_table.rs` | Tiered sorting: MMs at bottom, sort by equity |
+| `crates/tui/src/app.rs` | Rebalanced layout, tiered sorting for risk panel |
+| `crates/tui/src/lib.rs` | Re-export RiskInfo |
+| `src/main.rs` | ID-prefixed names, is_market_maker flag, equity calculation |
+
+### Design Notes
+- **Rolling window vs full history**: Using `RollingWindow` (default 500 observations) prevents unbounded memory growth while keeping enough data for meaningful statistics
+- **Mark-to-market**: Risk metrics use last trade price for position valuation; if no trades, uses initial price
+- **Market maker treatment**: MMs are infrastructure agents that start with high capital; sorting them to bottom keeps focus on actual trading agents
+- **Agent naming**: ID prefix (`04-NoiseTrader`) makes agents distinguishable across panels
+- **Aggregate metrics**: Exclude market makers—computed only for trading agents to reflect true performance
+- **Minimum observations**: Risk metrics require 20+ data points before computing Sharpe/Sortino/VaR to avoid meaningless early values
+- **Sorting rationale**: Risk panel sorts by total return (performance measure); P&L table sorts by equity (wealth measure); both put MMs at bottom
+
+---
+
 ## 2026-01-03: V1.1 - Quant Layer (Indicators)
 
 ### Completed

@@ -10,6 +10,7 @@
 //! - [`rolling`] - Rolling window data structures
 //! - [`risk`] - Risk metrics (VaR, Sharpe, drawdown)
 //! - [`stats`] - Statistical utilities
+//! - [`tracker`] - Per-agent risk tracking
 //!
 //! # Example
 //!
@@ -40,6 +41,7 @@ pub mod indicators;
 pub mod risk;
 pub mod rolling;
 pub mod stats;
+pub mod tracker;
 
 // Re-export main types at crate root for convenience
 pub use engine::{IndicatorCache, IndicatorEngine, IndicatorSnapshot};
@@ -48,3 +50,4 @@ pub use risk::{
     RiskMetrics, annualized_volatility, historical_var, max_drawdown, sharpe_ratio, sortino_ratio,
 };
 pub use rolling::RollingWindow;
+pub use tracker::{AgentRiskSnapshot, AgentRiskTracker, RiskTrackerConfig};
