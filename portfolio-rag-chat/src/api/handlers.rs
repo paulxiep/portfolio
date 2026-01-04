@@ -66,9 +66,11 @@ pub async fn ingest(
     Ok(Json(IngestResponse {
         code_chunks: result.code_chunks,
         readme_chunks: result.readme_chunks,
+        crate_chunks: result.crate_chunks,
+        module_doc_chunks: result.module_doc_chunks,
         message: format!(
-            "Successfully ingested {} code chunks and {} readme chunks",
-            result.code_chunks, result.readme_chunks
+            "Successfully ingested {} code, {} readme, {} crate, {} module doc chunks",
+            result.code_chunks, result.readme_chunks, result.crate_chunks, result.module_doc_chunks
         ),
     }))
 }

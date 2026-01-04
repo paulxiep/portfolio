@@ -18,3 +18,22 @@ pub struct ReadmeChunk {
     pub project_name: String,
     pub content: String,
 }
+
+/// Represents a Rust crate extracted from Cargo.toml
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CrateChunk {
+    pub crate_name: String,
+    pub crate_path: String,           // Path to the crate directory
+    pub description: Option<String>,  // From [package].description
+    pub dependencies: Vec<String>,    // Workspace/local dependencies
+    pub project_name: Option<String>, // Parent project (e.g., "quant-trading-gym")
+}
+
+/// Represents module-level documentation (//! comments at top of lib.rs)
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ModuleDocChunk {
+    pub file_path: String,
+    pub module_name: String, // Derived from file/crate name
+    pub doc_content: String, // The //! doc comments
+    pub project_name: Option<String>,
+}

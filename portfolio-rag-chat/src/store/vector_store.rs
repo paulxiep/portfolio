@@ -7,7 +7,7 @@ use lancedb::{
 use std::sync::Arc;
 use thiserror::Error;
 
-use crate::models::{CodeChunk, ReadmeChunk};
+use crate::models::{CodeChunk, CrateChunk, ModuleDocChunk, ReadmeChunk};
 
 #[derive(Error, Debug)]
 pub enum StoreError {
@@ -26,6 +26,8 @@ pub enum StoreError {
 
 const CODE_TABLE: &str = "code_chunks";
 const README_TABLE: &str = "readme_chunks";
+const CRATE_TABLE: &str = "crate_chunks";
+const MODULE_DOC_TABLE: &str = "module_doc_chunks";
 
 /// LanceDB-backed vector store for code and readme chunks.
 pub struct VectorStore {
@@ -77,6 +79,74 @@ impl VectorStore {
         Ok(count)
     }
 
+    /// Insert crate chunks with their embeddings. Creates table if needed.
+    pub async fn upsert_crate_chunks(
+        &self,
+        chunks: &[CrateChunk],
+        embeddings: Vec<Vec<f32>>,
+    ) -> Result<usize, StoreError> {
+        if chunks.is_empty() {
+            return Ok(0);
+        }
+
+        let batch = crate_chunks_to_batch(chunks, embeddings, self.dimension)?;
+        let count = batch.num_rows();
+
+        self.upsert_batch(CRATE_TABLE, batch).await?;
+        Ok(count)
+    }
+
+    /// Insert module doc chunks with their embeddings. Creates table if needed.
+    pub async fn upsert_module_doc_chunks(
+        &self,
+        chunks: &[ModuleDocChunk],
+        embeddings: Vec<Vec<f32>>,
+    ) -> Result<usize, StoreError> {
+        if chunks.is_empty() {
+            return Ok(0);
+        }
+
+        let batch = module_doc_chunks_to_batch(chunks, embeddings, self.dimension)?;
+        let count = batch.num_rows();
+
+        self.upsert_batch(MODULE_DOC_TABLE, batch).await?;
+        Ok(count)
+    }
+
+    /// Search crate chunks by vector similarity.
+    pub async fn search_crates(
+        &self,
+        query_embedding: &[f32],
+        limit: usize,
+    ) -> Result<Vec<CrateChunk>, StoreError> {
+        let table = self.get_table(CRATE_TABLE).await?;
+
+        let results = table
+            .vector_search(query_embedding.to_vec())?
+            .limit(limit)
+            .execute()
+            .await?;
+
+        batches_to_crate_chunks(results).await
+    }
+
+    /// Search module doc chunks by vector similarity.
+    pub async fn search_module_docs(
+        &self,
+        query_embedding: &[f32],
+        limit: usize,
+    ) -> Result<Vec<ModuleDocChunk>, StoreError> {
+        let table = self.get_table(MODULE_DOC_TABLE).await?;
+
+        let results = table
+            .vector_search(query_embedding.to_vec())?
+            .limit(limit)
+            .execute()
+            .await?;
+
+        batches_to_module_doc_chunks(results).await
+    }
+
     /// Search code chunks by vector similarity.
     pub async fn search_code(
         &self,
@@ -117,10 +187,28 @@ impl VectorStore {
         query_embedding: &[f32],
         code_limit: usize,
         readme_limit: usize,
-    ) -> Result<(Vec<CodeChunk>, Vec<ReadmeChunk>), StoreError> {
+        crate_limit: usize,
+        module_doc_limit: usize,
+    ) -> Result<
+        (
+            Vec<CodeChunk>,
+            Vec<ReadmeChunk>,
+            Vec<CrateChunk>,
+            Vec<ModuleDocChunk>,
+        ),
+        StoreError,
+    > {
         let code = self.search_code(query_embedding, code_limit).await?;
         let readme = self.search_readme(query_embedding, readme_limit).await?;
-        Ok((code, readme))
+        let crates = self
+            .search_crates(query_embedding, crate_limit)
+            .await
+            .unwrap_or_default();
+        let module_docs = self
+            .search_module_docs(query_embedding, module_doc_limit)
+            .await
+            .unwrap_or_default();
+        Ok((code, readme, crates, module_docs))
     }
 
     pub async fn list_projects(&self) -> Result<Vec<String>, StoreError> {
@@ -319,6 +407,125 @@ fn readme_chunks_to_batch(
     )?)
 }
 
+fn crate_chunks_to_batch(
+    chunks: &[CrateChunk],
+    embeddings: Vec<Vec<f32>>,
+    dim: usize,
+) -> Result<RecordBatch, StoreError> {
+    use arrow_array::builder::FixedSizeListBuilder;
+
+    let crate_names: StringArray = chunks.iter().map(|c| Some(c.crate_name.as_str())).collect();
+    let crate_paths: StringArray = chunks.iter().map(|c| Some(c.crate_path.as_str())).collect();
+    let descriptions: StringArray = chunks.iter().map(|c| c.description.as_deref()).collect();
+    // Store dependencies as comma-separated string
+    let dependencies: StringArray = chunks
+        .iter()
+        .map(|c| Some(c.dependencies.join(",")).filter(|s| !s.is_empty()))
+        .collect();
+    let project_names: StringArray = chunks.iter().map(|c| c.project_name.as_deref()).collect();
+
+    let mut vector_builder =
+        FixedSizeListBuilder::new(arrow_array::builder::Float32Builder::new(), dim as i32);
+
+    for emb in &embeddings {
+        vector_builder.values().append_slice(emb);
+        vector_builder.append(true);
+    }
+
+    let vectors = vector_builder.finish();
+
+    let schema = Arc::new(arrow_schema::Schema::new(vec![
+        arrow_schema::Field::new("crate_name", arrow_schema::DataType::Utf8, false),
+        arrow_schema::Field::new("crate_path", arrow_schema::DataType::Utf8, false),
+        arrow_schema::Field::new("description", arrow_schema::DataType::Utf8, true),
+        arrow_schema::Field::new("dependencies", arrow_schema::DataType::Utf8, true),
+        arrow_schema::Field::new("project_name", arrow_schema::DataType::Utf8, true),
+        arrow_schema::Field::new(
+            "vector",
+            arrow_schema::DataType::FixedSizeList(
+                Arc::new(arrow_schema::Field::new(
+                    "item",
+                    arrow_schema::DataType::Float32,
+                    true,
+                )),
+                dim as i32,
+            ),
+            false,
+        ),
+    ]));
+
+    Ok(RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(crate_names),
+            Arc::new(crate_paths),
+            Arc::new(descriptions),
+            Arc::new(dependencies),
+            Arc::new(project_names),
+            Arc::new(vectors),
+        ],
+    )?)
+}
+
+fn module_doc_chunks_to_batch(
+    chunks: &[ModuleDocChunk],
+    embeddings: Vec<Vec<f32>>,
+    dim: usize,
+) -> Result<RecordBatch, StoreError> {
+    use arrow_array::builder::FixedSizeListBuilder;
+
+    let file_paths: StringArray = chunks.iter().map(|c| Some(c.file_path.as_str())).collect();
+    let module_names: StringArray = chunks
+        .iter()
+        .map(|c| Some(c.module_name.as_str()))
+        .collect();
+    let doc_contents: StringArray = chunks
+        .iter()
+        .map(|c| Some(c.doc_content.as_str()))
+        .collect();
+    let project_names: StringArray = chunks.iter().map(|c| c.project_name.as_deref()).collect();
+
+    let mut vector_builder =
+        FixedSizeListBuilder::new(arrow_array::builder::Float32Builder::new(), dim as i32);
+
+    for emb in &embeddings {
+        vector_builder.values().append_slice(emb);
+        vector_builder.append(true);
+    }
+
+    let vectors = vector_builder.finish();
+
+    let schema = Arc::new(arrow_schema::Schema::new(vec![
+        arrow_schema::Field::new("file_path", arrow_schema::DataType::Utf8, false),
+        arrow_schema::Field::new("module_name", arrow_schema::DataType::Utf8, false),
+        arrow_schema::Field::new("doc_content", arrow_schema::DataType::Utf8, false),
+        arrow_schema::Field::new("project_name", arrow_schema::DataType::Utf8, true),
+        arrow_schema::Field::new(
+            "vector",
+            arrow_schema::DataType::FixedSizeList(
+                Arc::new(arrow_schema::Field::new(
+                    "item",
+                    arrow_schema::DataType::Float32,
+                    true,
+                )),
+                dim as i32,
+            ),
+            false,
+        ),
+    ]));
+
+    Ok(RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(file_paths),
+            Arc::new(module_names),
+            Arc::new(doc_contents),
+            Arc::new(project_names),
+            Arc::new(vectors),
+        ],
+    )?)
+}
+
 async fn batches_to_code_chunks(
     stream: impl futures::Stream<Item = Result<RecordBatch, lancedb::Error>> + Unpin,
 ) -> Result<Vec<CodeChunk>, StoreError> {
@@ -412,6 +619,110 @@ fn extract_readme_chunks_from_batch(batch: &RecordBatch) -> Result<Vec<ReadmeChu
             file_path: file_paths.value(i).to_string(),
             project_name: project_names.value(i).to_string(),
             content: contents.value(i).to_string(),
+        })
+        .collect();
+
+    Ok(chunks)
+}
+
+async fn batches_to_crate_chunks(
+    stream: impl futures::Stream<Item = Result<RecordBatch, lancedb::Error>> + Unpin,
+) -> Result<Vec<CrateChunk>, StoreError> {
+    use futures::TryStreamExt;
+
+    stream
+        .map_err(StoreError::from)
+        .try_fold(Vec::new(), |mut acc, batch| async move {
+            acc.extend(extract_crate_chunks_from_batch(&batch)?);
+            Ok(acc)
+        })
+        .await
+}
+
+fn extract_crate_chunks_from_batch(batch: &RecordBatch) -> Result<Vec<CrateChunk>, StoreError> {
+    let col = |name: &str| -> Result<&StringArray, StoreError> {
+        batch
+            .column_by_name(name)
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+            .ok_or_else(|| StoreError::SchemaMismatch(name.into()))
+    };
+
+    let crate_names = col("crate_name")?;
+    let crate_paths = col("crate_path")?;
+
+    let descriptions = batch
+        .column_by_name("description")
+        .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+    let dependencies = batch
+        .column_by_name("dependencies")
+        .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+    let project_names = batch
+        .column_by_name("project_name")
+        .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+
+    let nullable_string = |arr: Option<&StringArray>, i: usize| -> Option<String> {
+        arr.filter(|a| !a.is_null(i))
+            .map(|a| a.value(i).to_string())
+    };
+
+    let chunks = (0..batch.num_rows())
+        .map(|i| CrateChunk {
+            crate_name: crate_names.value(i).to_string(),
+            crate_path: crate_paths.value(i).to_string(),
+            description: nullable_string(descriptions, i),
+            dependencies: nullable_string(dependencies, i)
+                .map(|s| s.split(',').map(String::from).collect())
+                .unwrap_or_default(),
+            project_name: nullable_string(project_names, i),
+        })
+        .collect();
+
+    Ok(chunks)
+}
+
+async fn batches_to_module_doc_chunks(
+    stream: impl futures::Stream<Item = Result<RecordBatch, lancedb::Error>> + Unpin,
+) -> Result<Vec<ModuleDocChunk>, StoreError> {
+    use futures::TryStreamExt;
+
+    stream
+        .map_err(StoreError::from)
+        .try_fold(Vec::new(), |mut acc, batch| async move {
+            acc.extend(extract_module_doc_chunks_from_batch(&batch)?);
+            Ok(acc)
+        })
+        .await
+}
+
+fn extract_module_doc_chunks_from_batch(
+    batch: &RecordBatch,
+) -> Result<Vec<ModuleDocChunk>, StoreError> {
+    let col = |name: &str| -> Result<&StringArray, StoreError> {
+        batch
+            .column_by_name(name)
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+            .ok_or_else(|| StoreError::SchemaMismatch(name.into()))
+    };
+
+    let file_paths = col("file_path")?;
+    let module_names = col("module_name")?;
+    let doc_contents = col("doc_content")?;
+
+    let project_names = batch
+        .column_by_name("project_name")
+        .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+
+    let nullable_string = |arr: Option<&StringArray>, i: usize| -> Option<String> {
+        arr.filter(|a| !a.is_null(i))
+            .map(|a| a.value(i).to_string())
+    };
+
+    let chunks = (0..batch.num_rows())
+        .map(|i| ModuleDocChunk {
+            file_path: file_paths.value(i).to_string(),
+            module_name: module_names.value(i).to_string(),
+            doc_content: doc_contents.value(i).to_string(),
+            project_name: nullable_string(project_names, i),
         })
         .collect();
 

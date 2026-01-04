@@ -1,7 +1,7 @@
 pub mod parser;
 
-use self::parser::{CodeAnalyzer, SupportedLanguage};
-use crate::models::{CodeChunk, ReadmeChunk};
+use self::parser::{CodeAnalyzer, SupportedLanguage, parse_cargo_toml};
+use crate::models::{CodeChunk, CrateChunk, ModuleDocChunk, ReadmeChunk};
 use std::path::{Path, PathBuf};
 use tracing::warn;
 use walkdir::{DirEntry, WalkDir};
@@ -29,6 +29,26 @@ fn is_readme(entry: &DirEntry) -> bool {
         .unwrap_or(false)
 }
 
+/// Check if entry is a Cargo.toml file
+fn is_cargo_toml(entry: &DirEntry) -> bool {
+    entry
+        .path()
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n == "Cargo.toml")
+        .unwrap_or(false)
+}
+
+/// Check if entry is a lib.rs file (for module doc extraction)
+fn is_lib_rs(entry: &DirEntry) -> bool {
+    entry
+        .path()
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n == "lib.rs")
+        .unwrap_or(false)
+}
+
 /// Process a single README file
 fn process_readme(entry: &DirEntry, repo_root: &Path) -> Option<ReadmeChunk> {
     let content = std::fs::read_to_string(entry.path()).ok()?;
@@ -39,6 +59,51 @@ fn process_readme(entry: &DirEntry, repo_root: &Path) -> Option<ReadmeChunk> {
         file_path: entry.path().to_string_lossy().to_string(),
         project_name,
         content,
+    })
+}
+
+/// Process a Cargo.toml file to extract crate metadata
+fn process_cargo_toml(entry: &DirEntry, repo_root: &Path) -> Option<CrateChunk> {
+    let content = std::fs::read_to_string(entry.path()).ok()?;
+    let (crate_name, description, dependencies) = parse_cargo_toml(&content)?;
+
+    let crate_path = entry.path().parent()?.to_string_lossy().to_string();
+    let project_name = extract_project_name(entry.path(), repo_root);
+
+    Some(CrateChunk {
+        crate_name,
+        crate_path,
+        description,
+        dependencies,
+        project_name,
+    })
+}
+
+/// Process a lib.rs file to extract module-level documentation
+fn process_module_docs(
+    entry: &DirEntry,
+    repo_root: &Path,
+    analyzer: &mut CodeAnalyzer,
+) -> Option<ModuleDocChunk> {
+    let content = std::fs::read_to_string(entry.path()).ok()?;
+    let doc_content = analyzer.extract_module_docs(&content)?;
+
+    // Derive module name from parent directory (usually the crate name)
+    let module_name = entry
+        .path()
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown")
+        .to_string();
+
+    let project_name = extract_project_name(entry.path(), repo_root);
+
+    Some(ModuleDocChunk {
+        file_path: entry.path().to_string_lossy().to_string(),
+        module_name,
+        doc_content,
+        project_name,
     })
 }
 
@@ -105,8 +170,17 @@ fn should_skip(entry: &DirEntry, repo_root: &Path) -> bool {
     })
 }
 
+/// Result of running ingestion on a repository
+#[derive(Debug, Clone, Default)]
+pub struct IngestionResult {
+    pub code_chunks: Vec<CodeChunk>,
+    pub readme_chunks: Vec<ReadmeChunk>,
+    pub crate_chunks: Vec<CrateChunk>,
+    pub module_doc_chunks: Vec<ModuleDocChunk>,
+}
+
 /// This orchestrates the flow from Disk -> Parser -> Data
-pub fn run_ingestion(repo_path: &str) -> (Vec<CodeChunk>, Vec<ReadmeChunk>) {
+pub fn run_ingestion(repo_path: &str) -> IngestionResult {
     let repo_root = PathBuf::from(repo_path);
     let mut analyzer = CodeAnalyzer::new();
 
@@ -129,7 +203,24 @@ pub fn run_ingestion(repo_path: &str) -> (Vec<CodeChunk>, Vec<ReadmeChunk>) {
         .flat_map(|e| process_code_file(e, &repo_root, &mut analyzer))
         .collect();
 
-    (code_chunks, readme_chunks)
+    let crate_chunks: Vec<CrateChunk> = entries
+        .iter()
+        .filter(|e| is_cargo_toml(e))
+        .filter_map(|e| process_cargo_toml(e, &repo_root))
+        .collect();
+
+    let module_doc_chunks: Vec<ModuleDocChunk> = entries
+        .iter()
+        .filter(|e| is_lib_rs(e))
+        .filter_map(|e| process_module_docs(e, &repo_root, &mut analyzer))
+        .collect();
+
+    IngestionResult {
+        code_chunks,
+        readme_chunks,
+        crate_chunks,
+        module_doc_chunks,
+    }
 }
 
 #[cfg(test)]
@@ -216,43 +307,47 @@ mod tests {
         let temp_dir = create_test_workspace();
         let path = temp_dir.path().to_str().unwrap();
 
-        let (code_chunks, readme_chunks) = run_ingestion(path);
+        let result = run_ingestion(path);
 
         // Should find 2 code files (main.py and lib.rs)
-        assert_eq!(code_chunks.len(), 2);
+        assert_eq!(result.code_chunks.len(), 2);
 
         // Should find 1 README
-        assert_eq!(readme_chunks.len(), 1);
+        assert_eq!(result.readme_chunks.len(), 1);
 
         // Check Python function was extracted
         assert!(
-            code_chunks
+            result
+                .code_chunks
                 .iter()
                 .any(|c| c.identifier == "hello" && c.language == "python")
         );
 
         // Check Rust function was extracted
         assert!(
-            code_chunks
+            result
+                .code_chunks
                 .iter()
                 .any(|c| c.identifier == "test" && c.language == "rust")
         );
 
         // Check project names were set
         assert!(
-            code_chunks
+            result
+                .code_chunks
                 .iter()
                 .any(|c| c.project_name.as_deref() == Some("project1"))
         );
         assert!(
-            code_chunks
+            result
+                .code_chunks
                 .iter()
                 .any(|c| c.project_name.as_deref() == Some("project2"))
         );
 
         // Check README content
-        assert_eq!(readme_chunks[0].project_name, "project1");
-        assert!(readme_chunks[0].content.contains("Project 1"));
+        assert_eq!(result.readme_chunks[0].project_name, "project1");
+        assert!(result.readme_chunks[0].content.contains("Project 1"));
     }
 
     #[test]

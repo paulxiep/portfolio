@@ -1,4 +1,5 @@
 use super::retriever::RetrievalResult;
+use crate::models::{CrateChunk, ModuleDocChunk};
 
 /// System prompt - instructs the LLM how to behave
 pub const SYSTEM_PROMPT: &str = r#"You are a helpful assistant answering questions about a developer's portfolio of coding projects.
@@ -13,6 +14,16 @@ Guidelines:
 /// Format retrieved chunks into context for the LLM
 pub fn build_context(result: &RetrievalResult) -> String {
     let mut sections = Vec::new();
+
+    // Crate overview (architecture-level context)
+    if !result.crate_chunks.is_empty() {
+        sections.push(format_crate_section(&result.crate_chunks));
+    }
+
+    // Module documentation (crate-level docs)
+    if !result.module_doc_chunks.is_empty() {
+        sections.push(format_module_doc_section(&result.module_doc_chunks));
+    }
 
     // Code chunks
     if !result.code_chunks.is_empty() {
@@ -64,6 +75,46 @@ fn format_readme_section(chunks: &[crate::models::ReadmeChunk]) -> String {
     out
 }
 
+fn format_crate_section(chunks: &[CrateChunk]) -> String {
+    let mut out = String::from("## Crate Structure\n");
+
+    for chunk in chunks {
+        let project = chunk.project_name.as_deref().unwrap_or("(root)");
+        let desc = chunk
+            .description
+            .as_deref()
+            .unwrap_or("No description available");
+        let deps = if chunk.dependencies.is_empty() {
+            "none".to_string()
+        } else {
+            chunk.dependencies.join(", ")
+        };
+
+        out.push_str(&format!(
+            "\n### Crate `{}` ({})\n**Description:** {}\n**Local dependencies:** {}\n",
+            chunk.crate_name, project, desc, deps
+        ));
+    }
+
+    out
+}
+
+fn format_module_doc_section(chunks: &[ModuleDocChunk]) -> String {
+    let mut out = String::from("## Module Documentation\n");
+
+    for chunk in chunks {
+        let project = chunk.project_name.as_deref().unwrap_or("(root)");
+        out.push_str(&format!(
+            "\n### Module `{}` ({})\n{}\n",
+            chunk.module_name,
+            project,
+            truncate(&chunk.doc_content, 600)
+        ));
+    }
+
+    out
+}
+
 /// Build the complete prompt sent to the LLM
 pub fn build_prompt(query: &str, context: &str) -> String {
     format!(
@@ -90,7 +141,7 @@ fn truncate(s: &str, max_chars: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{CodeChunk, ReadmeChunk};
+    use crate::models::{CodeChunk, CrateChunk, ModuleDocChunk, ReadmeChunk};
 
     fn sample_code_chunk() -> CodeChunk {
         CodeChunk {
@@ -114,11 +165,32 @@ mod tests {
         }
     }
 
+    fn sample_crate_chunk() -> CrateChunk {
+        CrateChunk {
+            crate_name: "my-crate".into(),
+            crate_path: "my_project/crates/my-crate".into(),
+            description: Some("A utility crate".into()),
+            dependencies: vec!["types".into(), "utils".into()],
+            project_name: Some("my_project".into()),
+        }
+    }
+
+    fn sample_module_doc_chunk() -> ModuleDocChunk {
+        ModuleDocChunk {
+            file_path: "my_project/src/lib.rs".into(),
+            module_name: "my_module".into(),
+            doc_content: "This module provides core functionality.".into(),
+            project_name: Some("my_project".into()),
+        }
+    }
+
     #[test]
     fn test_build_context_with_code() {
         let result = RetrievalResult {
             code_chunks: vec![sample_code_chunk()],
             readme_chunks: vec![],
+            crate_chunks: vec![],
+            module_doc_chunks: vec![],
         };
 
         let context = build_context(&result);
@@ -134,6 +206,8 @@ mod tests {
         let result = RetrievalResult {
             code_chunks: vec![],
             readme_chunks: vec![sample_readme_chunk()],
+            crate_chunks: vec![],
+            module_doc_chunks: vec![],
         };
 
         let context = build_context(&result);
@@ -143,10 +217,44 @@ mod tests {
     }
 
     #[test]
+    fn test_build_context_with_crates() {
+        let result = RetrievalResult {
+            code_chunks: vec![],
+            readme_chunks: vec![],
+            crate_chunks: vec![sample_crate_chunk()],
+            module_doc_chunks: vec![],
+        };
+
+        let context = build_context(&result);
+
+        assert!(context.contains("## Crate Structure"));
+        assert!(context.contains("my-crate"));
+        assert!(context.contains("types, utils"));
+    }
+
+    #[test]
+    fn test_build_context_with_module_docs() {
+        let result = RetrievalResult {
+            code_chunks: vec![],
+            readme_chunks: vec![],
+            crate_chunks: vec![],
+            module_doc_chunks: vec![sample_module_doc_chunk()],
+        };
+
+        let context = build_context(&result);
+
+        assert!(context.contains("## Module Documentation"));
+        assert!(context.contains("my_module"));
+        assert!(context.contains("core functionality"));
+    }
+
+    #[test]
     fn test_build_context_empty() {
         let result = RetrievalResult {
             code_chunks: vec![],
             readme_chunks: vec![],
+            crate_chunks: vec![],
+            module_doc_chunks: vec![],
         };
 
         let context = build_context(&result);

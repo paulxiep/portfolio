@@ -1,4 +1,4 @@
-use crate::models::{CodeChunk, ReadmeChunk};
+use crate::models::{CodeChunk, CrateChunk, ModuleDocChunk, ReadmeChunk};
 use crate::store::{Embedder, VectorStore};
 
 use super::EngineError;
@@ -9,6 +9,8 @@ use super::config::RetrievalConfig;
 pub struct RetrievalResult {
     pub code_chunks: Vec<CodeChunk>,
     pub readme_chunks: Vec<ReadmeChunk>,
+    pub crate_chunks: Vec<CrateChunk>,
+    pub module_doc_chunks: Vec<ModuleDocChunk>,
 }
 
 /// 1. Embed the query text
@@ -23,13 +25,21 @@ pub async fn retrieve(
     // Embed the query
     let query_embedding = embedder.embed_one(query)?;
 
-    // Search both tables
-    let (code_chunks, readme_chunks) = store
-        .search_all(&query_embedding, config.code_limit, config.readme_limit)
+    // Search all tables
+    let (code_chunks, readme_chunks, crate_chunks, module_doc_chunks) = store
+        .search_all(
+            &query_embedding,
+            config.code_limit,
+            config.readme_limit,
+            config.crate_limit,
+            config.module_doc_limit,
+        )
         .await?;
 
     Ok(RetrievalResult {
         code_chunks,
         readme_chunks,
+        crate_chunks,
+        module_doc_chunks,
     })
 }

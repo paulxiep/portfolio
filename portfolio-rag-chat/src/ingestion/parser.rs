@@ -1,7 +1,6 @@
 use crate::models::CodeChunk;
-use streaming_iterator::StreamingIterator;
 use tracing::warn;
-use tree_sitter::{Parser, Query};
+use tree_sitter::{Parser, Query, StreamingIterator};
 
 #[derive(Debug, Clone, Copy)]
 pub enum SupportedLanguage {
@@ -32,15 +31,21 @@ impl SupportedLanguage {
         }
     }
 
-    /// Returns the S-expression query for functions/methods/classes
+    /// Returns the S-expression query for functions/methods/classes/structs/enums/traits
     pub fn query_string(&self) -> &'static str {
         match self {
-            Self::Rust => "(function_item name: (identifier) @name) @body",
+            Self::Rust => {
+                r#"(function_item name: (identifier) @name) @body
+(struct_item name: (type_identifier) @name) @body
+(enum_item name: (type_identifier) @name) @body
+(trait_item name: (type_identifier) @name) @body
+(impl_item type: (type_identifier) @name) @body
+(type_item name: (type_identifier) @name) @body
+(macro_definition name: (identifier) @name) @body"#
+            }
             Self::Python => {
-                r#"
-                (function_definition name: (identifier) @name) @body
-                (class_definition name: (identifier) @name) @body
-            "#
+                r#"(function_definition name: (identifier) @name) @body
+(class_definition name: (identifier) @name) @body"#
             }
         }
     }
@@ -70,37 +75,135 @@ impl CodeAnalyzer {
             return Vec::new();
         };
 
-        let Ok(query) = Query::new(&grammar, lang.query_string()) else {
-            warn!(language = lang.name(), "Failed to create tree-sitter query");
-            return Vec::new();
+        let query = match Query::new(&grammar, lang.query_string()) {
+            Ok(q) => q,
+            Err(e) => {
+                warn!(language = lang.name(), error = ?e, "Failed to create tree-sitter query");
+                return Vec::new();
+            }
         };
 
         let mut cursor = tree_sitter::QueryCursor::new();
         let source_bytes = source.as_bytes();
 
-        cursor
+        // Get capture indices by name for reliable lookup across multiple patterns
+        let name_idx = query.capture_index_for_name("name");
+        let body_idx = query.capture_index_for_name("body");
+
+        // Use StreamingIterator::fold to collect matches
+        let raw_matches: Vec<(String, String, String, usize)> = cursor
             .captures(&query, tree.root_node(), source_bytes)
-            .filter(|(m, capture_idx)| m.captures.len() >= 2 && *capture_idx == 1)
             .fold(Vec::new(), |mut acc, (m, _)| {
-                let body_node = m.captures[0].node;
-                let name_node = m.captures[1].node;
-                acc.push(CodeChunk {
+                let body = m.captures.iter().find(|c| Some(c.index) == body_idx);
+                let name = m.captures.iter().find(|c| Some(c.index) == name_idx);
+                if let (Some(b), Some(n)) = (body, name) {
+                    acc.push((
+                        b.node.kind().to_string(),
+                        n.node
+                            .utf8_text(source_bytes)
+                            .unwrap_or("unknown")
+                            .to_string(),
+                        b.node.utf8_text(source_bytes).unwrap_or("").to_string(),
+                        b.node.start_position().row + 1,
+                    ));
+                }
+                acc
+            });
+
+        // Transform to CodeChunks using functional style
+        let mut chunks: Vec<CodeChunk> = raw_matches
+            .into_iter()
+            .map(
+                |(node_type, identifier, code_content, start_line)| CodeChunk {
                     file_path: "<set_by_caller>".to_string(),
                     language: lang.name().to_string(),
-                    identifier: name_node
-                        .utf8_text(source_bytes)
-                        .unwrap_or("unknown")
-                        .to_string(),
-                    node_type: body_node.kind().to_string(),
-                    code_content: body_node.utf8_text(source_bytes).unwrap_or("").to_string(),
-                    start_line: body_node.start_position().row + 1,
+                    identifier,
+                    node_type,
+                    code_content,
+                    start_line,
                     project_name: None,
                     docstring: None,
-                });
-                acc
+                },
+            )
+            .collect();
+
+        // Deduplicate by (identifier, start_line) since impl blocks may capture methods multiple times
+        chunks.sort_by(|a, b| (&a.identifier, a.start_line).cmp(&(&b.identifier, b.start_line)));
+        chunks.dedup_by(|a, b| a.identifier == b.identifier && a.start_line == b.start_line);
+
+        chunks
+    }
+
+    /// Extract module-level documentation comments (//! lines) from Rust source.
+    /// Returns the concatenated doc content if found.
+    pub fn extract_module_docs(&mut self, source: &str) -> Option<String> {
+        let grammar = SupportedLanguage::Rust.get_grammar();
+        if self.parser.set_language(&grammar).is_err() {
+            return None;
+        }
+
+        let tree = self.parser.parse(source, None)?;
+        let source_bytes = source.as_bytes();
+        let mut cursor = tree.root_node().walk();
+
+        let doc_lines: Vec<String> = tree
+            .root_node()
+            .children(&mut cursor)
+            .map_while(|child| match child.kind() {
+                "line_comment" => {
+                    let text = child.utf8_text(source_bytes).ok()?;
+                    text.starts_with("//!").then(|| {
+                        text.strip_prefix("//!")
+                            .unwrap_or(text)
+                            .strip_prefix(' ')
+                            .unwrap_or(text.strip_prefix("//!").unwrap_or(text))
+                            .to_string()
+                    })
+                }
+                "inner_line_doc" | "inner_line_doc_comment" => {
+                    child.utf8_text(source_bytes).ok().map(String::from)
+                }
+                _ => None,
             })
+            .collect();
+
+        (!doc_lines.is_empty()).then(|| doc_lines.join("\n"))
     }
 }
+
+/// Parse a Cargo.toml file and extract crate metadata.
+/// Returns (crate_name, description, local_dependencies)
+pub fn parse_cargo_toml(content: &str) -> Option<(String, Option<String>, Vec<String>)> {
+    let parsed: toml::Value = content.parse().ok()?;
+
+    let package = parsed.get("package")?;
+    let crate_name = package.get("name")?.as_str()?.to_string();
+    let description = package
+        .get("description")
+        .and_then(|d| d.as_str())
+        .map(|s| s.to_string());
+
+    // Extract workspace/path dependencies (local crates)
+    let local_deps: Vec<String> = parsed
+        .get("dependencies")
+        .and_then(|d| d.as_table())
+        .map(|deps_table| {
+            deps_table
+                .iter()
+                .filter(|(_, value)| {
+                    value
+                        .as_table()
+                        .map(|t| t.contains_key("path"))
+                        .unwrap_or(false)
+                })
+                .map(|(name, _)| name.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some((crate_name, description, local_deps))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

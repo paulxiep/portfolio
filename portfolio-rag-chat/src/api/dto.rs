@@ -34,6 +34,8 @@ pub struct IngestRequest {
 pub struct IngestResponse {
     pub code_chunks: usize,
     pub readme_chunks: usize,
+    pub crate_chunks: usize,
+    pub module_doc_chunks: usize,
     pub message: String,
 }
 

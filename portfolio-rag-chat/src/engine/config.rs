@@ -9,6 +9,8 @@ pub struct EngineConfig {
 pub struct RetrievalConfig {
     pub code_limit: usize,
     pub readme_limit: usize,
+    pub crate_limit: usize,
+    pub module_doc_limit: usize,
 }
 
 impl Default for RetrievalConfig {
@@ -16,6 +18,8 @@ impl Default for RetrievalConfig {
         Self {
             code_limit: 5,
             readme_limit: 2,
+            crate_limit: 3,
+            module_doc_limit: 3,
         }
     }
 }
