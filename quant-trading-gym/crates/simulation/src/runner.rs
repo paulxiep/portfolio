@@ -14,14 +14,14 @@
 
 use std::collections::HashMap;
 
-use agents::{Agent, AgentAction, BorrowLedger, MarketData, PositionValidator};
+use agents::{Agent, AgentAction, BorrowLedger, PositionValidator, StrategyContext};
 use quant::{
     AgentRiskSnapshot, AgentRiskTracker, IndicatorCache, IndicatorEngine, IndicatorSnapshot,
 };
 use rand::seq::SliceRandom;
-use sim_core::{MatchingEngine, OrderBook};
+use sim_core::{MatchingEngine, OrderBook, SingleSymbolMarket};
 use types::{
-    AgentId, Candle, Order, OrderId, Price, Quantity, RiskViolation, Tick, Timestamp, Trade,
+    AgentId, Candle, Order, OrderId, Price, Quantity, RiskViolation, Symbol, Tick, Timestamp, Trade,
 };
 
 use crate::config::SimulationConfig;
@@ -311,12 +311,17 @@ impl Simulation {
         Some(snapshot)
     }
 
-    /// Build market data snapshot for agents.
-    fn build_market_data(&mut self) -> MarketData {
+    /// Build market data snapshot for agents (deprecated - use StrategyContext).
+    #[deprecated(
+        since = "2.3.0",
+        note = "Use build_candles_map and StrategyContext instead"
+    )]
+    #[allow(dead_code)]
+    fn build_market_data(&mut self) -> agents::MarketData {
         // Build indicator snapshot
         let indicators = self.build_indicator_snapshot();
 
-        MarketData {
+        agents::MarketData {
             tick: self.tick,
             timestamp: self.timestamp,
             book_snapshot: self.book.snapshot(
@@ -329,6 +334,20 @@ impl Simulation {
             candles: self.candles.clone(),
             indicators,
         }
+    }
+
+    /// Build candles map for multi-symbol support.
+    fn build_candles_map(&self) -> HashMap<Symbol, Vec<Candle>> {
+        let mut map = HashMap::new();
+        map.insert(self.config.symbol().into(), self.candles.clone());
+        map
+    }
+
+    /// Build trades map for multi-symbol support.
+    fn build_trades_map(&self) -> HashMap<Symbol, Vec<Trade>> {
+        let mut map = HashMap::new();
+        map.insert(self.config.symbol().into(), self.recent_trades.clone());
+        map
     }
 
     /// Update candle with trade data.
@@ -508,8 +527,22 @@ impl Simulation {
     pub fn step(&mut self) -> Vec<Trade> {
         let mut tick_trades = Vec::new();
 
-        // Build market data snapshot
-        let market_data = self.build_market_data();
+        // Phase 1: Build all owned data for StrategyContext.
+        // These must live for the duration of agent ticks.
+        let candles_map = self.build_candles_map();
+        let trades_map = self.build_trades_map();
+        let indicators = self.build_indicator_snapshot().unwrap_or_default();
+        let market = SingleSymbolMarket::new(&self.book);
+
+        // Build StrategyContext with references to owned data
+        let ctx = StrategyContext::new(
+            self.tick,
+            self.timestamp,
+            &market,
+            &candles_map,
+            &indicators,
+            &trades_map,
+        );
 
         // Shuffle agent processing order to eliminate ID-based priority bias.
         // Without this, lower-indexed agents would always get their orders
@@ -517,13 +550,13 @@ impl Simulation {
         let mut indices: Vec<usize> = (0..self.agents.len()).collect();
         indices.shuffle(&mut rand::rng());
 
-        // Collect all agent actions with their current state for validation.
+        // Phase 2: Collect all agent actions with their current state for validation.
         // We need to snapshot position/cash before processing to validate orders.
         let actions_with_state: Vec<(AgentId, AgentAction, i64, types::Cash, bool)> = indices
             .iter()
             .map(|&i| {
                 let agent = &mut self.agents[i];
-                let action = agent.on_tick(&market_data);
+                let action = agent.on_tick(&ctx);
                 let position = agent.position();
                 let cash = agent.cash();
                 let is_mm = agent.is_market_maker();
@@ -531,6 +564,7 @@ impl Simulation {
             })
             .collect();
 
+        // Phase 3: ctx is now dropped (goes out of scope) - releases borrow on book
         // Process all orders with validation
         let mut fill_notifications: Vec<(AgentId, Trade, i64)> = Vec::new(); // Include position before trade
 
@@ -666,6 +700,7 @@ impl Simulation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agents::StrategyContext;
     use types::{Order, OrderSide, Price, Quantity};
 
     /// A simple test agent that does nothing.
@@ -678,7 +713,7 @@ mod tests {
             self.id
         }
 
-        fn on_tick(&mut self, _market: &MarketData) -> AgentAction {
+        fn on_tick(&mut self, _ctx: &StrategyContext<'_>) -> AgentAction {
             AgentAction::none()
         }
 
@@ -707,7 +742,7 @@ mod tests {
             self.id
         }
 
-        fn on_tick(&mut self, _market: &MarketData) -> AgentAction {
+        fn on_tick(&mut self, _ctx: &StrategyContext<'_>) -> AgentAction {
             if let Some(order) = self.order.take() {
                 AgentAction::single(order)
             } else {

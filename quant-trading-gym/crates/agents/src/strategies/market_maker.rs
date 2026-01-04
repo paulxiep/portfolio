@@ -10,7 +10,7 @@
 //! - Cancels stale orders when prices move significantly
 
 use crate::state::AgentState;
-use crate::{Agent, AgentAction, MarketData};
+use crate::{Agent, AgentAction, StrategyContext};
 use types::{AgentId, Cash, Order, OrderSide, Price, Quantity, Trade};
 
 /// Configuration for a MarketMaker agent.
@@ -104,11 +104,10 @@ impl MarketMaker {
     }
 
     /// Determine the reference price for quoting.
-    fn get_reference_price(&self, market: &MarketData) -> Price {
+    fn get_reference_price(&self, ctx: &StrategyContext<'_>) -> Price {
         // Priority: mid price > last trade > initial price
-        market
-            .mid_price()
-            .or(market.last_price)
+        ctx.mid_price(&self.config.symbol)
+            .or_else(|| ctx.last_price(&self.config.symbol))
             .unwrap_or(self.config.initial_price)
     }
 
@@ -172,17 +171,17 @@ impl Agent for MarketMaker {
         self.id
     }
 
-    fn on_tick(&mut self, market: &MarketData) -> AgentAction {
+    fn on_tick(&mut self, ctx: &StrategyContext<'_>) -> AgentAction {
         // Only refresh quotes periodically
-        if !self.should_refresh(market.tick) {
+        if !self.should_refresh(ctx.tick) {
             return AgentAction::none();
         }
 
-        let reference_price = self.get_reference_price(market);
+        let reference_price = self.get_reference_price(ctx);
         let orders = self.generate_quotes(reference_price);
 
         self.state.record_orders(orders.len() as u64);
-        self.last_quote_tick = market.tick;
+        self.last_quote_tick = ctx.tick;
 
         AgentAction::multiple(orders)
     }
@@ -217,40 +216,45 @@ impl Agent for MarketMaker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use types::BookSnapshot;
+    use quant::IndicatorSnapshot;
+    use sim_core::SingleSymbolMarket;
+    use std::collections::HashMap;
+    use types::OrderId;
 
-    fn mock_market_data(mid_price: Option<Price>, tick: u64) -> MarketData {
-        let book = if let Some(mid) = mid_price {
-            let bid = Price::from_float(mid.to_float() - 0.5);
-            let ask = Price::from_float(mid.to_float() + 0.5);
-            BookSnapshot {
-                symbol: "ACME".to_string(),
-                bids: vec![types::BookLevel {
-                    price: bid,
-                    quantity: Quantity(100),
-                    order_count: 1,
-                }],
-                asks: vec![types::BookLevel {
-                    price: ask,
-                    quantity: Quantity(100),
-                    order_count: 1,
-                }],
-                tick,
-                ..Default::default()
-            }
-        } else {
-            BookSnapshot::default()
-        };
-
-        MarketData {
-            tick,
-            timestamp: 0,
-            book_snapshot: book,
-            recent_trades: vec![],
-            last_price: mid_price,
-            candles: vec![],
-            indicators: None,
+    fn mock_context(
+        mid_price: Option<Price>,
+        tick: u64,
+    ) -> (
+        sim_core::OrderBook,
+        HashMap<types::Symbol, Vec<types::Candle>>,
+        IndicatorSnapshot,
+        HashMap<types::Symbol, Vec<Trade>>,
+    ) {
+        let mut book = sim_core::OrderBook::new("ACME");
+        if let Some(mid) = mid_price {
+            let mut bid = Order::limit(
+                AgentId(99),
+                "ACME",
+                OrderSide::Buy,
+                Price::from_float(mid.to_float() - 0.5),
+                Quantity(100),
+            );
+            bid.id = OrderId(1);
+            let mut ask = Order::limit(
+                AgentId(99),
+                "ACME",
+                OrderSide::Sell,
+                Price::from_float(mid.to_float() + 0.5),
+                Quantity(100),
+            );
+            ask.id = OrderId(2);
+            book.add_order(bid).unwrap();
+            book.add_order(ask).unwrap();
         }
+        let candles = HashMap::new();
+        let indicators = IndicatorSnapshot::new(tick);
+        let recent_trades = HashMap::new();
+        (book, candles, indicators, recent_trades)
     }
 
     #[test]
@@ -269,8 +273,11 @@ mod tests {
         };
         let mut mm = MarketMaker::new(AgentId(1), config);
 
-        let market = mock_market_data(Some(Price::from_float(100.0)), 0);
-        let action = mm.on_tick(&market);
+        let (book, candles, indicators, recent_trades) =
+            mock_context(Some(Price::from_float(100.0)), 0);
+        let market = SingleSymbolMarket::new(&book);
+        let ctx = StrategyContext::new(0, 0, &market, &candles, &indicators, &recent_trades);
+        let action = mm.on_tick(&ctx);
 
         assert_eq!(action.orders.len(), 2);
 
@@ -298,18 +305,27 @@ mod tests {
         let mut mm = MarketMaker::new(AgentId(1), config);
 
         // Tick 0: should place orders
-        let market = mock_market_data(Some(Price::from_float(100.0)), 0);
-        let action = mm.on_tick(&market);
+        let (book, candles, indicators, recent_trades) =
+            mock_context(Some(Price::from_float(100.0)), 0);
+        let market = SingleSymbolMarket::new(&book);
+        let ctx = StrategyContext::new(0, 0, &market, &candles, &indicators, &recent_trades);
+        let action = mm.on_tick(&ctx);
         assert_eq!(action.orders.len(), 2);
 
         // Tick 5: should NOT place orders
-        let market = mock_market_data(Some(Price::from_float(100.0)), 5);
-        let action = mm.on_tick(&market);
+        let (book, candles, indicators, recent_trades) =
+            mock_context(Some(Price::from_float(100.0)), 5);
+        let market = SingleSymbolMarket::new(&book);
+        let ctx = StrategyContext::new(5, 0, &market, &candles, &indicators, &recent_trades);
+        let action = mm.on_tick(&ctx);
         assert!(action.orders.is_empty());
 
         // Tick 10: should place orders again
-        let market = mock_market_data(Some(Price::from_float(100.0)), 10);
-        let action = mm.on_tick(&market);
+        let (book, candles, indicators, recent_trades) =
+            mock_context(Some(Price::from_float(100.0)), 10);
+        let market = SingleSymbolMarket::new(&book);
+        let ctx = StrategyContext::new(10, 0, &market, &candles, &indicators, &recent_trades);
+        let action = mm.on_tick(&ctx);
         assert_eq!(action.orders.len(), 2);
     }
 

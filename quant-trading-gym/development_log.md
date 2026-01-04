@@ -1,5 +1,118 @@
 # Development Log
 
+## 2026-01-04: V2.3 - Multi-Symbol Infrastructure (StrategyContext)
+
+### Completed
+
+#### MarketView Trait (`sim-core/src/market.rs`)
+- ✅ `MarketView` trait: Read-only interface for market state
+  - `symbols()`: List of available symbols
+  - `has_symbol()`: Check symbol existence
+  - `mid_price()`, `best_bid()`, `best_ask()`, `last_price()`: Price queries
+  - `snapshot()`: Full order book snapshot
+  - `total_bid_volume()`, `total_ask_volume()`: Liquidity queries
+- ✅ `SingleSymbolMarket<'a>`: Adapter wrapping `&OrderBook` to implement `MarketView`
+  - Zero-cost abstraction for single-symbol simulations
+  - Enables same agent code to work in single or multi-symbol contexts
+- ✅ `Market` struct: Multi-symbol container with `HashMap<Symbol, OrderBook>`
+  - Foundation for V2.3 multi-symbol trading
+
+#### StrategyContext (`agents/src/context.rs`)
+- ✅ `StrategyContext<'a>`: Unified context replacing `MarketData`
+  - References instead of clones: `&'a dyn MarketView`, `&'a HashMap<Symbol, Vec<Candle>>`, etc.
+  - Single-symbol convenience: `primary_symbol()`, `mid_price()`, `last_price()`
+  - Multi-symbol access: `market()` for full `MarketView` interface
+  - Candle access: `candles()`, `primary_candles()`
+  - Indicator access: Direct `indicators` field
+  - Trade access: `trades()`, `primary_trades()`
+
+#### Agent Trait Migration
+- ✅ `Agent::on_tick()` signature changed: `&MarketData` → `&StrategyContext<'_>`
+- ✅ `MarketData` marked `#[deprecated]` with message "Use StrategyContext instead"
+- ✅ `build_market_data()` kept but deprecated for backward compatibility
+
+#### Strategy Migrations (7 total)
+- ✅ `NoiseTrader`: Uses `ctx.mid_price()` for reference pricing
+- ✅ `MarketMaker`: Uses `ctx.primary_symbol()` and `ctx.mid_price()`
+- ✅ `MomentumTrader`: Uses `ctx.indicators` for RSI access
+- ✅ `TrendFollower`: Uses `ctx.indicators` for SMA crossover detection
+- ✅ `MacdCrossover`: Uses `ctx.indicators` and `ctx.primary_candles()`
+- ✅ `BollingerReversion`: Uses `ctx.indicators` and `ctx.primary_candles()`
+- ✅ `VwapExecutor`: Uses `ctx.last_price()` with `ctx.mid_price()` fallback
+
+#### Simulation Runner Updates (`simulation/src/runner.rs`)
+- ✅ **Two-phase tick pattern**: Borrow-checker compliant design
+  1. Phase 1: Build owned data (`candles_map`, `trades_map`, `indicators`)
+  2. Phase 2: Create `StrategyContext` with references, collect agent actions
+  3. Phase 3: Context drops (releases borrow), process orders
+- ✅ `build_candles_map()`: Creates `HashMap<Symbol, Vec<Candle>>` for context
+- ✅ `build_trades_map()`: Creates `HashMap<Symbol, Vec<Trade>>` for context
+- ✅ `SingleSymbolMarket` adapter wraps `&self.book` for `MarketView`
+
+### Technical Notes
+
+**Why keep MarketData (deprecated)?**
+- **Backward compatibility**: Existing external code/tests may use `MarketData`
+- **Gradual migration**: Deprecation warning guides users to `StrategyContext`
+- **Clean removal in V3**: Once scaling work begins, remove `MarketData` entirely
+- Follows Rust ecosystem pattern: deprecate → warn → remove in next major version
+
+**Two-Phase Tick Architecture:**
+```
+┌─────────────────────────────────────────────────────────┐
+│ Phase 1: Build Owned Data                               │
+│   candles_map = build_candles_map()                     │
+│   trades_map = build_trades_map()                       │
+│   indicators = compute_indicators()                     │
+│   market = SingleSymbolMarket::new(&self.book)          │
+└─────────────────────────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────┐
+│ Phase 2: Collect Actions (immutable borrow on book)     │
+│   ctx = StrategyContext::new(&market, &candles, ...)    │
+│   actions = agents.map(|a| a.on_tick(&ctx)).collect()   │
+└─────────────────────────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────┐
+│ Phase 3: Process Orders (ctx dropped, borrow released)  │
+│   for order in actions.orders:                          │
+│       book.add_order(order)  // mutable borrow ok       │
+│       match_order(&mut book)                            │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Why this pattern?**
+- Rust's borrow checker prevents simultaneous `&self.book` (for context) and `&mut self.book` (for matching)
+- Two-phase approach: read everything first, then mutate
+- `StrategyContext` holds references, not clones → zero allocation per tick
+- Actions collected into owned `Vec` before context is dropped
+
+### Files Created
+| File | Purpose |
+|------|---------|
+| `crates/sim-core/src/market.rs` | `MarketView` trait, `SingleSymbolMarket`, `Market` |
+| `crates/agents/src/context.rs` | `StrategyContext<'a>` struct |
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `crates/agents/src/traits.rs` | `Agent::on_tick(&StrategyContext)`, deprecated `MarketData` |
+| `crates/agents/src/lib.rs` | Export `StrategyContext`, `MarketView` |
+| `crates/simulation/src/runner.rs` | Two-phase tick, `build_candles_map`, `build_trades_map` |
+| All 7 strategy files | Migrated to `StrategyContext` API |
+| `crates/simulation/tests/agent_strategies.rs` | Updated test agents |
+
+### Exit Criteria
+```
+cargo fmt --check     # ✅ No formatting issues
+cargo clippy          # ✅ Only expected deprecation warnings for MarketData
+cargo test --workspace # ✅ 192 tests pass
+```
+
+---
+
 ## 2026-01-04: V2.2 - Slippage & Partial Fills
 
 ### Completed

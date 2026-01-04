@@ -1,13 +1,19 @@
 //! Agent trait and type definitions for the trading simulation.
 //!
 //! This module defines the core `Agent` trait that all trading agents must implement,
-//! as well as the `MarketData` context they receive each tick.
+//! as well as the `StrategyContext` they receive each tick.
+//!
+//! # V2.3 Changes
+//!
+//! The `on_tick` method now receives `StrategyContext<'_>` instead of `MarketData`.
+//! `StrategyContext` provides multi-symbol access via the `MarketView` trait.
+//!
+//! `MarketData` is kept for backwards compatibility but should be considered deprecated.
 
 use quant::IndicatorSnapshot;
 use types::{AgentId, Candle, IndicatorType, Order};
 
-// Re-export context from simulation crate once available
-// For now, we define a minimal trait that the simulation crate will use
+use crate::StrategyContext;
 
 /// Result of an agent's decision each tick.
 ///
@@ -39,11 +45,17 @@ impl AgentAction {
 
 /// The core trait that all trading agents must implement.
 ///
-/// Agents are called once per tick with a snapshot of the market state.
-/// They return an optional order to submit to the market.
+/// Agents are called once per tick with a `StrategyContext` providing
+/// access to market state, indicators, and historical data.
+///
+/// # V2.3 Changes
+///
+/// The `on_tick` method now receives `StrategyContext<'_>` instead of `MarketData`.
+/// This enables multi-symbol access through the `MarketView` trait.
 ///
 /// # Lifetimes
-/// The `MarketData` parameter borrows from the simulation state, so agents
+///
+/// The `StrategyContext` parameter borrows from the simulation state, so agents
 /// cannot store references to it. They should extract any needed data during
 /// the `on_tick` call.
 ///
@@ -51,13 +63,16 @@ impl AgentAction {
 /// ```ignore
 /// struct SimpleAgent {
 ///     id: AgentId,
+///     symbol: String,
 /// }
 ///
 /// impl Agent for SimpleAgent {
 ///     fn id(&self) -> AgentId { self.id }
 ///
-///     fn on_tick(&mut self, market: &MarketData) -> AgentAction {
-///         // Decide whether to place an order based on market state
+///     fn on_tick(&mut self, ctx: &StrategyContext<'_>) -> AgentAction {
+///         // Access market data for our symbol
+///         let mid = ctx.mid_price(&self.symbol);
+///         let rsi = ctx.get_indicator(&self.symbol, IndicatorType::Rsi(14));
 ///         AgentAction::none()
 ///     }
 /// }
@@ -68,15 +83,15 @@ pub trait Agent: Send {
 
     /// Called each simulation tick with the current market state.
     ///
-    /// The agent should analyze the market data and return any orders
+    /// The agent should analyze the context and return any orders
     /// it wishes to submit.
     ///
     /// # Arguments
-    /// * `market` - Read-only snapshot of the current market state
+    /// * `ctx` - Read-only context with market state, indicators, and historical data
     ///
     /// # Returns
     /// An `AgentAction` containing zero or more orders to submit
-    fn on_tick(&mut self, market: &MarketData) -> AgentAction;
+    fn on_tick(&mut self, ctx: &StrategyContext<'_>) -> AgentAction;
 
     /// Called when one of this agent's orders is filled (fully or partially).
     ///
@@ -132,11 +147,19 @@ pub trait Agent: Send {
     }
 }
 
+// =============================================================================
+// Legacy MarketData (Deprecated)
+// =============================================================================
+
 /// Market data snapshot passed to agents each tick.
+///
+/// **DEPRECATED:** Use `StrategyContext` instead. This struct is kept for
+/// backwards compatibility but will be removed in a future version.
 ///
 /// Contains all the information an agent needs to make trading decisions.
 /// This is a read-only view of the current market state.
 #[derive(Debug, Clone)]
+#[deprecated(since = "2.3.0", note = "Use StrategyContext instead")]
 pub struct MarketData {
     /// Current simulation tick.
     pub tick: types::Tick,
@@ -160,6 +183,7 @@ pub struct MarketData {
     pub indicators: Option<IndicatorSnapshot>,
 }
 
+#[allow(deprecated)]
 impl MarketData {
     /// Get the best bid price.
     pub fn best_bid(&self) -> Option<types::Price> {
@@ -197,7 +221,10 @@ impl MarketData {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use types::{BookSnapshot, Price};
+    use quant::IndicatorSnapshot;
+    use sim_core::SingleSymbolMarket;
+    use std::collections::HashMap;
+    use types::{OrderId, Price, Quantity};
 
     #[test]
     fn test_agent_action_none() {
@@ -219,34 +246,39 @@ mod tests {
     }
 
     #[test]
-    fn test_market_data_accessors() {
-        let market = MarketData {
-            tick: 100,
-            timestamp: 1000,
-            book_snapshot: BookSnapshot {
-                symbol: "AAPL".to_string(),
-                bids: vec![types::BookLevel {
-                    price: Price::from_float(99.0),
-                    quantity: types::Quantity(100),
-                    order_count: 1,
-                }],
-                asks: vec![types::BookLevel {
-                    price: Price::from_float(101.0),
-                    quantity: types::Quantity(100),
-                    order_count: 1,
-                }],
-                timestamp: 1000,
-                tick: 100,
-            },
-            recent_trades: vec![],
-            last_price: Some(Price::from_float(100.0)),
-            candles: vec![],
-            indicators: None,
-        };
+    fn test_strategy_context_integration() {
+        // Create a minimal order book
+        let mut book = sim_core::OrderBook::new("TEST");
+        let mut bid = Order::limit(
+            AgentId(1),
+            "TEST",
+            types::OrderSide::Buy,
+            Price::from_float(99.0),
+            Quantity(100),
+        );
+        bid.id = OrderId(1);
+        let mut ask = Order::limit(
+            AgentId(2),
+            "TEST",
+            types::OrderSide::Sell,
+            Price::from_float(101.0),
+            Quantity(100),
+        );
+        ask.id = OrderId(2);
+        book.add_order(bid).unwrap();
+        book.add_order(ask).unwrap();
 
-        assert_eq!(market.best_bid(), Some(Price::from_float(99.0)));
-        assert_eq!(market.best_ask(), Some(Price::from_float(101.0)));
-        assert_eq!(market.mid_price(), Some(Price::from_float(100.0)));
-        assert_eq!(market.spread(), Some(Price::from_float(2.0)));
+        // Create context
+        let market = SingleSymbolMarket::new(&book);
+        let candles = HashMap::new();
+        let indicators = IndicatorSnapshot::new(100);
+        let recent_trades = HashMap::new();
+        let ctx = StrategyContext::new(100, 1000, &market, &candles, &indicators, &recent_trades);
+
+        // Test access
+        let symbol = "TEST".to_string();
+        assert_eq!(ctx.mid_price(&symbol), Some(Price::from_float(100.0)));
+        assert_eq!(ctx.best_bid(&symbol), Some(Price::from_float(99.0)));
+        assert_eq!(ctx.best_ask(&symbol), Some(Price::from_float(101.0)));
     }
 }

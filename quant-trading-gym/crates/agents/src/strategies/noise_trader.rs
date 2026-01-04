@@ -9,7 +9,7 @@
 //! it falls back to a configured initial price.
 
 use crate::state::AgentState;
-use crate::{Agent, AgentAction, MarketData};
+use crate::{Agent, AgentAction, StrategyContext};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use types::{AgentId, Cash, Order, OrderSide, Price, Quantity, Trade};
@@ -110,11 +110,10 @@ impl NoiseTrader {
     }
 
     /// Determine the reference price for order generation.
-    fn get_reference_price(&self, market: &MarketData) -> Price {
+    fn get_reference_price(&self, ctx: &StrategyContext<'_>) -> Price {
         // Priority: mid price > last trade > initial price
-        market
-            .mid_price()
-            .or(market.last_price)
+        ctx.mid_price(&self.config.symbol)
+            .or_else(|| ctx.last_price(&self.config.symbol))
             .unwrap_or(self.config.initial_price)
     }
 
@@ -167,13 +166,13 @@ impl Agent for NoiseTrader {
         self.id
     }
 
-    fn on_tick(&mut self, market: &MarketData) -> AgentAction {
+    fn on_tick(&mut self, ctx: &StrategyContext<'_>) -> AgentAction {
         // Randomly decide whether to place an order
         if !self.rng.random_bool(self.config.order_probability) {
             return AgentAction::none();
         }
 
-        let reference_price = self.get_reference_price(market);
+        let reference_price = self.get_reference_price(ctx);
 
         if let Some(order) = self.generate_order(reference_price) {
             self.state.record_order();
@@ -209,39 +208,44 @@ impl Agent for NoiseTrader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use types::BookSnapshot;
+    use quant::IndicatorSnapshot;
+    use sim_core::SingleSymbolMarket;
+    use std::collections::HashMap;
+    use types::OrderId;
 
-    fn mock_market_data(mid_price: Option<Price>) -> MarketData {
-        let book = if let Some(mid) = mid_price {
-            let bid = Price::from_float(mid.to_float() - 0.5);
-            let ask = Price::from_float(mid.to_float() + 0.5);
-            BookSnapshot {
-                symbol: "ACME".to_string(),
-                bids: vec![types::BookLevel {
-                    price: bid,
-                    quantity: Quantity(100),
-                    order_count: 1,
-                }],
-                asks: vec![types::BookLevel {
-                    price: ask,
-                    quantity: Quantity(100),
-                    order_count: 1,
-                }],
-                ..Default::default()
-            }
-        } else {
-            BookSnapshot::default()
-        };
-
-        MarketData {
-            tick: 1,
-            timestamp: 0,
-            book_snapshot: book,
-            recent_trades: vec![],
-            last_price: mid_price,
-            candles: vec![],
-            indicators: None,
+    fn mock_context_with_price(
+        mid_price: Option<Price>,
+    ) -> (
+        sim_core::OrderBook,
+        HashMap<types::Symbol, Vec<types::Candle>>,
+        IndicatorSnapshot,
+        HashMap<types::Symbol, Vec<Trade>>,
+    ) {
+        let mut book = sim_core::OrderBook::new("ACME");
+        if let Some(mid) = mid_price {
+            let mut bid = Order::limit(
+                AgentId(99),
+                "ACME",
+                OrderSide::Buy,
+                Price::from_float(mid.to_float() - 0.5),
+                Quantity(100),
+            );
+            bid.id = OrderId(1);
+            let mut ask = Order::limit(
+                AgentId(99),
+                "ACME",
+                OrderSide::Sell,
+                Price::from_float(mid.to_float() + 0.5),
+                Quantity(100),
+            );
+            ask.id = OrderId(2);
+            book.add_order(bid).unwrap();
+            book.add_order(ask).unwrap();
         }
+        let candles = HashMap::new();
+        let indicators = IndicatorSnapshot::new(1);
+        let recent_trades = HashMap::new();
+        (book, candles, indicators, recent_trades)
     }
 
     #[test]
@@ -257,13 +261,18 @@ mod tests {
         let trader = NoiseTrader::with_defaults(AgentId(1));
 
         // Empty market: use initial price
-        let market = mock_market_data(None);
-        let ref_price = trader.get_reference_price(&market);
+        let (book, candles, indicators, recent_trades) = mock_context_with_price(None);
+        let market = SingleSymbolMarket::new(&book);
+        let ctx = StrategyContext::new(1, 0, &market, &candles, &indicators, &recent_trades);
+        let ref_price = trader.get_reference_price(&ctx);
         assert_eq!(ref_price, Price::from_float(100.0));
 
         // With mid price: use mid price
-        let market = mock_market_data(Some(Price::from_float(150.0)));
-        let ref_price = trader.get_reference_price(&market);
+        let (book, candles, indicators, recent_trades) =
+            mock_context_with_price(Some(Price::from_float(150.0)));
+        let market = SingleSymbolMarket::new(&book);
+        let ctx = StrategyContext::new(1, 0, &market, &candles, &indicators, &recent_trades);
+        let ref_price = trader.get_reference_price(&ctx);
         assert_eq!(ref_price, Price::from_float(150.0));
     }
 

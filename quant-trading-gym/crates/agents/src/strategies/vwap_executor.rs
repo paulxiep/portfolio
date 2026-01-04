@@ -18,7 +18,7 @@
 //! The strategy is fully declarative via [`VwapExecutorConfig`].
 
 use crate::state::AgentState;
-use crate::{Agent, AgentAction, MarketData};
+use crate::{Agent, AgentAction, StrategyContext};
 use types::{AgentId, Cash, Order, OrderSide, Price, Quantity, Trade};
 
 /// Configuration for a VWAP Executor.
@@ -154,10 +154,9 @@ impl VwapExecutor {
     }
 
     /// Determine the reference price for orders.
-    fn get_reference_price(&self, market: &MarketData) -> Price {
-        market
-            .mid_price()
-            .or(market.last_price)
+    fn get_reference_price(&self, ctx: &StrategyContext<'_>) -> Price {
+        ctx.mid_price(&self.config.symbol)
+            .or_else(|| ctx.last_price(&self.config.symbol))
             .unwrap_or(self.config.initial_price)
     }
 
@@ -182,8 +181,8 @@ impl VwapExecutor {
     }
 
     /// Generate an order at the reference price.
-    fn generate_order(&self, market: &MarketData) -> Order {
-        let price = self.get_reference_price(market);
+    fn generate_order(&self, ctx: &StrategyContext<'_>) -> Order {
+        let price = self.get_reference_price(ctx);
         let quantity = Quantity(self.calculate_slice_size());
 
         // Price adjustment based on side to improve fill probability
@@ -207,9 +206,10 @@ impl Agent for VwapExecutor {
         self.id
     }
 
-    fn on_tick(&mut self, market: &MarketData) -> AgentAction {
-        // Update running VWAP calculation
-        self.update_vwap(&market.recent_trades);
+    fn on_tick(&mut self, ctx: &StrategyContext<'_>) -> AgentAction {
+        // Update running VWAP calculation from recent trades
+        let recent_trades = ctx.recent_trades(&self.config.symbol);
+        self.update_vwap(recent_trades);
 
         // Check if we're done
         if self.is_complete() {
@@ -217,12 +217,15 @@ impl Agent for VwapExecutor {
         }
 
         // Check timing constraint
-        if !self.can_place_order(market.tick) {
+        if !self.can_place_order(ctx.tick) {
             return AgentAction::none();
         }
 
-        // Get current price
-        let current_price = match market.last_price {
+        // Get current price - try last_price first, then mid_price
+        let current_price = match ctx
+            .last_price(&self.config.symbol)
+            .or_else(|| ctx.mid_price(&self.config.symbol))
+        {
             Some(p) => p.to_float(),
             None => return AgentAction::none(),
         };
@@ -236,9 +239,9 @@ impl Agent for VwapExecutor {
         }
         // If no VWAP yet (no trades), execute to get started
 
-        let order = self.generate_order(market);
+        let order = self.generate_order(ctx);
         self.state.record_order();
-        self.last_order_tick = market.tick;
+        self.last_order_tick = ctx.tick;
 
         AgentAction::single(order)
     }
@@ -272,40 +275,56 @@ impl Agent for VwapExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use types::BookSnapshot;
+    use crate::context::StrategyContext;
+    use quant::IndicatorSnapshot;
+    use sim_core::{OrderBook, SingleSymbolMarket};
+    use std::collections::HashMap;
+    use types::{Candle, Order, Symbol};
 
-    fn make_market_data(tick: u64, last_price: Option<Price>, trades: Vec<Trade>) -> MarketData {
-        MarketData {
-            tick,
-            timestamp: tick * 100,
-            book_snapshot: BookSnapshot {
-                symbol: "ACME".to_string(),
-                bids: vec![types::BookLevel {
-                    price: Price::from_float(99.0),
-                    quantity: Quantity(100),
-                    order_count: 1,
-                }],
-                asks: vec![types::BookLevel {
-                    price: Price::from_float(101.0),
-                    quantity: Quantity(100),
-                    order_count: 1,
-                }],
-                timestamp: tick * 100,
-                tick,
-            },
-            recent_trades: trades,
-            last_price,
-            candles: vec![],
-            indicators: None,
-        }
+    fn make_context_with_orderbook<'a>(
+        tick: u64,
+        _order_book: &'a OrderBook,
+        candles: &'a HashMap<Symbol, Vec<Candle>>,
+        indicators: &'a IndicatorSnapshot,
+        trades: &'a HashMap<Symbol, Vec<Trade>>,
+        market: &'a SingleSymbolMarket<'a>,
+    ) -> StrategyContext<'a> {
+        StrategyContext::new(tick, tick * 100, market, candles, indicators, trades)
+    }
+
+    fn create_order_book(symbol: &str, bid_price: f64, ask_price: f64) -> OrderBook {
+        let mut book = OrderBook::new(symbol.to_string());
+        let bid = Order::limit(
+            AgentId(999),
+            symbol,
+            OrderSide::Buy,
+            Price::from_float(bid_price),
+            Quantity(100),
+        );
+        let ask = Order::limit(
+            AgentId(999),
+            symbol,
+            OrderSide::Sell,
+            Price::from_float(ask_price),
+            Quantity(100),
+        );
+        book.add_order(bid).unwrap();
+        book.add_order(ask).unwrap();
+        book
     }
 
     #[test]
     fn test_vwap_initial_order() {
         let mut executor = VwapExecutor::with_defaults(AgentId(1));
-        let market = make_market_data(0, Some(Price::from_float(100.0)), vec![]);
+        let order_book = create_order_book("ACME", 99.0, 101.0);
+        let market = SingleSymbolMarket::new(&order_book);
+        let candles: HashMap<Symbol, Vec<Candle>> = HashMap::new();
+        let indicators = IndicatorSnapshot::default();
+        let trades: HashMap<Symbol, Vec<Trade>> = HashMap::new();
 
-        let action = executor.on_tick(&market);
+        let ctx =
+            make_context_with_orderbook(0, &order_book, &candles, &indicators, &trades, &market);
+        let action = executor.on_tick(&ctx);
 
         // Should place initial order even without VWAP
         assert_eq!(action.orders.len(), 1);
@@ -315,19 +334,27 @@ mod tests {
     #[test]
     fn test_vwap_respects_interval() {
         let mut executor = VwapExecutor::with_defaults(AgentId(1));
+        let order_book = create_order_book("ACME", 99.0, 101.0);
+        let market = SingleSymbolMarket::new(&order_book);
+        let candles: HashMap<Symbol, Vec<Candle>> = HashMap::new();
+        let indicators = IndicatorSnapshot::default();
+        let trades: HashMap<Symbol, Vec<Trade>> = HashMap::new();
 
         // First order at tick 0
-        let market0 = make_market_data(0, Some(Price::from_float(100.0)), vec![]);
-        let _ = executor.on_tick(&market0);
+        let ctx0 =
+            make_context_with_orderbook(0, &order_book, &candles, &indicators, &trades, &market);
+        let _ = executor.on_tick(&ctx0);
 
         // Should not order at tick 5 (interval is 10)
-        let market5 = make_market_data(5, Some(Price::from_float(100.0)), vec![]);
-        let action5 = executor.on_tick(&market5);
+        let ctx5 =
+            make_context_with_orderbook(5, &order_book, &candles, &indicators, &trades, &market);
+        let action5 = executor.on_tick(&ctx5);
         assert!(action5.orders.is_empty());
 
         // Should order at tick 10
-        let market10 = make_market_data(10, Some(Price::from_float(100.0)), vec![]);
-        let action10 = executor.on_tick(&market10);
+        let ctx10 =
+            make_context_with_orderbook(10, &order_book, &candles, &indicators, &trades, &market);
+        let action10 = executor.on_tick(&ctx10);
         assert_eq!(action10.orders.len(), 1);
     }
 
@@ -342,10 +369,16 @@ mod tests {
             ..Default::default()
         };
         let mut executor = VwapExecutor::new(AgentId(1), config);
+        let order_book = create_order_book("ACME", 99.0, 101.0);
+        let market = SingleSymbolMarket::new(&order_book);
+        let candles: HashMap<Symbol, Vec<Candle>> = HashMap::new();
+        let indicators = IndicatorSnapshot::default();
+        let trades: HashMap<Symbol, Vec<Trade>> = HashMap::new();
 
         // Place order
-        let market = make_market_data(0, Some(Price::from_float(100.0)), vec![]);
-        let _ = executor.on_tick(&market);
+        let ctx =
+            make_context_with_orderbook(0, &order_book, &candles, &indicators, &trades, &market);
+        let _ = executor.on_tick(&ctx);
 
         // Simulate fill
         let trade = Trade {
@@ -374,12 +407,18 @@ mod tests {
             ..Default::default()
         };
         let mut executor = VwapExecutor::new(AgentId(1), config);
+        let order_book = create_order_book("ACME", 99.0, 101.0);
+        let market = SingleSymbolMarket::new(&order_book);
+        let candles: HashMap<Symbol, Vec<Candle>> = HashMap::new();
+        let indicators = IndicatorSnapshot::default();
+        let trades: HashMap<Symbol, Vec<Trade>> = HashMap::new();
 
         // Manually mark as complete
         executor.remaining_quantity = 0;
 
-        let market = make_market_data(0, Some(Price::from_float(100.0)), vec![]);
-        let action = executor.on_tick(&market);
+        let ctx =
+            make_context_with_orderbook(0, &order_book, &candles, &indicators, &trades, &market);
+        let action = executor.on_tick(&ctx);
 
         assert!(action.orders.is_empty());
     }

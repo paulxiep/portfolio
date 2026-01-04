@@ -202,7 +202,7 @@ fn test_position_limits_rejects_shorts_when_disabled() {
             self.id
         }
 
-        fn on_tick(&mut self, _market: &agents::MarketData) -> agents::AgentAction {
+        fn on_tick(&mut self, _ctx: &agents::StrategyContext<'_>) -> agents::AgentAction {
             if !self.attempted {
                 self.attempted = true;
                 // Try to sell 100 shares we don't have (short sell)
@@ -278,7 +278,7 @@ fn test_position_limits_allows_shorts_when_enabled() {
             self.id
         }
 
-        fn on_tick(&mut self, _market: &agents::MarketData) -> agents::AgentAction {
+        fn on_tick(&mut self, _ctx: &agents::StrategyContext<'_>) -> agents::AgentAction {
             if !self.attempted {
                 self.attempted = true;
                 // Try to short sell 100 shares (within max_short limit)
@@ -328,7 +328,7 @@ fn test_position_limits_allows_shorts_when_enabled() {
             self.id
         }
 
-        fn on_tick(&mut self, _market: &agents::MarketData) -> agents::AgentAction {
+        fn on_tick(&mut self, _ctx: &agents::StrategyContext<'_>) -> agents::AgentAction {
             if !self.attempted {
                 self.attempted = true;
                 agents::AgentAction::single(Order::limit(

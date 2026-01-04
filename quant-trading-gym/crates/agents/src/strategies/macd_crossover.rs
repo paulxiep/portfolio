@@ -12,7 +12,7 @@
 //! The strategy is fully declarative via [`MacdCrossoverConfig`].
 
 use crate::state::AgentState;
-use crate::{Agent, AgentAction, MarketData};
+use crate::{Agent, AgentAction, StrategyContext};
 use quant::Macd;
 use types::{AgentId, Cash, IndicatorType, Order, OrderSide, Price, Quantity, Trade};
 
@@ -113,10 +113,9 @@ impl MacdCrossover {
     }
 
     /// Determine the reference price for orders.
-    fn get_reference_price(&self, market: &MarketData) -> Price {
-        market
-            .mid_price()
-            .or(market.last_price)
+    fn get_reference_price(&self, ctx: &StrategyContext<'_>) -> Price {
+        ctx.mid_price(&self.config.symbol)
+            .or_else(|| ctx.last_price(&self.config.symbol))
             .unwrap_or(self.config.initial_price)
     }
 
@@ -131,8 +130,8 @@ impl MacdCrossover {
     }
 
     /// Generate a buy order.
-    fn generate_buy_order(&self, market: &MarketData) -> Order {
-        let price = self.get_reference_price(market);
+    fn generate_buy_order(&self, ctx: &StrategyContext<'_>) -> Order {
+        let price = self.get_reference_price(ctx);
         let order_price = Price::from_float(price.to_float() * 0.999);
         Order::limit(
             self.id,
@@ -144,8 +143,8 @@ impl MacdCrossover {
     }
 
     /// Generate a sell order.
-    fn generate_sell_order(&self, market: &MarketData) -> Order {
-        let price = self.get_reference_price(market);
+    fn generate_sell_order(&self, ctx: &StrategyContext<'_>) -> Order {
+        let price = self.get_reference_price(ctx);
         let order_price = Price::from_float(price.to_float() * 1.001);
         Order::limit(
             self.id,
@@ -173,9 +172,9 @@ impl Agent for MacdCrossover {
         self.id
     }
 
-    fn on_tick(&mut self, market: &MarketData) -> AgentAction {
+    fn on_tick(&mut self, ctx: &StrategyContext<'_>) -> AgentAction {
         // Calculate full MACD output from candles
-        let macd_output = match self.macd.calculate_full(&market.candles) {
+        let macd_output = match self.macd.calculate_full(ctx.candles(&self.config.symbol)) {
             Some(output) => output,
             None => return AgentAction::none(), // Not enough data
         };
@@ -193,13 +192,13 @@ impl Agent for MacdCrossover {
         match (prev_state, current_state) {
             // Bullish crossover: MACD crosses above signal -> buy
             (MacdState::Bearish, MacdState::Bullish) if self.can_buy() => {
-                let order = self.generate_buy_order(market);
+                let order = self.generate_buy_order(ctx);
                 self.state.record_order();
                 AgentAction::single(order)
             }
             // Bearish crossover: MACD crosses below signal -> sell
             (MacdState::Bullish, MacdState::Bearish) if self.can_sell() => {
-                let order = self.generate_sell_order(market);
+                let order = self.generate_sell_order(ctx);
                 self.state.record_order();
                 AgentAction::single(order)
             }
@@ -231,7 +230,11 @@ impl Agent for MacdCrossover {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use types::{BookSnapshot, Candle};
+    use crate::context::StrategyContext;
+    use quant::IndicatorSnapshot;
+    use sim_core::{OrderBook, SingleSymbolMarket};
+    use std::collections::HashMap;
+    use types::{Candle, Order, Symbol};
 
     /// Generate candles that will produce specific MACD outputs.
     fn make_trending_candles(trend_up: bool, count: usize) -> Vec<Candle> {
@@ -255,53 +258,72 @@ mod tests {
             .collect()
     }
 
-    fn make_market_data(candles: Vec<Candle>) -> MarketData {
-        MarketData {
-            tick: 100,
-            timestamp: 1000,
-            book_snapshot: BookSnapshot {
-                symbol: "ACME".to_string(),
-                bids: vec![types::BookLevel {
-                    price: Price::from_float(99.0),
-                    quantity: Quantity(100),
-                    order_count: 1,
-                }],
-                asks: vec![types::BookLevel {
-                    price: Price::from_float(101.0),
-                    quantity: Quantity(100),
-                    order_count: 1,
-                }],
-                timestamp: 1000,
-                tick: 100,
-            },
-            recent_trades: vec![],
-            last_price: Some(Price::from_float(100.0)),
-            candles,
-            indicators: None,
-        }
+    fn make_context_with_candles<'a>(
+        _order_book: &'a OrderBook,
+        candles: &'a HashMap<Symbol, Vec<Candle>>,
+        indicators: &'a IndicatorSnapshot,
+        trades: &'a HashMap<Symbol, Vec<Trade>>,
+        market: &'a SingleSymbolMarket<'a>,
+    ) -> StrategyContext<'a> {
+        StrategyContext::new(100, 1000, market, candles, indicators, trades)
+    }
+
+    fn create_order_book(symbol: &str, bid_price: f64, ask_price: f64) -> OrderBook {
+        let mut book = OrderBook::new(symbol.to_string());
+        let bid = Order::limit(
+            AgentId(999),
+            symbol,
+            OrderSide::Buy,
+            Price::from_float(bid_price),
+            Quantity(100),
+        );
+        let ask = Order::limit(
+            AgentId(999),
+            symbol,
+            OrderSide::Sell,
+            Price::from_float(ask_price),
+            Quantity(100),
+        );
+        book.add_order(bid).unwrap();
+        book.add_order(ask).unwrap();
+        book
     }
 
     #[test]
     fn test_macd_needs_enough_data() {
         let mut trader = MacdCrossover::with_defaults(AgentId(1));
-        // Only 10 candles, need 26 + 9 = 35 minimum
-        let candles = make_trending_candles(true, 10);
-        let market = make_market_data(candles);
+        let order_book = create_order_book("ACME", 99.0, 101.0);
+        let market = SingleSymbolMarket::new(&order_book);
+        let indicators = IndicatorSnapshot::default();
+        let trades: HashMap<Symbol, Vec<Trade>> = HashMap::new();
 
-        let action = trader.on_tick(&market);
+        // Only 10 candles, need 26 + 9 = 35 minimum
+        let candle_vec = make_trending_candles(true, 10);
+        let mut candles: HashMap<Symbol, Vec<Candle>> = HashMap::new();
+        candles.insert("ACME".into(), candle_vec);
+
+        let ctx = make_context_with_candles(&order_book, &candles, &indicators, &trades, &market);
+        let action = trader.on_tick(&ctx);
         assert!(action.orders.is_empty());
     }
 
     #[test]
     fn test_macd_no_action_on_first_state() {
         let mut trader = MacdCrossover::with_defaults(AgentId(1));
-        // Enough data for MACD
-        let candles = make_trending_candles(true, 50);
-        let market = make_market_data(candles);
+        let order_book = create_order_book("ACME", 99.0, 101.0);
+        let market = SingleSymbolMarket::new(&order_book);
+        let indicators = IndicatorSnapshot::default();
+        let trades: HashMap<Symbol, Vec<Trade>> = HashMap::new();
 
+        // Enough data for MACD
+        let candle_vec = make_trending_candles(true, 50);
+        let mut candles: HashMap<Symbol, Vec<Candle>> = HashMap::new();
+        candles.insert("ACME".into(), candle_vec);
+
+        let ctx = make_context_with_candles(&order_book, &candles, &indicators, &trades, &market);
         // First tick should only set state, not generate orders
         // (prev_state is Unknown, which doesn't trigger crossover)
-        let action = trader.on_tick(&market);
+        let action = trader.on_tick(&ctx);
         // This might or might not generate an order depending on state logic
         // The main assertion is that it doesn't panic
         assert!(action.orders.len() <= 1);
