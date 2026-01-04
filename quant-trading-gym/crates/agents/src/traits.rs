@@ -5,13 +5,10 @@
 //!
 //! # V2.3 Changes
 //!
-//! The `on_tick` method now receives `StrategyContext<'_>` instead of `MarketData`.
-//! `StrategyContext` provides multi-symbol access via the `MarketView` trait.
-//!
-//! `MarketData` is kept for backwards compatibility but should be considered deprecated.
+//! The `on_tick` method receives `StrategyContext<'_>` which provides
+//! multi-symbol access via the `MarketView` trait.
 
-use quant::IndicatorSnapshot;
-use types::{AgentId, Candle, IndicatorType, Order};
+use types::{AgentId, Order};
 
 use crate::StrategyContext;
 
@@ -144,77 +141,6 @@ pub trait Agent: Send {
             -(price * types::Quantity((-position) as u64))
         };
         self.cash() + position_value
-    }
-}
-
-// =============================================================================
-// Legacy MarketData (Deprecated)
-// =============================================================================
-
-/// Market data snapshot passed to agents each tick.
-///
-/// **DEPRECATED:** Use `StrategyContext` instead. This struct is kept for
-/// backwards compatibility but will be removed in a future version.
-///
-/// Contains all the information an agent needs to make trading decisions.
-/// This is a read-only view of the current market state.
-#[derive(Debug, Clone)]
-#[deprecated(since = "2.3.0", note = "Use StrategyContext instead")]
-pub struct MarketData {
-    /// Current simulation tick.
-    pub tick: types::Tick,
-
-    /// Current timestamp (wall clock).
-    pub timestamp: types::Timestamp,
-
-    /// Snapshot of the order book.
-    pub book_snapshot: types::BookSnapshot,
-
-    /// Recent trades (most recent first).
-    pub recent_trades: Vec<types::Trade>,
-
-    /// Last trade price (None if no trades yet).
-    pub last_price: Option<types::Price>,
-
-    /// Historical candles (oldest to newest, if available).
-    pub candles: Vec<Candle>,
-
-    /// Pre-computed indicator values (if available).
-    pub indicators: Option<IndicatorSnapshot>,
-}
-
-#[allow(deprecated)]
-impl MarketData {
-    /// Get the best bid price.
-    pub fn best_bid(&self) -> Option<types::Price> {
-        self.book_snapshot.best_bid()
-    }
-
-    /// Get the best ask price.
-    pub fn best_ask(&self) -> Option<types::Price> {
-        self.book_snapshot.best_ask()
-    }
-
-    /// Get the mid price.
-    pub fn mid_price(&self) -> Option<types::Price> {
-        self.book_snapshot.mid_price()
-    }
-
-    /// Get the spread.
-    pub fn spread(&self) -> Option<types::Price> {
-        self.book_snapshot.spread()
-    }
-
-    /// Get a specific indicator value.
-    pub fn get_indicator(&self, indicator_type: IndicatorType) -> Option<f64> {
-        self.indicators
-            .as_ref()
-            .and_then(|s| s.get(&self.book_snapshot.symbol, indicator_type))
-    }
-
-    /// Get the most recent candle.
-    pub fn last_candle(&self) -> Option<&Candle> {
-        self.candles.last()
     }
 }
 

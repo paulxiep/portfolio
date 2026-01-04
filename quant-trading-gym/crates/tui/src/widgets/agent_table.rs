@@ -71,10 +71,13 @@ impl Widget for AgentTable {
             .skip(scroll_offset)
             .take(visible_rows)
             .map(|agent| {
+                // Use net_position for display (sum across all symbols)
+                let position = agent.net_position();
+
                 // Color position based on direction
-                let position_style = if agent.position > 0 {
+                let position_style = if position > 0 {
                     Style::default().fg(Color::Green)
-                } else if agent.position < 0 {
+                } else if position < 0 {
                     Style::default().fg(Color::Red)
                 } else {
                     Style::default().fg(Color::Gray)
@@ -92,7 +95,7 @@ impl Widget for AgentTable {
 
                 Row::new(vec![
                     Cell::from(agent.name.clone()),
-                    Cell::from(format!("{:>8}", agent.position)).style(position_style),
+                    Cell::from(format!("{:>8}", position)).style(position_style),
                     Cell::from(format!("${:>10.2}", agent.cash.to_float())),
                     Cell::from(format!("${:>10.2}", pnl_value)).style(pnl_style),
                 ])
@@ -125,7 +128,14 @@ impl Widget for AgentTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use types::Cash;
+
+    fn make_positions(position: i64) -> HashMap<String, i64> {
+        let mut positions = HashMap::new();
+        positions.insert("TEST".to_string(), position);
+        positions
+    }
 
     #[test]
     fn test_agent_table_empty() {
@@ -141,7 +151,7 @@ mod tests {
         let agents = vec![
             AgentInfo {
                 name: "01-MarketMaker".to_string(),
-                position: 50,
+                positions: make_positions(50),
                 realized_pnl: Cash::from_float(125.50),
                 cash: Cash::from_float(10_125.50),
                 is_market_maker: true,
@@ -149,7 +159,7 @@ mod tests {
             },
             AgentInfo {
                 name: "02-NoiseTrader".to_string(),
-                position: -20,
+                positions: make_positions(-20),
                 realized_pnl: Cash::from_float(-45.00),
                 cash: Cash::from_float(9_955.00),
                 is_market_maker: false,

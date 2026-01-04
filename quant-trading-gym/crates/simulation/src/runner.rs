@@ -11,6 +11,11 @@
 //! - Short-selling constraints and borrow availability
 //!
 //! Rejected orders are logged but do not cause errors.
+//!
+//! # Multi-Symbol Support (V2.3)
+//!
+//! The simulation supports multiple symbols via `Market` (HashMap<Symbol, OrderBook>).
+//! Each symbol has independent candles, trades, and indicators.
 
 use std::collections::HashMap;
 
@@ -19,7 +24,7 @@ use quant::{
     AgentRiskSnapshot, AgentRiskTracker, IndicatorCache, IndicatorEngine, IndicatorSnapshot,
 };
 use rand::seq::SliceRandom;
-use sim_core::{MatchingEngine, OrderBook, SingleSymbolMarket};
+use sim_core::{Market, MatchingEngine, OrderBook};
 use types::{
     AgentId, Candle, Order, OrderId, Price, Quantity, RiskViolation, Symbol, Tick, Timestamp, Trade,
 };
@@ -62,8 +67,8 @@ pub struct Simulation {
     /// Configuration for this simulation.
     config: SimulationConfig,
 
-    /// The order book.
-    book: OrderBook,
+    /// Multi-symbol market container (V2.3).
+    market: Market,
 
     /// The matching engine.
     engine: MatchingEngine,
@@ -77,8 +82,8 @@ pub struct Simulation {
     /// Current timestamp.
     timestamp: Timestamp,
 
-    /// Recent trades for market data.
-    recent_trades: Vec<Trade>,
+    /// Recent trades per symbol (V2.3).
+    recent_trades: HashMap<Symbol, Vec<Trade>>,
 
     /// Counter for generating unique order IDs.
     next_order_id: u64,
@@ -86,13 +91,14 @@ pub struct Simulation {
     /// Simulation statistics.
     stats: SimulationStats,
 
-    /// Historical candles for indicator calculations.
-    candles: Vec<Candle>,
+    /// Historical candles per symbol (V2.3).
+    candles: HashMap<Symbol, Vec<Candle>>,
 
-    /// Current candle being built (OHLCV within candle interval).
-    current_candle: Option<CandleBuilder>,
+    /// Current candle being built per symbol (V2.3).
+    current_candles: HashMap<Symbol, CandleBuilder>,
 
     /// Indicator engine for computing technical indicators.
+    /// Note: In multi-symbol, we compute indicators per-symbol using the same engine.
     indicator_engine: IndicatorEngine,
 
     /// Indicator cache for current tick (reserved for future per-tick caching).
@@ -103,14 +109,15 @@ pub struct Simulation {
     risk_tracker: AgentRiskTracker,
 
     /// Position validator for order validation (V2.1).
+    /// Note: Currently uses primary symbol config. Future: per-symbol validators.
     position_validator: PositionValidator,
 
     /// Borrow ledger for short-selling tracking (V2.1).
     borrow_ledger: BorrowLedger,
 
-    /// Cache of total shares held (sum of all long positions) for validation.
+    /// Cache of total shares held per symbol (sum of all long positions) for validation.
     /// Updated after each trade.
-    total_shares_held: Quantity,
+    total_shares_held: HashMap<Symbol, Quantity>,
 }
 
 /// Helper for building candles incrementally.
@@ -166,33 +173,49 @@ impl CandleBuilder {
 impl Simulation {
     /// Create a new simulation with the given configuration.
     pub fn new(config: SimulationConfig) -> Self {
-        let book = OrderBook::new(config.symbol());
-
-        // Initialize position validator from config
-        let position_validator =
-            PositionValidator::new(config.symbol_config.clone(), config.short_selling.clone());
-
-        // Initialize borrow ledger with symbol's borrow pool
+        // Initialize multi-symbol market
+        let mut market = Market::new();
         let mut borrow_ledger = BorrowLedger::new();
-        borrow_ledger.init_symbol(config.symbol(), config.symbol_config.borrow_pool_size());
+        let mut total_shares_held = HashMap::new();
+        let mut candles = HashMap::new();
+        let mut recent_trades = HashMap::new();
+
+        // Initialize each symbol
+        for symbol_config in config.get_symbol_configs() {
+            market.add_symbol(&symbol_config.symbol);
+            borrow_ledger.init_symbol(&symbol_config.symbol, symbol_config.borrow_pool_size());
+            total_shares_held.insert(symbol_config.symbol.clone(), Quantity::ZERO);
+            candles.insert(symbol_config.symbol.clone(), Vec::new());
+            recent_trades.insert(symbol_config.symbol.clone(), Vec::new());
+        }
+
+        // Initialize position validator with primary symbol config
+        // TODO: In future, support per-symbol position limits
+        let primary_config = config
+            .get_symbol_configs()
+            .first()
+            .cloned()
+            .unwrap_or_default();
+        let position_validator =
+            PositionValidator::new(primary_config, config.short_selling.clone());
 
         Self {
-            book,
+            market,
             engine: MatchingEngine::new(),
             agents: Vec::new(),
             tick: 0,
             timestamp: 0,
-            recent_trades: Vec::new(),
+            recent_trades,
             next_order_id: 1,
             stats: SimulationStats::default(),
-            candles: Vec::new(),
-            current_candle: None,
+            candles,
+            current_candles: HashMap::new(),
             indicator_engine: IndicatorEngine::with_common_indicators(),
             indicator_cache: IndicatorCache::new(),
             risk_tracker: AgentRiskTracker::with_defaults(),
             position_validator,
             borrow_ledger,
-            total_shares_held: Quantity::ZERO,
+            total_shares_held,
             config,
         }
     }
@@ -222,9 +245,23 @@ impl Simulation {
         &self.stats
     }
 
-    /// Get a reference to the order book.
+    /// Get a reference to the primary (first) symbol's order book.
+    /// For multi-symbol access, use `market()` and `get_book()`.
     pub fn book(&self) -> &OrderBook {
-        &self.book
+        let symbol = self.config.symbol();
+        self.market
+            .get_book(&symbol.to_string())
+            .expect("Primary symbol book should exist")
+    }
+
+    /// Get a reference to a specific symbol's order book.
+    pub fn get_book(&self, symbol: &Symbol) -> Option<&OrderBook> {
+        self.market.get_book(symbol)
+    }
+
+    /// Get a reference to the multi-symbol market (V2.3).
+    pub fn market(&self) -> &Market {
+        &self.market
     }
 
     /// Get the number of agents.
@@ -242,9 +279,26 @@ impl Simulation {
         &self.position_validator
     }
 
-    /// Get the total shares currently held (long positions) across all agents.
+    /// Get a reference to the simulation configuration.
+    pub fn config(&self) -> &SimulationConfig {
+        &self.config
+    }
+
+    /// Get the total shares currently held for the primary symbol.
     pub fn total_shares_held(&self) -> Quantity {
+        let symbol = self.config.symbol().to_string();
         self.total_shares_held
+            .get(&symbol)
+            .copied()
+            .unwrap_or(Quantity::ZERO)
+    }
+
+    /// Get total shares held for a specific symbol.
+    pub fn total_shares_held_for(&self, symbol: &Symbol) -> Quantity {
+        self.total_shares_held
+            .get(symbol)
+            .copied()
+            .unwrap_or(Quantity::ZERO)
     }
 
     /// Get agent summaries (name, position, cash) for display.
@@ -266,13 +320,47 @@ impl Simulation {
         self.risk_tracker.compute_metrics(agent_id)
     }
 
-    /// Get recent trades.
+    /// Get recent trades for the primary symbol.
     pub fn recent_trades(&self) -> &[Trade] {
+        let symbol = self.config.symbol().to_string();
+        self.recent_trades
+            .get(&symbol)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Get recent trades for a specific symbol.
+    pub fn recent_trades_for(&self, symbol: &Symbol) -> &[Trade] {
+        self.recent_trades
+            .get(symbol)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Get all recent trades across all symbols.
+    pub fn all_recent_trades(&self) -> &HashMap<Symbol, Vec<Trade>> {
         &self.recent_trades
     }
 
-    /// Get historical candles.
+    /// Get historical candles for the primary symbol.
     pub fn candles(&self) -> &[Candle] {
+        let symbol = self.config.symbol().to_string();
+        self.candles
+            .get(&symbol)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Get historical candles for a specific symbol.
+    pub fn candles_for(&self, symbol: &Symbol) -> &[Candle] {
+        self.candles
+            .get(symbol)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Get all candles across all symbols.
+    pub fn all_candles(&self) -> &HashMap<Symbol, Vec<Candle>> {
         &self.candles
     }
 
@@ -293,92 +381,65 @@ impl Simulation {
         id
     }
 
-    /// Build indicator snapshot for current tick.
-    fn build_indicator_snapshot(&mut self) -> Option<IndicatorSnapshot> {
-        if self.candles.is_empty() {
-            return None;
-        }
-
+    /// Build indicator snapshot for current tick (all symbols).
+    fn build_indicator_snapshot(&mut self) -> IndicatorSnapshot {
         let mut snapshot = IndicatorSnapshot::new(self.tick);
-        let symbol = self.config.symbol().to_string();
 
-        // Compute all registered indicators
-        let values = self.indicator_engine.compute_all(&self.candles);
-        if !values.is_empty() {
-            snapshot.insert(symbol, values);
+        // Compute indicators for each symbol
+        for (symbol, symbol_candles) in &self.candles {
+            if !symbol_candles.is_empty() {
+                let values = self.indicator_engine.compute_all(symbol_candles);
+                if !values.is_empty() {
+                    snapshot.insert(symbol.clone(), values);
+                }
+            }
         }
 
-        Some(snapshot)
+        snapshot
     }
 
-    /// Build market data snapshot for agents (deprecated - use StrategyContext).
-    #[deprecated(
-        since = "2.3.0",
-        note = "Use build_candles_map and StrategyContext instead"
-    )]
-    #[allow(dead_code)]
-    fn build_market_data(&mut self) -> agents::MarketData {
-        // Build indicator snapshot
-        let indicators = self.build_indicator_snapshot();
-
-        agents::MarketData {
-            tick: self.tick,
-            timestamp: self.timestamp,
-            book_snapshot: self.book.snapshot(
-                self.timestamp,
-                self.tick,
-                self.config.snapshot_depth,
-            ),
-            recent_trades: self.recent_trades.clone(),
-            last_price: self.book.last_price(),
-            candles: self.candles.clone(),
-            indicators,
-        }
-    }
-
-    /// Build candles map for multi-symbol support.
+    /// Build candles map for StrategyContext (just return reference).
     fn build_candles_map(&self) -> HashMap<Symbol, Vec<Candle>> {
-        let mut map = HashMap::new();
-        map.insert(self.config.symbol().into(), self.candles.clone());
-        map
+        self.candles.clone()
     }
 
-    /// Build trades map for multi-symbol support.
+    /// Build trades map for StrategyContext (just return reference).
     fn build_trades_map(&self) -> HashMap<Symbol, Vec<Trade>> {
-        let mut map = HashMap::new();
-        map.insert(self.config.symbol().into(), self.recent_trades.clone());
-        map
+        self.recent_trades.clone()
     }
 
-    /// Update candle with trade data.
+    /// Update candle with trade data for the trade's symbol.
     fn update_candles(&mut self, trades: &[Trade]) {
         for trade in trades {
+            let symbol = &trade.symbol;
+
             // Initialize candle builder if needed
-            if self.current_candle.is_none() {
-                self.current_candle = Some(CandleBuilder::new(
-                    self.config.symbol(),
-                    trade.price,
-                    self.tick,
-                ));
+            if !self.current_candles.contains_key(symbol) {
+                self.current_candles.insert(
+                    symbol.clone(),
+                    CandleBuilder::new(symbol, trade.price, self.tick),
+                );
             }
 
-            // Update current candle
-            if let Some(ref mut builder) = self.current_candle {
+            // Update current candle for this symbol
+            if let Some(builder) = self.current_candles.get_mut(symbol) {
                 builder.update(trade);
             }
         }
 
-        // Check if we should finalize the candle (every candle_interval ticks)
-        if self.tick > 0
-            && self.tick.is_multiple_of(self.config.candle_interval)
-            && let Some(builder) = self.current_candle.take()
-        {
-            let candle = builder.finalize(self.tick, self.timestamp);
-            self.candles.push(candle);
+        // Check if we should finalize candles (every candle_interval ticks)
+        if self.tick > 0 && self.tick.is_multiple_of(self.config.candle_interval) {
+            // Finalize all current candles
+            let builders: Vec<(Symbol, CandleBuilder)> = self.current_candles.drain().collect();
+            for (symbol, builder) in builders {
+                let candle = builder.finalize(self.tick, self.timestamp);
+                let symbol_candles = self.candles.entry(symbol).or_default();
+                symbol_candles.push(candle);
 
-            // Limit candle history
-            if self.candles.len() > self.config.max_candles {
-                self.candles.remove(0);
+                // Limit candle history per symbol
+                if symbol_candles.len() > self.config.max_candles {
+                    symbol_candles.remove(0);
+                }
             }
         }
     }
@@ -397,12 +458,19 @@ impl Simulation {
             return Ok(());
         }
 
+        let symbol = self.config.symbol().to_string();
+        let total_held = self
+            .total_shares_held
+            .get(&symbol)
+            .copied()
+            .unwrap_or(Quantity::ZERO);
+
         self.position_validator.validate_order(
             order,
             agent_position,
             agent_cash,
             &self.borrow_ledger,
-            self.total_shares_held,
+            total_held,
             is_market_maker, // MMs exempt from short limit
         )
     }
@@ -454,7 +522,7 @@ impl Simulation {
         }
     }
 
-    /// Update total shares held after a trade.
+    /// Update total shares held after a trade (per-symbol).
     fn update_total_shares_held(
         &mut self,
         trade: &Trade,
@@ -477,12 +545,14 @@ impl Simulation {
         let delta = (buyer_long_after + seller_long_after) as i64
             - (buyer_long_before + seller_long_before) as i64;
 
+        let symbol_shares = self
+            .total_shares_held
+            .entry(trade.symbol.clone())
+            .or_insert(Quantity::ZERO);
         if delta > 0 {
-            self.total_shares_held += Quantity(delta as u64);
+            *symbol_shares += Quantity(delta as u64);
         } else {
-            self.total_shares_held = self
-                .total_shares_held
-                .saturating_sub(Quantity((-delta) as u64));
+            *symbol_shares = symbol_shares.saturating_sub(Quantity((-delta) as u64));
         }
     }
 
@@ -496,10 +566,17 @@ impl Simulation {
 
         self.stats.total_orders += 1;
 
+        // Get the order book for this symbol
+        let Some(book) = self.market.get_book_mut(&order.symbol) else {
+            // Unknown symbol - reject order silently
+            self.stats.rejected_orders += 1;
+            return (Vec::new(), false);
+        };
+
         // Try to match the order
         let result = self
             .engine
-            .match_order(&mut self.book, &mut order, self.timestamp, self.tick);
+            .match_order(book, &mut order, self.timestamp, self.tick);
 
         let mut is_resting = false;
 
@@ -507,7 +584,10 @@ impl Simulation {
         if !result.remaining_quantity.is_zero() && order.limit_price().is_some() {
             // Update order's remaining quantity before adding to book
             order.remaining_quantity = result.remaining_quantity;
-            if self.book.add_order(order).is_ok() {
+            // Re-borrow book (needed after match_order consumed mutable borrow)
+            if let Some(book) = self.market.get_book_mut(&order.symbol)
+                && book.add_order(order).is_ok()
+            {
                 is_resting = true;
                 self.stats.resting_orders += 1;
             }
@@ -531,14 +611,13 @@ impl Simulation {
         // These must live for the duration of agent ticks.
         let candles_map = self.build_candles_map();
         let trades_map = self.build_trades_map();
-        let indicators = self.build_indicator_snapshot().unwrap_or_default();
-        let market = SingleSymbolMarket::new(&self.book);
+        let indicators = self.build_indicator_snapshot();
 
-        // Build StrategyContext with references to owned data
+        // Build StrategyContext with references to owned data (V2.3: uses Market directly)
         let ctx = StrategyContext::new(
             self.tick,
             self.timestamp,
-            &market,
+            &self.market,
             &candles_map,
             &indicators,
             &trades_map,
@@ -641,14 +720,17 @@ impl Simulation {
             }
         }
 
-        // Add trades to recent trades (newest first)
+        // Add trades to recent trades per symbol (newest first)
         for trade in tick_trades.iter().rev() {
-            self.recent_trades.insert(0, trade.clone());
+            let symbol_trades = self.recent_trades.entry(trade.symbol.clone()).or_default();
+            symbol_trades.insert(0, trade.clone());
         }
 
-        // Trim recent trades to max
-        if self.recent_trades.len() > self.config.max_recent_trades {
-            self.recent_trades.truncate(self.config.max_recent_trades);
+        // Trim recent trades per symbol to max
+        for symbol_trades in self.recent_trades.values_mut() {
+            if symbol_trades.len() > self.config.max_recent_trades {
+                symbol_trades.truncate(self.config.max_recent_trades);
+            }
         }
 
         // Update candles with trade data
@@ -662,9 +744,9 @@ impl Simulation {
         }
 
         // Update risk tracking with current equity values
-        // Use last price or initial price for mark-to-market
+        // Use last price from primary symbol or initial price for mark-to-market
         let mark_price = self
-            .book
+            .book()
             .last_price()
             .unwrap_or(self.config.initial_price());
         for agent in &self.agents {
@@ -821,7 +903,7 @@ mod tests {
     }
 
     #[test]
-    fn test_market_data_updated() {
+    fn test_book_state_after_order() {
         let config = SimulationConfig::new("TEST").with_position_limits(false); // Disable for V0 test
         let mut sim = Simulation::new(config);
 
@@ -838,10 +920,10 @@ mod tests {
         // Tick 0: order placed
         sim.step();
 
-        // Market data should now show the ask
-        let market = sim.build_market_data();
-        assert_eq!(market.best_ask(), Some(Price::from_float(105.0)));
-        assert_eq!(market.best_bid(), None);
+        // Book should now show the ask
+        let book = sim.book();
+        assert_eq!(book.best_ask_price(), Some(Price::from_float(105.0)));
+        assert_eq!(book.best_bid_price(), None);
     }
 
     #[test]

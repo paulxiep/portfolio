@@ -1,12 +1,12 @@
 //! Simulation configuration options.
 
-use types::{Price, Quantity, ShortSellingConfig, SymbolConfig};
+use types::{Price, Quantity, ShortSellingConfig, Symbol, SymbolConfig};
 
 /// Configuration for the simulation.
 #[derive(Debug, Clone)]
 pub struct SimulationConfig {
-    /// Symbol configuration with shares_outstanding and borrow pool settings.
-    pub symbol_config: SymbolConfig,
+    /// Symbol configurations (supports multiple symbols).
+    pub symbol_configs: Vec<SymbolConfig>,
 
     /// Short-selling configuration (enabled, limits, rates).
     pub short_selling: ShortSellingConfig,
@@ -34,7 +34,7 @@ pub struct SimulationConfig {
 impl Default for SimulationConfig {
     fn default() -> Self {
         Self {
-            symbol_config: SymbolConfig::default(),
+            symbol_configs: vec![SymbolConfig::default()],
             short_selling: ShortSellingConfig::disabled(),
             snapshot_depth: 10,
             max_recent_trades: 100,
@@ -54,36 +54,72 @@ impl SimulationConfig {
             ..SymbolConfig::default()
         };
         Self {
-            symbol_config,
+            symbol_configs: vec![symbol_config],
             ..Default::default()
         }
     }
 
-    /// Get the symbol name.
+    /// Create a configuration with multiple symbols.
+    pub fn with_symbols(symbols: Vec<SymbolConfig>) -> Self {
+        Self {
+            symbol_configs: symbols,
+            ..Default::default()
+        }
+    }
+
+    /// Get all symbol names.
+    pub fn symbols(&self) -> Vec<Symbol> {
+        self.symbol_configs
+            .iter()
+            .map(|c| c.symbol.clone())
+            .collect()
+    }
+
+    /// Get the primary (first) symbol name.
     pub fn symbol(&self) -> &str {
-        &self.symbol_config.symbol
+        &self.symbol_configs[0].symbol
     }
 
-    /// Get the initial/reference price.
+    /// Get the primary symbol's initial/reference price.
     pub fn initial_price(&self) -> Price {
-        self.symbol_config.initial_price
+        self.symbol_configs[0].initial_price
     }
 
-    /// Set the symbol configuration.
+    /// Get symbol config by symbol name.
+    pub fn get_symbol_config(&self, symbol: &str) -> Option<&SymbolConfig> {
+        self.symbol_configs.iter().find(|c| c.symbol == symbol)
+    }
+
+    /// Get all symbol configs.
+    pub fn get_symbol_configs(&self) -> &[SymbolConfig] {
+        &self.symbol_configs
+    }
+
+    /// Set a single symbol configuration (replaces all).
     pub fn with_symbol_config(mut self, config: SymbolConfig) -> Self {
-        self.symbol_config = config;
+        self.symbol_configs = vec![config];
         self
     }
 
-    /// Set the initial price.
+    /// Add a symbol configuration.
+    pub fn add_symbol_config(mut self, config: SymbolConfig) -> Self {
+        self.symbol_configs.push(config);
+        self
+    }
+
+    /// Set the initial price for the primary symbol.
     pub fn with_initial_price(mut self, price: Price) -> Self {
-        self.symbol_config.initial_price = price;
+        if !self.symbol_configs.is_empty() {
+            self.symbol_configs[0].initial_price = price;
+        }
         self
     }
 
-    /// Set shares outstanding.
+    /// Set shares outstanding for the primary symbol.
     pub fn with_shares_outstanding(mut self, shares: Quantity) -> Self {
-        self.symbol_config.shares_outstanding = shares;
+        if !self.symbol_configs.is_empty() {
+            self.symbol_configs[0].shares_outstanding = shares;
+        }
         self
     }
 

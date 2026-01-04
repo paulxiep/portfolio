@@ -11,10 +11,40 @@
 //! 1. Specify minimum count for each specific agent type
 //! 2. Specify minimum total for each tier
 //! 3. If tier minimum not met by specific agents, random tier agents are spawned
+//!
+//! # Multi-Symbol Support (V2.3)
+//!
+//! The `symbols` field allows configuring multiple symbols. Currently the simulation
+//! runs the first symbol only (single-symbol mode), but the TUI infrastructure
+//! supports displaying multiple symbols once the simulation is upgraded.
+//!
+//! **Recommended limits:**
+//! - Development/testing: 1-3 symbols
+//! - Production: Up to 10 symbols (performance depends on agent count per symbol)
+//! - Hard limit: None, but memory grows linearly with symbols × price history
 
 use rand::Rng;
 use rand::prelude::IndexedRandom;
 use types::{Cash, Price};
+
+/// Configuration for a single symbol.
+#[derive(Debug, Clone)]
+pub struct SymbolSpec {
+    /// Symbol ticker (e.g., "AAPL", "GOOG").
+    pub symbol: String,
+    /// Initial price of the asset.
+    pub initial_price: Price,
+}
+
+impl SymbolSpec {
+    /// Create a new symbol specification.
+    pub fn new(symbol: impl Into<String>, initial_price: f64) -> Self {
+        Self {
+            symbol: symbol.into(),
+            initial_price: Price::from_float(initial_price),
+        }
+    }
+}
 
 /// Master configuration for the entire simulation.
 #[derive(Debug, Clone)]
@@ -22,10 +52,8 @@ pub struct SimConfig {
     // ─────────────────────────────────────────────────────────────────────────
     // Simulation Control
     // ─────────────────────────────────────────────────────────────────────────
-    /// Symbol being traded.
-    pub symbol: String,
-    /// Initial price of the asset.
-    pub initial_price: Price,
+    /// Symbols to trade (first symbol is primary for single-symbol simulation).
+    pub symbols: Vec<SymbolSpec>,
     /// Total ticks to run (0 = infinite).
     pub total_ticks: u64,
     /// Delay between ticks in milliseconds (0 = fastest).
@@ -112,9 +140,9 @@ pub struct SimConfig {
 impl Default for SimConfig {
     fn default() -> Self {
         Self {
-            // Simulation Control
-            symbol: "ACME".to_string(),
-            initial_price: Price::from_float(100.0),
+            // Simulation Control - default single symbol
+            symbols: vec![SymbolSpec::new("Food", 100.0), 
+            SymbolSpec::new("Energy", 100.0), SymbolSpec::new("Hotels", 100.0)],
             total_ticks: 5000,
             tick_delay_ms: 0, // ~100 ticks/sec for watchable visualization
             verbose: false,
@@ -139,10 +167,10 @@ impl Default for SimConfig {
             mm_inventory_skew: 0.001,
 
             // Noise Trader Parameters
-            // Note: Noise traders start with 50 shares (~$5,000), so cash is reduced
-            // to keep total starting value equal to quant traders ($100,000)
-            nt_initial_cash: Cash::from_float(95_000.0),
-            nt_initial_position: 50,
+            // Noise traders start flat (0 position) to avoid adding to long imbalance
+            // from market makers. Cash equals quant_initial_cash for equal net worth.
+            nt_initial_cash: Cash::from_float(100_000.0),
+            nt_initial_position: 0,
             nt_order_probability: 0.3, // 30% chance each tick
             nt_price_deviation: 0.01,  // 1% from mid price
             nt_min_quantity: 5,
@@ -198,15 +226,37 @@ impl SimConfig {
     // Builder-style setters for fluent configuration
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// Set the trading symbol.
-    pub fn symbol(mut self, symbol: impl Into<String>) -> Self {
-        self.symbol = symbol.into();
+    /// Set the complete list of symbols to trade.
+    pub fn symbols(mut self, symbols: Vec<SymbolSpec>) -> Self {
+        self.symbols = symbols;
         self
     }
 
-    /// Set the initial asset price.
+    /// Add a symbol to the trading list.
+    pub fn add_symbol(mut self, symbol: impl Into<String>, initial_price: f64) -> Self {
+        self.symbols.push(SymbolSpec::new(symbol, initial_price));
+        self
+    }
+
+    /// Convenience: Set a single trading symbol (replaces all existing).
+    /// For multi-symbol, use `symbols()` or `add_symbol()`.
+    pub fn symbol(mut self, symbol: impl Into<String>) -> Self {
+        if self.symbols.is_empty() {
+            self.symbols.push(SymbolSpec::new(symbol, 100.0));
+        } else {
+            self.symbols[0].symbol = symbol.into();
+        }
+        self
+    }
+
+    /// Convenience: Set initial price for the first symbol.
+    /// For multi-symbol, configure via `symbols()` or `SymbolSpec`.
     pub fn initial_price(mut self, price: f64) -> Self {
-        self.initial_price = Price::from_float(price);
+        if self.symbols.is_empty() {
+            self.symbols.push(SymbolSpec::new("ACME", price));
+        } else {
+            self.symbols[0].initial_price = Price::from_float(price);
+        }
         self
     }
 
@@ -298,6 +348,32 @@ impl SimConfig {
     pub fn nt_probability(mut self, prob: f64) -> Self {
         self.nt_order_probability = prob;
         self
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Symbol Accessors
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Get all symbol specifications.
+    pub fn get_symbols(&self) -> &[SymbolSpec] {
+        &self.symbols
+    }
+
+    /// Get the primary (first) symbol name.
+    /// Panics if no symbols are configured.
+    pub fn primary_symbol(&self) -> &str {
+        &self.symbols[0].symbol
+    }
+
+    /// Get the primary (first) symbol's initial price.
+    /// Panics if no symbols are configured.
+    pub fn primary_initial_price(&self) -> Price {
+        self.symbols[0].initial_price
+    }
+
+    /// Number of configured symbols.
+    pub fn symbol_count(&self) -> usize {
+        self.symbols.len()
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -427,7 +503,7 @@ mod tests {
         assert!(config.num_market_makers >= 1, "Should have at least 1 MM");
         assert!(config.total_ticks > 0, "Should run at least 1 tick");
         assert!(
-            config.initial_price > Price::ZERO,
+            config.primary_initial_price() > Price::ZERO,
             "Initial price should be positive"
         );
     }

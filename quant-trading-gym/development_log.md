@@ -1,10 +1,15 @@
 # Development Log
 
-## 2026-01-04: V2.3 - Multi-Symbol Infrastructure (StrategyContext)
+## 2026-01-04: V2.3 - Multi-Symbol Infrastructure
+
+### Summary
+Complete multi-symbol foundation: `StrategyContext` for agents, `MarketView` trait, multi-symbol TUI with symbol tabs/overlay, configurable symbol list, multi-symbol simulation runner, and agent distribution across symbols.
 
 ### Completed
 
-#### MarketView Trait (`sim-core/src/market.rs`)
+#### Part 1: Core Infrastructure (`sim-core/`, `agents/`)
+
+##### MarketView Trait (`sim-core/src/market.rs`)
 - ✅ `MarketView` trait: Read-only interface for market state
   - `symbols()`: List of available symbols
   - `has_symbol()`: Check symbol existence
@@ -12,103 +17,110 @@
   - `snapshot()`: Full order book snapshot
   - `total_bid_volume()`, `total_ask_volume()`: Liquidity queries
 - ✅ `SingleSymbolMarket<'a>`: Adapter wrapping `&OrderBook` to implement `MarketView`
-  - Zero-cost abstraction for single-symbol simulations
-  - Enables same agent code to work in single or multi-symbol contexts
 - ✅ `Market` struct: Multi-symbol container with `HashMap<Symbol, OrderBook>`
-  - Foundation for V2.3 multi-symbol trading
 
-#### StrategyContext (`agents/src/context.rs`)
+##### StrategyContext (`agents/src/context.rs`)
 - ✅ `StrategyContext<'a>`: Unified context replacing `MarketData`
   - References instead of clones: `&'a dyn MarketView`, `&'a HashMap<Symbol, Vec<Candle>>`, etc.
   - Single-symbol convenience: `primary_symbol()`, `mid_price()`, `last_price()`
   - Multi-symbol access: `market()` for full `MarketView` interface
-  - Candle access: `candles()`, `primary_candles()`
-  - Indicator access: Direct `indicators` field
-  - Trade access: `trades()`, `primary_trades()`
 
-#### Agent Trait Migration
+##### Agent Trait Migration
 - ✅ `Agent::on_tick()` signature changed: `&MarketData` → `&StrategyContext<'_>`
-- ✅ `MarketData` marked `#[deprecated]` with message "Use StrategyContext instead"
-- ✅ `build_market_data()` kept but deprecated for backward compatibility
+- ✅ All 7 strategies migrated to `StrategyContext` API
+- ✅ Removed deprecated `MarketData` struct (no external consumers)
 
-#### Strategy Migrations (7 total)
-- ✅ `NoiseTrader`: Uses `ctx.mid_price()` for reference pricing
-- ✅ `MarketMaker`: Uses `ctx.primary_symbol()` and `ctx.mid_price()`
-- ✅ `MomentumTrader`: Uses `ctx.indicators` for RSI access
-- ✅ `TrendFollower`: Uses `ctx.indicators` for SMA crossover detection
-- ✅ `MacdCrossover`: Uses `ctx.indicators` and `ctx.primary_candles()`
-- ✅ `BollingerReversion`: Uses `ctx.indicators` and `ctx.primary_candles()`
-- ✅ `VwapExecutor`: Uses `ctx.last_price()` with `ctx.mid_price()` fallback
+#### Part 2: Multi-Symbol TUI (`tui/`)
 
-#### Simulation Runner Updates (`simulation/src/runner.rs`)
-- ✅ **Two-phase tick pattern**: Borrow-checker compliant design
-  1. Phase 1: Build owned data (`candles_map`, `trades_map`, `indicators`)
-  2. Phase 2: Create `StrategyContext` with references, collect agent actions
-  3. Phase 3: Context drops (releases borrow), process orders
-- ✅ `build_candles_map()`: Creates `HashMap<Symbol, Vec<Candle>>` for context
-- ✅ `build_trades_map()`: Creates `HashMap<Symbol, Vec<Trade>>` for context
-- ✅ `SingleSymbolMarket` adapter wraps `&self.book` for `MarketView`
+##### SimUpdate (`tui/src/widgets/update.rs`)
+- ✅ Per-symbol data: `price_history`, `bids`, `asks`, `last_price` as `HashMap<Symbol, _>`
+- ✅ `selected_symbol: usize` - Current tab index
+- ✅ Helper methods: `current_symbol()`, `current_price_history()`, `current_bids()`, etc.
+
+##### TuiApp (`tui/src/app.rs`)
+- ✅ Symbol navigation: `Tab`/`→`/`←`/`1-9` keys
+- ✅ `O` key: Toggle price overlay mode (all symbols on one chart)
+- ✅ `draw_symbol_tabs()` for tab bar rendering
+- ✅ Fixed: Sync `self.state.selected_symbol` with `TuiApp.selected_symbol` on updates
+
+##### PriceChart (`tui/src/widgets/price_chart.rs`)
+- ✅ `PriceChart::multi()` constructor for overlay mode
+- ✅ Different colors per symbol in overlay view
+
+#### Part 3: Multi-Symbol Config (`src/config.rs`)
+
+##### SymbolSpec Struct
+- ✅ `SymbolSpec { symbol: String, initial_price: Price }`
+- ✅ `SimConfig.symbols: Vec<SymbolSpec>` for multi-symbol configuration
+- ✅ Accessor methods: `get_symbols()`, `primary_symbol()`, `symbol_count()`
+
+#### Part 4: Multi-Symbol Simulation (`simulation/`)
+
+##### SimulationConfig (`simulation/src/config.rs`)
+- ✅ `symbol_configs: Vec<SymbolConfig>` replaces single `symbol_config`
+
+##### Simulation Runner (`simulation/src/runner.rs`)
+- ✅ `market: Market` replaces single `book: OrderBook`
+- ✅ Per-symbol HashMaps: `candles`, `current_candles`, `recent_trades`, `total_shares_held`
+- ✅ `process_order()` routes to correct book via `market.get_book_mut(&order.symbol)`
+
+#### Part 5: Agent Distribution (`src/main.rs`)
+
+##### Distribution Strategy
+- ✅ **Market Makers**: Distributed across symbols (N / num_symbols each, remainder random)
+- ✅ **Noise Traders**: Distributed across symbols (same logic)
+- ✅ **Quant Strategies**: Randomly assigned to symbols (equal probability)
+- ✅ **Random Fill Agents**: Randomly assigned to symbols
+
+##### Noise Trader Balance Fix
+- ✅ `nt_initial_position`: 50 → 0 (start flat, no long imbalance)
+- ✅ `nt_initial_cash`: $95,000 → $100,000 (equals quant_initial_cash)
+- ✅ Cash adjustment formula for different symbol prices:
+  ```
+  adjusted_cash = quant_initial_cash - (nt_initial_position × symbol_price)
+  ```
+
+##### Agent Counts (3 symbols example)
+With `num_market_makers: 100`, `num_noise_traders: 400`:
+- Each symbol gets ~33 MMs, ~133 NTs (total unchanged)
+- Quant strategies randomly distributed across symbols
 
 ### Technical Notes
 
-**Why keep MarketData (deprecated)?**
-- **Backward compatibility**: Existing external code/tests may use `MarketData`
-- **Gradual migration**: Deprecation warning guides users to `StrategyContext`
-- **Clean removal in V3**: Once scaling work begins, remove `MarketData` entirely
-- Follows Rust ecosystem pattern: deprecate → warn → remove in next major version
-
-**Two-Phase Tick Architecture:**
+**TUI Layout:**
 ```
-┌─────────────────────────────────────────────────────────┐
-│ Phase 1: Build Owned Data                               │
-│   candles_map = build_candles_map()                     │
-│   trades_map = build_trades_map()                       │
-│   indicators = compute_indicators()                     │
-│   market = SingleSymbolMarket::new(&self.book)          │
-└─────────────────────────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────┐
-│ Phase 2: Collect Actions (immutable borrow on book)     │
-│   ctx = StrategyContext::new(&market, &candles, ...)    │
-│   actions = agents.map(|a| a.on_tick(&ctx)).collect()   │
-└─────────────────────────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────┐
-│ Phase 3: Process Orders (ctx dropped, borrow released)  │
-│   for order in actions.orders:                          │
-│       book.add_order(order)  // mutable borrow ok       │
-│       match_order(&mut book)                            │
-└─────────────────────────────────────────────────────────┘
+┌──[1:Food] [2:Energy] [3:Hotels]──────────────────────────┐
+│ Price Chart (selected symbol, or overlay with O key)     │
+├────────────────────────┬─────────────────────────────────┤
+│ Book Depth             │ Stats (selected symbol)         │
+├────────────────────────┴─────────────────────────────────┤
+│ Agent P&L (portfolio)          │ Risk (portfolio-level)  │
+└──────────────────────────────────────────────────────────┘
 ```
 
-**Why this pattern?**
-- Rust's borrow checker prevents simultaneous `&self.book` (for context) and `&mut self.book` (for matching)
-- Two-phase approach: read everything first, then mutate
-- `StrategyContext` holds references, not clones → zero allocation per tick
-- Actions collected into owned `Vec` before context is dropped
-
-### Files Created
-| File | Purpose |
-|------|---------|
-| `crates/sim-core/src/market.rs` | `MarketView` trait, `SingleSymbolMarket`, `Market` |
-| `crates/agents/src/context.rs` | `StrategyContext<'a>` struct |
+**Price Drop Issue (Resolved):**
+- **Cause**: Initial long imbalance from MMs (500 shares each) + old NTs (50 shares each)
+- **Fix**: NTs start flat (0 position), agents distributed across symbols equally
 
 ### Files Modified
 | File | Changes |
 |------|---------|
-| `crates/agents/src/traits.rs` | `Agent::on_tick(&StrategyContext)`, deprecated `MarketData` |
-| `crates/agents/src/lib.rs` | Export `StrategyContext`, `MarketView` |
-| `crates/simulation/src/runner.rs` | Two-phase tick, `build_candles_map`, `build_trades_map` |
-| All 7 strategy files | Migrated to `StrategyContext` API |
-| `crates/simulation/tests/agent_strategies.rs` | Updated test agents |
+| `crates/sim-core/src/market.rs` | `MarketView` trait, `SingleSymbolMarket`, `Market` |
+| `crates/agents/src/context.rs` | `StrategyContext<'a>` struct |
+| `crates/agents/src/traits.rs` | `Agent::on_tick(&StrategyContext)`, removed MarketData |
+| `crates/simulation/src/config.rs` | `symbol_configs: Vec<SymbolConfig>` |
+| `crates/simulation/src/runner.rs` | Multi-symbol: Market, per-symbol HashMaps |
+| `crates/tui/src/app.rs` | Symbol tabs, navigation, selected_symbol sync fix |
+| `crates/tui/src/widgets/update.rs` | Multi-symbol SimUpdate and AgentInfo |
+| `crates/tui/src/widgets/price_chart.rs` | Multi-symbol overlay support |
+| `src/config.rs` | SymbolSpec, multi-symbol config, nt_initial_position=0 |
+| `src/main.rs` | Agent distribution across symbols, spawn_agent with symbol param |
 
 ### Exit Criteria
 ```
-cargo fmt --check     # ✅ No formatting issues
-cargo clippy          # ✅ Only expected deprecation warnings for MarketData
-cargo test --workspace # ✅ 192 tests pass
+cargo fmt --check      # ✅ No formatting issues
+cargo clippy           # ✅ No warnings
+cargo test --workspace # ✅ All 193 tests pass
 ```
 
 ---

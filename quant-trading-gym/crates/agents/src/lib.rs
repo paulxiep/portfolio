@@ -3,7 +3,6 @@
 //! This crate provides:
 //! - The `Agent` trait that all trading agents must implement
 //! - `StrategyContext` - unified context passed to agents each tick (V2.3)
-//! - `MarketData` - legacy context (deprecated, use StrategyContext)
 //! - `AgentAction` for returning agent decisions
 //! - `AgentState` for common state tracking (position, cash, metrics)
 //! - `BorrowLedger` for tracking short-selling borrows (V2.1)
@@ -76,4 +75,4 @@ pub use strategies::{
     MarketMakerConfig, MomentumConfig, MomentumTrader, NoiseTrader, NoiseTraderConfig,
     TrendFollower, TrendFollowerConfig, VwapExecutor, VwapExecutorConfig,
 };
-pub use traits::{Agent, AgentAction, MarketData};
+pub use traits::{Agent, AgentAction};
