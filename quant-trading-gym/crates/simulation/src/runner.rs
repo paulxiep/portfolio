@@ -337,12 +337,12 @@ impl Simulation {
             .unwrap_or(Quantity::ZERO)
     }
 
-    /// Get agent summaries (name, position, cash) for display.
-    /// Returns a vec of (name, position, cash) tuples.
-    pub fn agent_summaries(&self) -> Vec<(&str, i64, types::Cash)> {
+    /// Get agent summaries (name, position, cash, realized_pnl) for display.
+    /// Returns a vec of (name, position, cash, realized_pnl) tuples.
+    pub fn agent_summaries(&self) -> Vec<(&str, i64, types::Cash, types::Cash)> {
         self.agents
             .iter()
-            .map(|a| (a.name(), a.position(), a.cash()))
+            .map(|a| (a.name(), a.position(), a.cash(), a.realized_pnl()))
             .collect()
     }
 
@@ -594,8 +594,9 @@ impl Simulation {
 
     /// Process a single order through the matching engine.
     ///
-    /// Returns the trades that occurred and whether the order is now resting on the book.
-    fn process_order(&mut self, mut order: Order) -> (Vec<Trade>, bool) {
+    /// Returns the trades that occurred and optionally the order if it's resting on the book
+    /// (with its assigned OrderId).
+    fn process_order(&mut self, mut order: Order) -> (Vec<Trade>, Option<Order>) {
         // Assign order ID and timestamp
         order.id = self.next_order_id();
         order.timestamp = self.timestamp;
@@ -606,7 +607,7 @@ impl Simulation {
         let Some(book) = self.market.get_book_mut(&order.symbol) else {
             // Unknown symbol - reject order silently
             self.stats.rejected_orders += 1;
-            return (Vec::new(), false);
+            return (Vec::new(), None);
         };
 
         // Try to match the order
@@ -614,17 +615,18 @@ impl Simulation {
             .engine
             .match_order(book, &mut order, self.timestamp, self.tick);
 
-        let mut is_resting = false;
+        let mut resting_order = None;
 
         // If there's remaining quantity for a limit order, add to book
         if !result.remaining_quantity.is_zero() && order.limit_price().is_some() {
             // Update order's remaining quantity before adding to book
             order.remaining_quantity = result.remaining_quantity;
+            let order_clone = order.clone();
             // Re-borrow book (needed after match_order consumed mutable borrow)
             if let Some(book) = self.market.get_book_mut(&order.symbol)
                 && book.add_order(order).is_ok()
             {
-                is_resting = true;
+                resting_order = Some(order_clone);
                 self.stats.resting_orders += 1;
             }
             // Market orders with remaining quantity are dropped (no liquidity)
@@ -634,7 +636,7 @@ impl Simulation {
             self.stats.filled_orders += 1;
         }
 
-        (result.trades, is_resting)
+        (result.trades, resting_order)
     }
 
     /// Advance the simulation by one tick.
@@ -689,9 +691,18 @@ impl Simulation {
         // Phase 3: ctx is now dropped (goes out of scope) - releases borrow on book
         // Process all orders with validation
         let mut fill_notifications: Vec<(AgentId, Trade, i64)> = Vec::new(); // Include position before trade
+        let mut resting_notifications: Vec<(AgentId, Order)> = Vec::new(); // Notify agents of resting orders
 
         for (agent_id, action, agent_position, agent_cash, is_market_maker) in actions_with_state {
             let mut current_position = agent_position;
+
+            // Process cancellations first (before placing new orders)
+            for order_id in action.cancellations {
+                // Cancel from all order books (agent may have orders across symbols)
+                for book in self.market.books_mut() {
+                    let _ = book.cancel_order(order_id);
+                }
+            }
 
             for order in action.orders {
                 // Validate order against position limits (V2.1)
@@ -712,7 +723,12 @@ impl Simulation {
                     continue; // Skip this order
                 }
 
-                let (trades, _is_resting) = self.process_order(order);
+                let (trades, resting_order) = self.process_order(order);
+
+                // Track resting orders to notify agents
+                if let Some(order) = resting_order {
+                    resting_notifications.push((agent_id, order));
+                }
 
                 // Record trades and prepare fill notifications
                 for trade in trades {
@@ -783,6 +799,13 @@ impl Simulation {
         for (agent_id, trade, _pos_before) in fill_notifications {
             if let Some(agent) = self.agents.iter_mut().find(|a| a.id() == agent_id) {
                 agent.on_fill(&trade);
+            }
+        }
+
+        // Notify agents of resting orders (so they can track OrderIds for cancellation)
+        for (agent_id, order) in resting_notifications {
+            if let Some(agent) = self.agents.iter_mut().find(|a| a.id() == agent_id) {
+                agent.on_order_resting(order.id, &order);
             }
         }
 
@@ -917,12 +940,13 @@ impl Simulation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agents::StrategyContext;
-    use types::{Order, OrderSide, Price, Quantity};
+    use agents::{AgentState, StrategyContext};
+    use types::{Cash, Order, OrderSide, Price, Quantity};
 
     /// A simple test agent that does nothing.
     struct PassiveAgent {
         id: AgentId,
+        state: AgentState,
     }
 
     impl Agent for PassiveAgent {
@@ -937,11 +961,16 @@ mod tests {
         fn name(&self) -> &str {
             "PassiveAgent"
         }
+
+        fn state(&self) -> &AgentState {
+            &self.state
+        }
     }
 
     /// An agent that places a single order on construction.
     struct OneShotAgent {
         id: AgentId,
+        state: AgentState,
         order: Option<Order>,
     }
 
@@ -949,6 +978,7 @@ mod tests {
         fn new(id: AgentId, order: Order) -> Self {
             Self {
                 id,
+                state: AgentState::new(Cash::from_float(100_000.0)),
                 order: Some(order),
             }
         }
@@ -970,6 +1000,10 @@ mod tests {
         fn name(&self) -> &str {
             "OneShotAgent"
         }
+
+        fn state(&self) -> &AgentState {
+            &self.state
+        }
     }
 
     #[test]
@@ -990,7 +1024,10 @@ mod tests {
 
         // Add some passive agents
         for i in 1..=10 {
-            sim.add_agent(Box::new(PassiveAgent { id: AgentId(i) }));
+            sim.add_agent(Box::new(PassiveAgent {
+                id: AgentId(i),
+                state: AgentState::default(),
+            }));
         }
 
         let trades = sim.run(100);

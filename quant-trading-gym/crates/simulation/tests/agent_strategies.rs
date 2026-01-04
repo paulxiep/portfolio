@@ -194,6 +194,7 @@ fn test_position_limits_rejects_shorts_when_disabled() {
     // Create a simple agent that tries to sell without holding shares
     struct ShortAttemptAgent {
         id: AgentId,
+        state: agents::AgentState,
         attempted: bool,
     }
 
@@ -222,17 +223,14 @@ fn test_position_limits_rejects_shorts_when_disabled() {
             "ShortAttemptAgent"
         }
 
-        fn position(&self) -> i64 {
-            0 // No position
-        }
-
-        fn cash(&self) -> Cash {
-            Cash::from_float(10_000.0)
+        fn state(&self) -> &agents::AgentState {
+            &self.state
         }
     }
 
     sim.add_agent(Box::new(ShortAttemptAgent {
         id: AgentId(1),
+        state: agents::AgentState::new(Cash::from_float(10_000.0)),
         attempted: false,
     }));
 
@@ -298,12 +296,8 @@ fn test_position_limits_allows_shorts_when_enabled() {
             "ShortSellerAgent"
         }
 
-        fn position(&self) -> i64 {
-            self.state.position()
-        }
-
-        fn cash(&self) -> Cash {
-            self.state.cash()
+        fn state(&self) -> &agents::AgentState {
+            &self.state
         }
 
         fn on_fill(&mut self, trade: &types::Trade) {
@@ -347,12 +341,8 @@ fn test_position_limits_allows_shorts_when_enabled() {
             "BuyerAgent"
         }
 
-        fn position(&self) -> i64 {
-            self.state.position()
-        }
-
-        fn cash(&self) -> Cash {
-            self.state.cash()
+        fn state(&self) -> &agents::AgentState {
+            &self.state
         }
 
         fn on_fill(&mut self, trade: &types::Trade) {

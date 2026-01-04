@@ -23,7 +23,7 @@ pub struct AgentTable {
 impl AgentTable {
     /// Create a new agent table widget.
     ///
-    /// Agents are sorted: noise traders by equity (desc), then market makers at bottom.
+    /// Agents are sorted: traders by realized P&L (desc), then market makers at bottom.
     pub fn new(agents: &[AgentInfo]) -> Self {
         let mut sorted = agents.to_vec();
         sorted.sort_by(|a, b| {
@@ -32,9 +32,9 @@ impl AgentTable {
                 (true, false) => std::cmp::Ordering::Greater,
                 (false, true) => std::cmp::Ordering::Less,
                 _ => {
-                    // Within same category, sort by equity (descending)
-                    b.equity
-                        .partial_cmp(&a.equity)
+                    // Within same category, sort by realized P&L (descending)
+                    b.realized_pnl
+                        .partial_cmp(&a.realized_pnl)
                         .unwrap_or(std::cmp::Ordering::Equal)
                 }
             }

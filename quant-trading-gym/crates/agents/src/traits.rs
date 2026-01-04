@@ -7,36 +7,60 @@
 //!
 //! The `on_tick` method receives `StrategyContext<'_>` which provides
 //! multi-symbol access via the `MarketView` trait.
+//!
+//! # State Management
+//!
+//! All agents must provide access to their `AgentState` via the `state()` method.
+//! This enables automatic tracking of position, cash, and realized P&L.
 
-use types::{AgentId, Order};
+use crate::state::AgentState;
+use types::{AgentId, Order, OrderId};
 
 use crate::StrategyContext;
 
 /// Result of an agent's decision each tick.
 ///
-/// An agent may submit zero, one, or multiple orders each tick.
+/// An agent may submit zero, one, or multiple orders each tick,
+/// and optionally cancel existing orders.
 #[derive(Debug, Clone, Default)]
 pub struct AgentAction {
     /// Orders to submit this tick.
     pub orders: Vec<Order>,
+    /// Order IDs to cancel this tick.
+    pub cancellations: Vec<OrderId>,
 }
 
 impl AgentAction {
-    /// Create an empty action (no orders).
+    /// Create an empty action (no orders, no cancellations).
     pub fn none() -> Self {
-        Self { orders: vec![] }
+        Self {
+            orders: vec![],
+            cancellations: vec![],
+        }
     }
 
     /// Create an action with a single order.
     pub fn single(order: Order) -> Self {
         Self {
             orders: vec![order],
+            cancellations: vec![],
         }
     }
 
     /// Create an action with multiple orders.
     pub fn multiple(orders: Vec<Order>) -> Self {
-        Self { orders }
+        Self {
+            orders,
+            cancellations: vec![],
+        }
+    }
+
+    /// Create an action that cancels orders and places new ones.
+    pub fn cancel_and_replace(cancellations: Vec<OrderId>, orders: Vec<Order>) -> Self {
+        Self {
+            orders,
+            cancellations,
+        }
     }
 }
 
@@ -101,6 +125,18 @@ pub trait Agent: Send {
         // Default: no-op
     }
 
+    /// Called when a limit order is placed on the order book.
+    ///
+    /// This allows agents to track their resting orders for later cancellation.
+    /// The order_id is assigned by the simulation and can be used to cancel.
+    ///
+    /// # Arguments
+    /// * `order_id` - The assigned order ID for the resting order
+    /// * `order` - The original order (now resting on the book)
+    fn on_order_resting(&mut self, _order_id: OrderId, _order: &types::Order) {
+        // Default: no-op
+    }
+
     /// Get a human-readable name for this agent (for logging/debugging).
     fn name(&self) -> &str {
         "Agent"
@@ -112,23 +148,24 @@ pub trait Agent: Send {
         false
     }
 
+    /// Get a reference to the agent's state.
+    /// Required for all agents - enables automatic position/cash/P&L tracking.
+    fn state(&self) -> &AgentState;
+
     /// Get the agent's current position (shares held).
     /// Positive = long, negative = short, zero = flat.
-    /// Default returns 0 (unknown/not tracked).
     fn position(&self) -> i64 {
-        0
+        self.state().position()
     }
 
     /// Get the agent's current cash balance.
-    /// Default returns zero (unknown/not tracked).
     fn cash(&self) -> types::Cash {
-        types::Cash::ZERO
+        self.state().cash()
     }
 
     /// Get the agent's realized P&L.
-    /// Default returns zero (unknown/not tracked).
     fn realized_pnl(&self) -> types::Cash {
-        types::Cash::ZERO
+        self.state().realized_pnl()
     }
 
     /// Compute the agent's total equity at the given price.

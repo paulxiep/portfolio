@@ -17,7 +17,7 @@
 
 use crate::state::AgentState;
 use crate::{Agent, AgentAction, StrategyContext};
-use types::{AgentId, Cash, Order, OrderSide, Price, Quantity, Trade};
+use types::{AgentId, Cash, Order, OrderId, OrderSide, Price, Quantity, Trade};
 
 /// Configuration for a MarketMaker agent.
 #[derive(Debug, Clone)]
@@ -41,6 +41,10 @@ pub struct MarketMakerConfig {
     pub inventory_skew: f64,
     /// Ticks between quote refreshes.
     pub refresh_interval: u64,
+    /// Weight given to fair value vs mid price (0.0 = pure mid, 1.0 = pure fair value).
+    /// A blend allows MMs to provide liquidity at market prices while having
+    /// some pull toward fundamentals. Default 0.3 = 30% fair value, 70% mid.
+    pub fair_value_weight: f64,
 }
 
 impl Default for MarketMakerConfig {
@@ -55,6 +59,7 @@ impl Default for MarketMakerConfig {
             max_inventory: 1000,
             inventory_skew: 0.0001, // Adjust price 0.01% per share of inventory
             refresh_interval: 5,
+            fair_value_weight: 0.3, // 30% fair value, 70% mid price
         }
     }
 }
@@ -75,6 +80,13 @@ pub struct MarketMaker {
     last_quote_tick: u64,
     /// Total trading volume.
     total_volume: u64,
+    /// Outstanding bid order ID (to cancel on refresh).
+    outstanding_bid: Option<OrderId>,
+    /// Outstanding ask order ID (to cancel on refresh).
+    outstanding_ask: Option<OrderId>,
+    /// Per-agent bias on fair value (e.g., +0.15 means this MM thinks fair value is 15% higher).
+    /// Creates heterogeneous beliefs across market makers.
+    fair_value_bias: f64,
 }
 
 impl MarketMaker {
@@ -85,12 +97,21 @@ impl MarketMaker {
         let mut state = AgentState::new(initial_cash);
         // MarketMakers start with inventory from the float
         state.set_position(initial_position);
+        // Each MM gets a random bias on fair value: ±20%
+        // This creates heterogeneous beliefs across market makers
+        use rand::rngs::StdRng;
+        use rand::{Rng, SeedableRng};
+        let mut rng = StdRng::from_os_rng();
+        let fair_value_bias = rng.random_range(-0.20..0.20);
         Self {
             id,
             config,
             state,
             last_quote_tick: 0,
             total_volume: 0,
+            outstanding_bid: None,
+            outstanding_ask: None,
+            fair_value_bias,
         }
     }
 
@@ -111,17 +132,27 @@ impl MarketMaker {
 
     /// Determine the reference price for quoting.
     ///
-    /// Priority:
-    /// 1. Fair value from fundamentals (anchors to intrinsic value)
-    /// 2. Mid price from order book
-    /// 3. Last trade price
-    /// 4. Initial price (fallback)
+    /// Uses a blend of market price and biased fair value:
+    /// - Market price (mid or last) ensures quotes are near tradeable levels
+    /// - Fair value (with per-agent bias) creates heterogeneous fundamental views
+    ///
+    /// The blend ratio is controlled by `fair_value_weight` config.
     fn get_reference_price(&self, ctx: &StrategyContext<'_>) -> Price {
-        // Prefer fair value if available - this anchors quotes to fundamentals
-        ctx.fair_value(&self.config.symbol)
-            .or_else(|| ctx.mid_price(&self.config.symbol))
+        let market_price = ctx
+            .mid_price(&self.config.symbol)
             .or_else(|| ctx.last_price(&self.config.symbol))
-            .unwrap_or(self.config.initial_price)
+            .unwrap_or(self.config.initial_price);
+
+        // If fair value available and weight > 0, blend with biased fair value
+        if let Some(fair) = ctx.fair_value(&self.config.symbol) {
+            let w = self.config.fair_value_weight.clamp(0.0, 1.0);
+            // Apply this MM's personal bias to fair value
+            let biased_fair = fair.to_float() * (1.0 + self.fair_value_bias);
+            let blended = market_price.to_float() * (1.0 - w) + biased_fair * w;
+            Price::from_float(blended)
+        } else {
+            market_price
+        }
     }
 
     /// Calculate inventory-adjusted skew.
@@ -155,6 +186,7 @@ impl MarketMaker {
 
         let quote_size = Quantity(self.config.quote_size);
 
+        // Market makers always quote both sides (inventory skew handles risk)
         vec![
             Order::limit(
                 self.id,
@@ -196,7 +228,20 @@ impl Agent for MarketMaker {
         self.state.record_orders(orders.len() as u64);
         self.last_quote_tick = ctx.tick;
 
-        AgentAction::multiple(orders)
+        // Collect any outstanding orders to cancel
+        let mut cancellations = Vec::new();
+        if let Some(bid_id) = self.outstanding_bid.take() {
+            cancellations.push(bid_id);
+        }
+        if let Some(ask_id) = self.outstanding_ask.take() {
+            cancellations.push(ask_id);
+        }
+
+        if cancellations.is_empty() {
+            AgentAction::multiple(orders)
+        } else {
+            AgentAction::cancel_and_replace(cancellations, orders)
+        }
     }
 
     fn on_fill(&mut self, trade: &Trade) {
@@ -206,6 +251,17 @@ impl Agent for MarketMaker {
             self.state.on_buy(trade.quantity.raw(), trade.value());
         } else if trade.seller_id == self.id {
             self.state.on_sell(trade.quantity.raw(), trade.value());
+        }
+        // Note: We don't clear outstanding_bid/ask here because partial fills
+        // leave the remainder on the book with the same OrderId. The cancellation
+        // logic handles cleanup - if fully filled, cancel is a harmless no-op.
+    }
+
+    fn on_order_resting(&mut self, order_id: OrderId, order: &types::Order) {
+        // Track resting orders so we can cancel them later
+        match order.side {
+            OrderSide::Buy => self.outstanding_bid = Some(order_id),
+            OrderSide::Sell => self.outstanding_ask = Some(order_id),
         }
     }
 
@@ -217,12 +273,8 @@ impl Agent for MarketMaker {
         true
     }
 
-    fn position(&self) -> i64 {
-        self.state.position()
-    }
-
-    fn cash(&self) -> Cash {
-        self.state.cash()
+    fn state(&self) -> &AgentState {
+        &self.state
     }
 }
 

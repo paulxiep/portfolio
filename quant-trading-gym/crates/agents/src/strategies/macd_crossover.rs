@@ -218,12 +218,8 @@ impl Agent for MacdCrossover {
         "MACD"
     }
 
-    fn position(&self) -> i64 {
-        self.state.position()
-    }
-
-    fn cash(&self) -> Cash {
-        self.state.cash()
+    fn state(&self) -> &AgentState {
+        &self.state
     }
 }
 

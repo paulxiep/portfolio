@@ -72,7 +72,7 @@ fn build_update(
     let agents: Vec<AgentInfo> = agent_summaries
         .iter()
         .enumerate()
-        .map(|(i, (name, position, cash))| {
+        .map(|(i, (name, position, cash, realized_pnl))| {
             let is_mm = name.contains("Market");
             let equity = cash.to_float() + (*position as f64 * mark_price);
 
@@ -83,7 +83,7 @@ fn build_update(
             AgentInfo {
                 name: format!("{:0width$}-{}", i + 1, name, width = width),
                 positions,
-                realized_pnl: Cash::ZERO, // TODO: track realized P&L
+                realized_pnl: *realized_pnl,
                 cash: *cash,
                 is_market_maker: is_mm,
                 equity,
@@ -96,7 +96,7 @@ fn build_update(
     let risk_metrics: Vec<RiskInfo> = agent_summaries
         .iter()
         .enumerate()
-        .filter_map(|(i, (name, _, _))| {
+        .filter_map(|(i, (name, _, _, _))| {
             let agent_id = AgentId((i + 1) as u64);
             let is_mm = name.contains("Market");
             risk_metrics_map.get(&agent_id).map(|metrics| RiskInfo {
@@ -312,7 +312,8 @@ fn run_simulation(tx: Sender<SimUpdate>, cmd_rx: Receiver<SimCommand>, config: S
                 max_inventory: config.mm_max_inventory,
                 inventory_skew: config.mm_inventory_skew,
                 initial_cash: config.mm_initial_cash,
-                initial_position: 500, // Start with inventory from the float
+                initial_position: 500,  // Start with inventory from the float
+                fair_value_weight: 0.3, // 30% fair value, 70% mid price
             };
             sim.add_agent(Box::new(MarketMaker::new(AgentId(next_id), mm_config)));
             next_id += 1;
@@ -331,6 +332,7 @@ fn run_simulation(tx: Sender<SimUpdate>, cmd_rx: Receiver<SimCommand>, config: S
             inventory_skew: config.mm_inventory_skew,
             initial_cash: config.mm_initial_cash,
             initial_position: 500,
+            fair_value_weight: 0.3, // 30% fair value, 70% mid price
         };
         sim.add_agent(Box::new(MarketMaker::new(AgentId(next_id), mm_config)));
         next_id += 1;

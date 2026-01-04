@@ -70,6 +70,9 @@ pub struct NoiseTrader {
     state: AgentState,
     /// Random number generator (Send-compatible).
     rng: StdRng,
+    /// Per-agent bias on fair value (e.g., +0.10 means this agent thinks fair value is 10% higher).
+    /// Creates heterogeneous beliefs across agents.
+    fair_value_bias: f64,
 }
 
 impl NoiseTrader {
@@ -79,11 +82,16 @@ impl NoiseTrader {
         let initial_position = config.initial_position;
         let mut state = AgentState::new(initial_cash);
         state.set_position(initial_position);
+        // Each agent gets a random bias on fair value: ±30%
+        // This creates heterogeneous beliefs - some bulls, some bears
+        let mut rng = StdRng::from_os_rng();
+        let fair_value_bias = rng.random_range(-0.30..0.30);
         Self {
             id,
             config,
             state,
-            rng: StdRng::from_os_rng(),
+            rng,
+            fair_value_bias,
         }
     }
 
@@ -93,11 +101,14 @@ impl NoiseTrader {
         let initial_position = config.initial_position;
         let mut state = AgentState::new(initial_cash);
         state.set_position(initial_position);
+        let mut rng = StdRng::seed_from_u64(seed);
+        let fair_value_bias = rng.random_range(-0.30..0.30);
         Self {
             id,
             config,
             state,
-            rng: StdRng::seed_from_u64(seed),
+            rng,
+            fair_value_bias,
         }
     }
 
@@ -118,17 +129,21 @@ impl NoiseTrader {
 
     /// Determine the reference price for order generation.
     ///
-    /// Priority:
-    /// 1. Fair value from fundamentals (anchors trades to intrinsic value)
-    /// 2. Mid price from order book  
-    /// 3. Last trade price
-    /// 4. Initial price (fallback)
+    /// Uses fair value with per-agent bias to create heterogeneous beliefs.
+    /// Each agent has a random bias (±30%), so some think fair value is higher,
+    /// others think it's lower. This creates natural two-sided order flow.
+    ///
+    /// Falls back to mid price or initial price if fair value unavailable.
     fn get_reference_price(&self, ctx: &StrategyContext<'_>) -> Price {
-        // Prefer fair value if available - this anchors noise around fundamentals
-        ctx.fair_value(&self.config.symbol)
-            .or_else(|| ctx.mid_price(&self.config.symbol))
-            .or_else(|| ctx.last_price(&self.config.symbol))
-            .unwrap_or(self.config.initial_price)
+        if let Some(fair) = ctx.fair_value(&self.config.symbol) {
+            // Apply this agent's personal bias to fair value
+            let biased_fair = fair.to_float() * (1.0 + self.fair_value_bias);
+            Price::from_float(biased_fair)
+        } else {
+            ctx.mid_price(&self.config.symbol)
+                .or_else(|| ctx.last_price(&self.config.symbol))
+                .unwrap_or(self.config.initial_price)
+        }
     }
 
     /// Generate a random order around the reference price.
@@ -136,14 +151,11 @@ impl NoiseTrader {
     fn generate_order(&mut self, reference_price: Price) -> Option<Order> {
         let position = self.state.position();
 
-        // Determine side: can only sell if we have shares
-        let side = if position <= 0 {
-            // No shares to sell, must buy
-            OrderSide::Buy
-        } else if self.rng.random_bool(0.5) {
-            OrderSide::Buy
-        } else {
+        // Determine side: can only sell if we have shares, then flip coin
+        let side = if position > 0 && self.rng.random_bool(0.5) {
             OrderSide::Sell
+        } else {
+            OrderSide::Buy
         };
 
         // Random price within deviation range
@@ -210,12 +222,8 @@ impl Agent for NoiseTrader {
         "NoiseTrader"
     }
 
-    fn position(&self) -> i64 {
-        self.state.position()
-    }
-
-    fn cash(&self) -> Cash {
-        self.state.cash()
+    fn state(&self) -> &AgentState {
+        &self.state
     }
 }
 

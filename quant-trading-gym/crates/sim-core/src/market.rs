@@ -255,6 +255,11 @@ impl Market {
         self.books.get_mut(symbol)
     }
 
+    /// Get mutable references to all order books.
+    pub fn books_mut(&mut self) -> impl Iterator<Item = &mut OrderBook> {
+        self.books.values_mut()
+    }
+
     /// Get all symbols in the market.
     pub fn symbols(&self) -> impl Iterator<Item = &Symbol> {
         self.books.keys()

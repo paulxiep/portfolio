@@ -194,12 +194,8 @@ impl Agent for BollingerReversion {
         "Bollinger"
     }
 
-    fn position(&self) -> i64 {
-        self.state.position()
-    }
-
-    fn cash(&self) -> Cash {
-        self.state.cash()
+    fn state(&self) -> &AgentState {
+        &self.state
     }
 }
 
