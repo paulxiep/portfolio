@@ -118,6 +118,15 @@ pub struct Simulation {
     /// Cache of total shares held per symbol (sum of all long positions) for validation.
     /// Updated after each trade.
     total_shares_held: HashMap<Symbol, Quantity>,
+
+    /// News event generator (V2.4).
+    news_generator: news::NewsGenerator,
+
+    /// Currently active news events (V2.4).
+    active_events: Vec<news::NewsEvent>,
+
+    /// Symbol fundamentals for fair value calculation (V2.4).
+    fundamentals: news::SymbolFundamentals,
 }
 
 /// Helper for building candles incrementally.
@@ -180,6 +189,15 @@ impl Simulation {
         let mut candles = HashMap::new();
         let mut recent_trades = HashMap::new();
 
+        // Initialize fundamentals for each symbol (V2.4)
+        let mut fundamentals = news::SymbolFundamentals::new(news::MacroEnvironment::default());
+        let mut sector_model = news::SectorModel::new();
+        let symbols: Vec<_> = config
+            .get_symbol_configs()
+            .iter()
+            .map(|c| c.symbol.clone())
+            .collect();
+
         // Initialize each symbol
         for symbol_config in config.get_symbol_configs() {
             market.add_symbol(&symbol_config.symbol);
@@ -187,7 +205,22 @@ impl Simulation {
             total_shares_held.insert(symbol_config.symbol.clone(), Quantity::ZERO);
             candles.insert(symbol_config.symbol.clone(), Vec::new());
             recent_trades.insert(symbol_config.symbol.clone(), Vec::new());
+
+            // Initialize default fundamentals based on initial price (V2.4)
+            // EPS derived as price / 20 (P/E of 20), 5% growth, 40% payout
+            let eps = Price::from_float(symbol_config.initial_price.to_float() / 20.0);
+            fundamentals.insert(
+                &symbol_config.symbol,
+                news::Fundamentals::new(eps, 0.05, 0.40),
+            );
+
+            // Add symbol to sector model (V2.4)
+            sector_model.add(&symbol_config.symbol, symbol_config.sector);
         }
+
+        // Initialize news generator (V2.4)
+        let news_generator =
+            news::NewsGenerator::new(config.news.clone(), symbols, sector_model, config.seed);
 
         // Initialize position validator with primary symbol config
         // TODO: In future, support per-symbol position limits
@@ -216,6 +249,9 @@ impl Simulation {
             position_validator,
             borrow_ledger,
             total_shares_held,
+            news_generator,
+            active_events: Vec::new(),
+            fundamentals,
             config,
         }
     }
@@ -607,6 +643,10 @@ impl Simulation {
     pub fn step(&mut self) -> Vec<Trade> {
         let mut tick_trades = Vec::new();
 
+        // Phase 0 (V2.4): Generate and process news events
+        // This happens BEFORE building the context so events are available to agents
+        self.process_news_events();
+
         // Phase 1: Build all owned data for StrategyContext.
         // These must live for the duration of agent ticks.
         let candles_map = self.build_candles_map();
@@ -614,6 +654,7 @@ impl Simulation {
         let indicators = self.build_indicator_snapshot();
 
         // Build StrategyContext with references to owned data (V2.3: uses Market directly)
+        // V2.4: Now includes events and fundamentals
         let ctx = StrategyContext::new(
             self.tick,
             self.timestamp,
@@ -621,6 +662,8 @@ impl Simulation {
             &candles_map,
             &indicators,
             &trades_map,
+            &self.active_events,
+            &self.fundamentals,
         );
 
         // Shuffle agent processing order to eliminate ID-based priority bias.
@@ -776,6 +819,98 @@ impl Simulation {
         }
 
         all_trades
+    }
+
+    // =========================================================================
+    // News & Fundamentals (V2.4)
+    // =========================================================================
+
+    /// Process news events for the current tick.
+    ///
+    /// This method:
+    /// 1. Generates new events from the news generator
+    /// 2. Applies permanent fundamental changes (earnings, guidance, rate decisions)
+    /// 3. Prunes expired events from the active list
+    fn process_news_events(&mut self) {
+        // Generate new events
+        let new_events = self.news_generator.tick(self.tick);
+
+        // Apply permanent fundamental changes before adding to active list
+        for event in &new_events {
+            if event.is_permanent() {
+                self.apply_fundamental_event(event);
+            }
+        }
+
+        // Add new events to active list
+        self.active_events.extend(new_events);
+
+        // Prune expired events
+        self.active_events.retain(|e| e.is_active(self.tick));
+    }
+
+    /// Apply a permanent fundamental event.
+    fn apply_fundamental_event(&mut self, event: &news::NewsEvent) {
+        match &event.event {
+            news::FundamentalEvent::EarningsSurprise {
+                symbol,
+                surprise_pct,
+            } => {
+                if let Some(fundamentals) = self.fundamentals.get_mut(symbol) {
+                    fundamentals.apply_earnings_surprise(*surprise_pct);
+                    if self.config.verbose {
+                        eprintln!(
+                            "[Tick {}] Earnings surprise for {}: {:.1}% → EPS now ${:.2}",
+                            self.tick,
+                            symbol,
+                            surprise_pct * 100.0,
+                            fundamentals.eps.to_float()
+                        );
+                    }
+                }
+            }
+            news::FundamentalEvent::GuidanceChange { symbol, new_growth } => {
+                if let Some(fundamentals) = self.fundamentals.get_mut(symbol) {
+                    fundamentals.apply_guidance_change(*new_growth);
+                    if self.config.verbose {
+                        eprintln!(
+                            "[Tick {}] Guidance change for {}: growth now {:.1}%",
+                            self.tick,
+                            symbol,
+                            new_growth * 100.0
+                        );
+                    }
+                }
+            }
+            news::FundamentalEvent::RateDecision { new_rate } => {
+                self.fundamentals.macro_env.apply_rate_decision(*new_rate);
+                if self.config.verbose {
+                    eprintln!(
+                        "[Tick {}] Rate decision: risk-free rate now {:.2}%",
+                        self.tick,
+                        new_rate * 100.0
+                    );
+                }
+            }
+            news::FundamentalEvent::SectorNews { .. } => {
+                // Sector news is temporary sentiment, not a permanent fundamental change
+            }
+        }
+    }
+
+    /// Get the currently active news events.
+    pub fn active_events(&self) -> &[news::NewsEvent] {
+        &self.active_events
+    }
+
+    /// Get the symbol fundamentals.
+    pub fn fundamentals(&self) -> &news::SymbolFundamentals {
+        &self.fundamentals
+    }
+
+    /// Get fair value for a symbol.
+    pub fn fair_value(&self, symbol: &types::Symbol) -> Option<Price> {
+        self.fundamentals.fair_value(symbol)
     }
 }
 

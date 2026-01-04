@@ -323,9 +323,36 @@ V3 adds efficient event subscriptions for scale.
 **Maps to Original:** Phase 6 (Agent Scaling) + Phase 10 (Storage) + Phase 12 (Scale Testing)
 
 **Optional additions at V3:** 
-- `NewsReactiveTrader` (Tier 2 strategy that wakes on events)
-- Pairs Trading (now that multi-symbol exists from V2.3)
+- `NewsReactiveTrader` (Tier 2 strategy that wakes on `FundamentalEvent`s from V2.4)
+- `PairsTrading` (multi-symbol agent exploiting cointegration, requires V2.3 multi-symbol + `quant/stats.rs`)
+- `SectorRotator` (shifts allocation based on sector sentiment from V2.4 events)
 
+**Strategy Refinements to Consider at V3:**
+- **VWAP Executor**: Currently configured as a buyer accumulating 1000 shares. This is an *execution algorithm*, not a *strategy*. In real markets, VWAP execution is used to fill large orders while minimizing impact. Options:
+  1. Remove from default agents (it's infrastructure, not a standalone strategy)
+  2. Convert to seller with initial position (liquidation scenario)
+  3. Make it a child execution layer that other strategies delegate to
+  4. Accept underperformance in repricing markets (current behavior)
+- **Momentum/TrendFollower**: Low activity in mean-reverting tick-level simulation (realistic for HFT). Consider wider thresholds or daily timeframe aggregation if more activity desired.
+
+**Multi-Symbol Agent Design Notes:**
+Multi-symbol agents (e.g., `PairsTrading`, `SectorRotator`) differ from single-symbol agents:
+- They observe multiple symbols simultaneously via `StrategyContext.market()`
+- They may generate orders for multiple symbols in a single `on_tick()`
+- Position limits apply per-symbol; portfolio-level risk is the agent's responsibility
+- For V3 Tier 2: wake on ANY watched symbol's condition, receive single trigger symbol
+
+**Agent Trait Extensions for V3:**
+```rust
+trait Agent {
+    // Existing (V0)
+    fn position(&self) -> i64;  // Keep for backward compat (sum of positions)
+    
+    // New for multi-symbol (V3)
+    fn positions(&self) -> HashMap<Symbol, i64> { HashMap::new() }
+    fn watched_symbols(&self) -> Vec<Symbol> { vec![] }  // For Tier 2 wake conditions
+}
+```
 
 ---
 
@@ -600,20 +627,25 @@ impl TieredOrchestrator {
 
 ## Iteration Timeline Summary
 
-| Version | Focus | Duration | Cumulative |
-|---------|-------|----------|------------|
-| V0 | MVP Simulation | 4 wks | 4 wks |
-| V1 | Quant Strategy Agents | 2 wks | 6 wks |
-| V2 | Events & Market Realism | 3 wks | 9 wks |
-| V3 | Scaling & Persistence | 3 wks | 12 wks |
-| V4-RL | RL Track | 5 wks | 17 wks |
-| V4-Game | Game Track (4 services + frontend) | 8 wks | 20 wks |
-| V5 | Full Integration | 1 wk | 21 wks |
+| Version | Focus | Status | Tests |
+|---------|-------|--------|-------|
+| V0 | MVP Simulation | ✅ Complete | — |
+| V1 | Quant Strategy Agents | ✅ Complete | — |
+| V2.1 | Position Limits & Short-Selling | ✅ Complete | — |
+| V2.2 | Slippage & Partial Fills | ✅ Complete | — |
+| V2.3 | Multi-Symbol Infrastructure | ✅ Complete | — |
+| V2.4 | Fundamentals & Events | ✅ Complete | 213 |
+| V3 | Scaling & Persistence | 🔲 Planned | — |
+| V4 | RL Track OR Game Track | 🔲 Planned | — |
 
-**Key Decision Points:**
-- After V0: Do you want to keep going? (4 wks invested)
-- After V2: Strategies validated with real alpha. Ready for scale? (9 wks invested)
-- After V3: RL or Game? Pick one first. (12 wks invested)
+**Current State (V2.4):**
+- 7 agent strategies (MarketMaker, NoiseTrader, Momentum, TrendFollower, MACD, Bollinger, VWAP)
+- 4 symbols across 4 sectors
+- News events with Gordon Growth Model fair value
+- TUI with start/pause control, symbol tabs, price overlay
+- Mean-reverting tick-level market (realistic for HFT)
+
+**Next Decision:** V3 (Scaling) or jump to V4 (RL/Game)?
 
 ---
 
@@ -623,38 +655,61 @@ How crates grow across versions:
 
 ```
 V0                  V1                  V2                  V3
-─────────────────────────────────────────────────────────────────
+─────────────────────────────────────────────────────────────────────────
 types/              types/              types/              types/
   lib.rs              lib.rs              lib.rs              lib.rs
-                                          constants.rs        constants.rs
+                                          order.rs            order.rs
+                                          config.rs           config.rs
 
 sim-core/           sim-core/           sim-core/           sim-core/
   lib.rs              lib.rs              lib.rs              lib.rs
   order_book.rs       order_book.rs       order_book.rs       order_book.rs
   matching.rs         matching.rs         matching.rs         matching.rs
                                           market.rs           market.rs
+                                          slippage.rs         slippage.rs
 
                     quant/              quant/              quant/
                       lib.rs              lib.rs              lib.rs
-                      indicators.rs       indicators.rs       indicators.rs
+                      indicators/         indicators/         indicators/
+                        mod.rs              mod.rs              mod.rs
+                        sma.rs              sma.rs              sma.rs
+                        ema.rs              ema.rs              ema.rs
+                        rsi.rs              rsi.rs              rsi.rs
+                        macd.rs             macd.rs             macd.rs
+                        bollinger.rs        bollinger.rs        bollinger.rs
+                      engine.rs           engine.rs           engine.rs
+                      rolling.rs          rolling.rs          rolling.rs
                       risk.rs             risk.rs             risk.rs
+                      tracker.rs          tracker.rs          tracker.rs
                       stats.rs            stats.rs            stats.rs
 
-                                        fundamentals/       fundamentals/
+                                        news/               news/
                                           lib.rs              lib.rs
                                           events.rs           events.rs
+                                          fundamentals.rs     fundamentals.rs
                                           generator.rs        generator.rs
+                                          config.rs           config.rs
+                                          sectors.rs          sectors.rs
 
 agents/             agents/             agents/             agents/
   lib.rs              lib.rs              lib.rs              lib.rs
   traits.rs           traits.rs           traits.rs           traits.rs
-  strategies/         strategies/         strategies/         tiers.rs            ← V3 addition
-    mod.rs              mod.rs              mod.rs            orchestrator.rs     ← V3 addition
-    noise_trader.rs     noise_trader.rs     noise_trader.rs   tier1/
-    market_maker.rs     market_maker.rs     market_maker.rs     strategies/ (moved)
-                        momentum.rs         momentum.rs       tier2/
-                                          position_limits.rs    mod.rs
-                                          borrow_ledger.rs      agent.rs
+                                          context.rs          context.rs
+                                          state.rs            state.rs
+                                          position_limits.rs  position_limits.rs
+                                          borrow_ledger.rs    borrow_ledger.rs
+  strategies/         strategies/         strategies/         strategies/
+    mod.rs              mod.rs              mod.rs              mod.rs
+    noise_trader.rs     noise_trader.rs     noise_trader.rs     noise_trader.rs
+    market_maker.rs     market_maker.rs     market_maker.rs     market_maker.rs
+                        momentum.rs         momentum.rs         momentum.rs
+                        trend_follower.rs   trend_follower.rs   trend_follower.rs
+                        macd_crossover.rs   macd_crossover.rs   macd_crossover.rs
+                        bollinger.rs        bollinger.rs        bollinger.rs
+                        vwap_executor.rs    vwap_executor.rs    vwap_executor.rs
+                                                              tier2/
+                                                                mod.rs
+                                                                agent.rs
                                                                 wake_index.rs
                                                               tier3/
                                                                 mod.rs
@@ -663,36 +718,41 @@ agents/             agents/             agents/             agents/
 simulation/         simulation/         simulation/         simulation/
   lib.rs              lib.rs              lib.rs              lib.rs
   runner.rs           runner.rs           runner.rs           runner.rs
-  context.rs          context.rs          context.rs          context.rs
                                           config.rs           config.rs
-                                          metrics.rs          metrics.rs
                                                               hooks.rs
 
 tui/                tui/                tui/                tui/ (becomes hook)
   lib.rs              lib.rs              lib.rs              lib.rs
   app.rs              app.rs              app.rs              app.rs
-  price_chart.rs      price_chart.rs      price_chart.rs      price_chart.rs
-  book_depth.rs       book_depth.rs       book_depth.rs       book_depth.rs
-                      indicators.rs       indicators.rs       indicators.rs
-                      risk_panel.rs       risk_panel.rs       risk_panel.rs
-                                          agents_table.rs     agents_table.rs
+                                          widgets/            widgets/
+                                            mod.rs              mod.rs
+                                            update.rs           update.rs
+                                            price_chart.rs      price_chart.rs
+                                            book_depth.rs       book_depth.rs
+                                            stats_panel.rs      stats_panel.rs
+                                            agent_table.rs      agent_table.rs
+                                            risk_panel.rs       risk_panel.rs
 
-                                                            storage/
-                                                              lib.rs
-                                                              schema.rs
-                                                              connection.rs
-                                                              persistence_hook.rs
-                                                              stores/
+                                                              storage/
+                                                                lib.rs
+                                                                schema.rs
                                                                 trades.rs
                                                                 candles.rs
                                                                 snapshots.rs
+
+src/                src/                src/                src/
+  main.rs             main.rs             main.rs             main.rs
+                                          config.rs           config.rs
+
+                                        docs/               docs/
+                                          executive_summary   executive_summary
+                                          technical_summary   technical_summary
 ```
 
 **Key Migration Points:**
-- **V0→V1:** Add `quant/` crate, wire indicators into `context.rs`
-- **V1→V2:** Add `fundamentals/` crate, position limits in agents, multi-symbol in sim-core
-- **V2→V3:** Restructure `agents/` into tiers, add `storage/`, implement `SimulationHook` trait
-- **V3→V4:** Add `gym/` (RL track) or `services/` (Game track)
+- **V0→V1:** Added `quant/` crate with indicators, risk metrics
+- **V1→V2:** Added `news/` crate, `context.rs` moved to agents, multi-symbol `market.rs`, slippage, position limits
+- **V2→V3:** Add `tier2/`, `tier3/`, `storage/`, implement `SimulationHook` trait
 
 ---
 
@@ -714,35 +774,37 @@ Explicitly deferred to keep V0-V2 lean:
 
 ## Strategy Roadmap
 
-Strategies can be added independently once the indicator pipeline (V1) exists:
+| Strategy | Version | Status | Notes |
+|----------|---------|--------|-------|
+| **NoiseTrader** | V0 | ✅ | Random trades around fair value |
+| **MarketMaker** | V0 | ✅ | Two-sided quotes, inventory management |
+| **Momentum (RSI)** | V1 | ✅ | Buy oversold, sell overbought; low activity in mean-reverting market |
+| **TrendFollower (SMA)** | V1 | ✅ | Golden/death cross signals |
+| **MACD Crossover** | V1 | ✅ | MACD/signal line crossover |
+| **Bollinger Reversion** | V1 | ✅ | Mean reversion at bands |
+| **VWAP Executor** | V1 | ✅ | Execution algo (accumulates shares); see V3 notes |
+| **Pairs Trading** | V3 | 🔲 | Requires multi-symbol cointegration |
+| **Factor Long-Short** | V3 | 🔲 | Requires `quant/factors.rs` (value, momentum, quality) |
+| **News Reactive** | V3 | 🔲 | Requires Tier 2 wake system |
+| **Sector Rotator** | V3 | 🔲 | Requires sector sentiment tracking |
+| **RL Agent** | V4 | 🔲 | Requires gym + ONNX |
 
-| Strategy | Full Plan Phase | When to Add | Prerequisites |
-|----------|-----------------|-------------|---------------|
-| **NoiseTrader** | Phase 5 | **V0** (Week 3) | None |
-| **MarketMaker** | Phase 5 | **V0** (Week 3) | None |
-| **RSI Momentum** | Phase 7 | **V1** | `quant/indicators.rs` |
-| **Trend Following** | Phase 7 | V1+ (optional) | `quant/indicators.rs` |
-| **MACD Crossover** | Phase 7 | V1+ (optional) | `quant/indicators.rs` |
-| **Bollinger Reversion** | Phase 7 | V1+ (optional) | `quant/indicators.rs` |
-| **Pairs Trading** | Phase 8 | V1+ (optional) | `quant/stats.rs` |
-| **Factor Long-Short** | Phase 8 | V1+ (optional) | `quant/factors.rs` |
-| **VWAP Executor** | Phase 8 | V1+ (optional) | Price history |
-| **News Reactive** | Phase 8 | **V3+** | `news/` crate |
-| **RL Agent** | Phase 18 | **V4-RL** | Full gym + ONNX |
-
-**Key insight:** After V1, strategies are à la carte. Pick based on interest, not obligation.
+**Notes:**
+- Momentum/TrendFollower have low activity — realistic for tick-level mean-reverting markets
+- VWAP is an execution algorithm, not a strategy; consider restructuring in V3
 
 ---
 
 ## Success Metrics
 
-- **V0 Success:** "I can watch agents trade in my terminal"
-- **V1 Success:** "My agents use real indicators and I see risk metrics"
-- **V2 Success:** "I can run 100k agents without OOM"
-- **V3 Success:** "Trades persist across runs; news moves markets"
-- **V4-RL Success:** "I trained an RL agent with observation parity"
-- **V4-Game Success:** "I can play meaningfully — pause, analyze indicators, make informed trades"
-- **V5 Success:** "I can play against my trained RL agent"
+| Version | Metric | Status |
+|---------|--------|--------|
+| V0 | "I can watch agents trade in my terminal" | ✅ Achieved |
+| V1 | "My agents use real indicators and I see risk metrics" | ✅ Achieved |
+| V2 | "Prices anchor to fundamentals; events move markets" | ✅ Achieved |
+| V3 | "100k agents without OOM; trades persist across runs" | 🔲 Planned |
+| V4-RL | "I trained an RL agent that beats noise traders" | 🔲 Planned |
+| V4-Game | "I can play, pause, analyze, and make informed trades" | 🔲 Planned |
 
 ---
 
@@ -788,19 +850,17 @@ cargo new crates/tui --lib
 
 ---
 
-## File-to-Full-Plan Compatibility Checklist
+## Current Crate Structure (V2.4)
 
-| V0 File | Full Plan Equivalent | Migration |
-|---------|---------------------|-----------|
-| `types/lib.rs` | `types/lib.rs` | ✅ Direct |
-| `sim-core/lib.rs` | `sim-core/lib.rs` | ✅ Direct |
-| `sim-core/order_book.rs` | `sim-core/order_book.rs` | ✅ Direct |
-| `sim-core/matching.rs` | `sim-core/matching.rs` | ✅ Direct |
-| `agents/lib.rs` | `agents/lib.rs` | ✅ Direct |
-| `agents/traits.rs` | `agents/traits.rs` | ✅ Direct |
-| `agents/strategies/noise_trader.rs` | `agents/tier1/strategies/noise_trader.rs` | 🔄 Move in V2 |
-| `agents/strategies/market_maker.rs` | `agents/tier1/strategies/market_maker.rs` | 🔄 Move in V2 |
-| `simulation/lib.rs` | `simulation/lib.rs` | ✅ Direct |
-| `simulation/runner.rs` | `simulation/runner.rs` | ✅ Direct |
-| `simulation/context.rs` | `agents/context.rs` | 🔄 Move in V2 (context belongs with agents) |
-| `tui/*` | (not in full plan) | 🔄 Becomes hook in V3, optional in V4 |
+| Crate | Files | Purpose |
+|-------|-------|-------|
+| `types` | `lib.rs`, `order.rs`, `config.rs` | Order, Trade, Price, Symbol, Sector, SymbolConfig |
+| `sim-core` | `lib.rs`, `order_book.rs`, `matching.rs`, `market.rs`, `slippage.rs` | OrderBook, MatchingEngine, Market (multi-symbol) |
+| `agents` | `lib.rs`, `traits.rs`, `context.rs`, `state.rs`, `position_limits.rs`, `borrow_ledger.rs` | Agent trait, StrategyContext, position validation |
+| `agents/strategies` | `mod.rs`, `noise_trader.rs`, `market_maker.rs`, `momentum.rs`, `trend_follower.rs`, `macd_crossover.rs`, `bollinger_reversion.rs`, `vwap_executor.rs` | 7 Tier 1 strategies |
+| `news` | `lib.rs`, `events.rs`, `fundamentals.rs`, `generator.rs`, `config.rs`, `sectors.rs` | Events, Gordon Growth Model, SectorModel |
+| `quant` | `lib.rs`, `engine.rs`, `indicators/`, `risk.rs`, `tracker.rs`, `rolling.rs`, `stats.rs` | SMA, EMA, RSI, MACD, Bollinger, Sharpe, MaxDD, VaR |
+| `simulation` | `lib.rs`, `runner.rs`, `config.rs` | Tick loop, event processing, agent orchestration |
+| `tui` | `lib.rs`, `app.rs`, `widgets/` | Terminal UI with price chart, book depth, agent table, risk panel |
+
+**V3 Migration:** Strategies stay flat (no tier1/ folder). Tier 2/3 get separate modules when implemented.

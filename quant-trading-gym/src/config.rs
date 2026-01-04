@@ -25,7 +25,7 @@
 
 use rand::Rng;
 use rand::prelude::IndexedRandom;
-use types::{Cash, Price};
+use types::{Cash, Price, Sector};
 
 /// Configuration for a single symbol.
 #[derive(Debug, Clone)]
@@ -34,6 +34,8 @@ pub struct SymbolSpec {
     pub symbol: String,
     /// Initial price of the asset.
     pub initial_price: Price,
+    /// Industry sector for news events and grouping (V2.4).
+    pub sector: Sector,
 }
 
 impl SymbolSpec {
@@ -42,6 +44,16 @@ impl SymbolSpec {
         Self {
             symbol: symbol.into(),
             initial_price: Price::from_float(initial_price),
+            sector: Sector::Tech, // Default sector
+        }
+    }
+
+    /// Create a symbol specification with explicit sector.
+    pub fn with_sector(symbol: impl Into<String>, initial_price: f64, sector: Sector) -> Self {
+        Self {
+            symbol: symbol.into(),
+            initial_price: Price::from_float(initial_price),
+            sector,
         }
     }
 }
@@ -140,9 +152,13 @@ pub struct SimConfig {
 impl Default for SimConfig {
     fn default() -> Self {
         Self {
-            // Simulation Control - default single symbol
-            symbols: vec![SymbolSpec::new("Food", 100.0), 
-            SymbolSpec::new("Energy", 100.0), SymbolSpec::new("Hotels", 100.0)],
+            // Simulation Control - default multi-symbol with different sectors (V2.4)
+            symbols: vec![
+                SymbolSpec::with_sector("Duck Delish", 100.0, Sector::Consumer),
+                SymbolSpec::with_sector("Zephyr Zap", 100.0, Sector::Energy),
+                SymbolSpec::with_sector("Vraiment Villa", 100.0, Sector::RealEstate),
+                SymbolSpec::with_sector("Quant Quotation", 100.0, Sector::Finance),
+            ],
             total_ticks: 5000,
             tick_delay_ms: 0, // ~100 ticks/sec for watchable visualization
             verbose: false,

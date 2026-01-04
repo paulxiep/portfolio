@@ -199,7 +199,18 @@ mod tests {
         let candles = HashMap::new();
         let indicators = IndicatorSnapshot::new(100);
         let recent_trades = HashMap::new();
-        let ctx = StrategyContext::new(100, 1000, &market, &candles, &indicators, &recent_trades);
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
+        let ctx = StrategyContext::new(
+            100,
+            1000,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
+        );
 
         // Test access
         let symbol = "TEST".to_string();

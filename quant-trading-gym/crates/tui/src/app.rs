@@ -7,11 +7,16 @@
 //! - `Shift+Tab`/`←`: Previous symbol  
 //! - `1`-`9`: Jump to symbol by number
 //! - `O`: Toggle price overlay mode (show all symbols on chart)
+//!
+//! # Start/Stop Control
+//!
+//! The simulation starts paused. Use `Space` to start/stop:
+//! - `Space`: Toggle simulation running state
 
 use std::io::{self, Stdout};
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{Receiver, Sender};
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -29,16 +34,21 @@ use ratatui::{
     widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 
+use crate::SimCommand;
 use crate::widgets::{AgentTable, BookDepth, PriceChart, RiskPanel, SimUpdate, StatsPanel};
 
 /// TUI application state.
 pub struct TuiApp {
     /// Channel receiver for simulation updates.
     receiver: Receiver<SimUpdate>,
+    /// Channel sender for commands to simulation.
+    command_sender: Option<Sender<SimCommand>>,
     /// Latest simulation state.
     state: SimUpdate,
     /// Whether the simulation has finished.
     finished: bool,
+    /// Whether the simulation is currently running.
+    running: bool,
     /// Target frame rate.
     frame_rate: u64,
     /// Risk panel scroll offset.
@@ -58,12 +68,14 @@ pub struct TuiApp {
 impl TuiApp {
     /// Create a new TUI app with the given channel receiver.
     ///
-    /// Uses `try_iter()` internally for non-blocking updates.
+    /// The simulation starts **paused**. Press Space to start.
     pub fn new(receiver: Receiver<SimUpdate>) -> Self {
         Self {
             receiver,
+            command_sender: None,
             state: SimUpdate::default(),
             finished: false,
+            running: false, // Start paused
             frame_rate: 30, // 30 FPS
             risk_scroll: 0,
             agent_scroll: 0,
@@ -72,6 +84,12 @@ impl TuiApp {
             selected_symbol: 0,
             overlay_mode: false,
         }
+    }
+
+    /// Set the command sender for controlling the simulation.
+    pub fn with_command_sender(mut self, sender: Sender<SimCommand>) -> Self {
+        self.command_sender = Some(sender);
+        self
     }
 
     /// Set the target frame rate (frames per second).
@@ -150,7 +168,23 @@ impl TuiApp {
     fn handle_key_event(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
         match code {
             // Quit
-            KeyCode::Char('q') | KeyCode::Esc => return true,
+            KeyCode::Char('q') | KeyCode::Esc => {
+                // Send quit command to simulation
+                if let Some(ref sender) = self.command_sender {
+                    let _ = sender.send(SimCommand::Quit);
+                }
+                return true;
+            }
+
+            // Start/Stop toggle
+            KeyCode::Char(' ') => {
+                if !self.finished {
+                    self.running = !self.running;
+                    if let Some(ref sender) = self.command_sender {
+                        let _ = sender.send(SimCommand::Toggle);
+                    }
+                }
+            }
 
             // Symbol navigation: Tab/Right = next, Shift+Tab/Left = previous
             KeyCode::Tab if modifiers.contains(KeyModifiers::SHIFT) => {
@@ -380,12 +414,20 @@ impl TuiApp {
                     .bg(Color::Green)
                     .add_modifier(Modifier::BOLD),
             )
-        } else {
+        } else if self.running {
             Span::styled(
                 " RUNNING ",
                 Style::default()
                     .fg(Color::Black)
                     .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled(
+                " PAUSED ",
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Red)
                     .add_modifier(Modifier::BOLD),
             )
         };
@@ -456,16 +498,31 @@ impl TuiApp {
 
     /// Draw the footer bar.
     fn draw_footer(&self, frame: &mut Frame, area: Rect) {
+        let start_stop_hint = if self.finished {
+            Span::raw("")
+        } else if self.running {
+            Span::styled("Space", Style::default().fg(Color::Yellow))
+        } else {
+            Span::styled("Space", Style::default().fg(Color::Green))
+        };
+
+        let start_stop_label = if self.finished {
+            Span::raw("")
+        } else if self.running {
+            Span::raw(" Pause  │ ")
+        } else {
+            Span::raw(" Start  │ ")
+        };
+
         let footer = Paragraph::new(Line::from(vec![
             Span::styled(" q", Style::default().fg(Color::Yellow)),
-            Span::raw(" Quit  "),
-            Span::raw("│ "),
+            Span::raw(" Quit  │ "),
+            start_stop_hint,
+            start_stop_label,
             Span::styled("Tab/←→", Style::default().fg(Color::Cyan)),
-            Span::raw(" Symbol  "),
-            Span::raw("│ "),
+            Span::raw(" Symbol  │ "),
             Span::styled("o", Style::default().fg(Color::Cyan)),
-            Span::raw(" Overlay  "),
-            Span::raw("│ "),
+            Span::raw(" Overlay  │ "),
             Span::styled("🖱 Scroll", Style::default().fg(Color::Cyan)),
             Span::raw(" Mouse wheel"),
         ]))
@@ -666,6 +723,8 @@ impl SimpleTui {
             agent_area: None,
             selected_symbol: self.selected_symbol,
             overlay_mode: self.overlay_mode,
+            command_sender: None,
+            running: true, // SimpleTui assumes running for display
         };
         app.draw(frame);
     }

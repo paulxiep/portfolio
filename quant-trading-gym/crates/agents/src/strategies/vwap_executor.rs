@@ -288,8 +288,19 @@ mod tests {
         indicators: &'a IndicatorSnapshot,
         trades: &'a HashMap<Symbol, Vec<Trade>>,
         market: &'a SingleSymbolMarket<'a>,
+        events: &'a [news::NewsEvent],
+        fundamentals: &'a news::SymbolFundamentals,
     ) -> StrategyContext<'a> {
-        StrategyContext::new(tick, tick * 100, market, candles, indicators, trades)
+        StrategyContext::new(
+            tick,
+            tick * 100,
+            market,
+            candles,
+            indicators,
+            trades,
+            events,
+            fundamentals,
+        )
     }
 
     fn create_order_book(symbol: &str, bid_price: f64, ask_price: f64) -> OrderBook {
@@ -321,9 +332,19 @@ mod tests {
         let candles: HashMap<Symbol, Vec<Candle>> = HashMap::new();
         let indicators = IndicatorSnapshot::default();
         let trades: HashMap<Symbol, Vec<Trade>> = HashMap::new();
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
 
-        let ctx =
-            make_context_with_orderbook(0, &order_book, &candles, &indicators, &trades, &market);
+        let ctx = make_context_with_orderbook(
+            0,
+            &order_book,
+            &candles,
+            &indicators,
+            &trades,
+            &market,
+            &events,
+            &fundamentals,
+        );
         let action = executor.on_tick(&ctx);
 
         // Should place initial order even without VWAP
@@ -339,21 +360,47 @@ mod tests {
         let candles: HashMap<Symbol, Vec<Candle>> = HashMap::new();
         let indicators = IndicatorSnapshot::default();
         let trades: HashMap<Symbol, Vec<Trade>> = HashMap::new();
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
 
         // First order at tick 0
-        let ctx0 =
-            make_context_with_orderbook(0, &order_book, &candles, &indicators, &trades, &market);
+        let ctx0 = make_context_with_orderbook(
+            0,
+            &order_book,
+            &candles,
+            &indicators,
+            &trades,
+            &market,
+            &events,
+            &fundamentals,
+        );
         let _ = executor.on_tick(&ctx0);
 
         // Should not order at tick 5 (interval is 10)
-        let ctx5 =
-            make_context_with_orderbook(5, &order_book, &candles, &indicators, &trades, &market);
+        let ctx5 = make_context_with_orderbook(
+            5,
+            &order_book,
+            &candles,
+            &indicators,
+            &trades,
+            &market,
+            &events,
+            &fundamentals,
+        );
         let action5 = executor.on_tick(&ctx5);
         assert!(action5.orders.is_empty());
 
         // Should order at tick 10
-        let ctx10 =
-            make_context_with_orderbook(10, &order_book, &candles, &indicators, &trades, &market);
+        let ctx10 = make_context_with_orderbook(
+            10,
+            &order_book,
+            &candles,
+            &indicators,
+            &trades,
+            &market,
+            &events,
+            &fundamentals,
+        );
         let action10 = executor.on_tick(&ctx10);
         assert_eq!(action10.orders.len(), 1);
     }
@@ -374,10 +421,20 @@ mod tests {
         let candles: HashMap<Symbol, Vec<Candle>> = HashMap::new();
         let indicators = IndicatorSnapshot::default();
         let trades: HashMap<Symbol, Vec<Trade>> = HashMap::new();
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
 
         // Place order
-        let ctx =
-            make_context_with_orderbook(0, &order_book, &candles, &indicators, &trades, &market);
+        let ctx = make_context_with_orderbook(
+            0,
+            &order_book,
+            &candles,
+            &indicators,
+            &trades,
+            &market,
+            &events,
+            &fundamentals,
+        );
         let _ = executor.on_tick(&ctx);
 
         // Simulate fill
@@ -412,12 +469,22 @@ mod tests {
         let candles: HashMap<Symbol, Vec<Candle>> = HashMap::new();
         let indicators = IndicatorSnapshot::default();
         let trades: HashMap<Symbol, Vec<Trade>> = HashMap::new();
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
 
         // Manually mark as complete
         executor.remaining_quantity = 0;
 
-        let ctx =
-            make_context_with_orderbook(0, &order_book, &candles, &indicators, &trades, &market);
+        let ctx = make_context_with_orderbook(
+            0,
+            &order_book,
+            &candles,
+            &indicators,
+            &trades,
+            &market,
+            &events,
+            &fundamentals,
+        );
         let action = executor.on_tick(&ctx);
 
         assert!(action.orders.is_empty());

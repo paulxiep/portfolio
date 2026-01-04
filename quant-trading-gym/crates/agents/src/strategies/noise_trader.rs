@@ -1,12 +1,19 @@
 //! Noise Trader - generates random market activity.
 //!
-//! A simple agent that places random orders near the current mid price.
+//! A simple agent that places random orders near the current price.
 //! This provides liquidity and price discovery by generating trades.
 //!
 //! # Zombie Risk Prevention
-//! NoiseTrader orders use the current mid price as reference. If there's no
-//! mid price (empty book), it uses the last trade price. If neither exists,
-//! it falls back to a configured initial price.
+//! NoiseTrader orders use a reference price hierarchy:
+//! 1. Fair value from fundamentals (if available)
+//! 2. Mid price from order book
+//! 3. Last trade price
+//! 4. Configured initial price
+//!
+//! # V2.4 Fair Value Integration
+//! When fundamentals are configured, noise trades anchor around the
+//! Gordon Growth Model fair value. This creates price discovery pressure
+//! toward intrinsic value while still generating market noise.
 
 use crate::state::AgentState;
 use crate::{Agent, AgentAction, StrategyContext};
@@ -110,9 +117,16 @@ impl NoiseTrader {
     }
 
     /// Determine the reference price for order generation.
+    ///
+    /// Priority:
+    /// 1. Fair value from fundamentals (anchors trades to intrinsic value)
+    /// 2. Mid price from order book  
+    /// 3. Last trade price
+    /// 4. Initial price (fallback)
     fn get_reference_price(&self, ctx: &StrategyContext<'_>) -> Price {
-        // Priority: mid price > last trade > initial price
-        ctx.mid_price(&self.config.symbol)
+        // Prefer fair value if available - this anchors noise around fundamentals
+        ctx.fair_value(&self.config.symbol)
+            .or_else(|| ctx.mid_price(&self.config.symbol))
             .or_else(|| ctx.last_price(&self.config.symbol))
             .unwrap_or(self.config.initial_price)
     }
@@ -259,11 +273,22 @@ mod tests {
     #[test]
     fn test_reference_price_priority() {
         let trader = NoiseTrader::with_defaults(AgentId(1));
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
 
         // Empty market: use initial price
         let (book, candles, indicators, recent_trades) = mock_context_with_price(None);
         let market = SingleSymbolMarket::new(&book);
-        let ctx = StrategyContext::new(1, 0, &market, &candles, &indicators, &recent_trades);
+        let ctx = StrategyContext::new(
+            1,
+            0,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
+        );
         let ref_price = trader.get_reference_price(&ctx);
         assert_eq!(ref_price, Price::from_float(100.0));
 
@@ -271,7 +296,16 @@ mod tests {
         let (book, candles, indicators, recent_trades) =
             mock_context_with_price(Some(Price::from_float(150.0)));
         let market = SingleSymbolMarket::new(&book);
-        let ctx = StrategyContext::new(1, 0, &market, &candles, &indicators, &recent_trades);
+        let ctx = StrategyContext::new(
+            1,
+            0,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
+        );
         let ref_price = trader.get_reference_price(&ctx);
         assert_eq!(ref_price, Price::from_float(150.0));
     }

@@ -27,6 +27,9 @@ pub struct SymbolConfig {
     pub borrow_pool_bps: u32,
     /// Initial/reference price for this symbol.
     pub initial_price: Price,
+    /// Industry sector for this symbol (V2.4).
+    /// Used for sector-level news events and portfolio grouping.
+    pub sector: Sector,
 }
 
 impl SymbolConfig {
@@ -41,7 +44,30 @@ impl SymbolConfig {
             shares_outstanding,
             borrow_pool_bps: 1500, // Default 15% borrow pool
             initial_price,
+            sector: Sector::Tech, // Default sector
         }
+    }
+
+    /// Create a new symbol configuration with explicit sector.
+    pub fn with_sector(
+        symbol: impl Into<Symbol>,
+        shares_outstanding: Quantity,
+        initial_price: Price,
+        sector: Sector,
+    ) -> Self {
+        Self {
+            symbol: symbol.into(),
+            shares_outstanding,
+            borrow_pool_bps: 1500,
+            initial_price,
+            sector,
+        }
+    }
+
+    /// Set the sector.
+    pub fn sector(mut self, sector: Sector) -> Self {
+        self.sector = sector;
+        self
     }
 
     /// Set the borrow pool fraction (in basis points).
@@ -64,6 +90,7 @@ impl Default for SymbolConfig {
             shares_outstanding: Quantity(1_000_000),
             borrow_pool_bps: 1500,
             initial_price: Price::from_float(100.0),
+            sector: Sector::Tech,
         }
     }
 }
@@ -168,3 +195,62 @@ impl std::fmt::Display for RiskViolation {
 }
 
 impl std::error::Error for RiskViolation {}
+
+// =============================================================================
+// Sector Classification (V2.4)
+// =============================================================================
+
+/// Industry sector classification for symbols.
+///
+/// Used for:
+/// - Sector-level news events
+/// - Portfolio grouping and risk analysis
+/// - Factor models (sector exposure)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Sector {
+    Tech,
+    Energy,
+    Finance,
+    Healthcare,
+    Consumer,
+    Industrials,
+    Materials,
+    Utilities,
+    RealEstate,
+    Communications,
+}
+
+impl Sector {
+    /// Get all sectors as a slice.
+    pub fn all() -> &'static [Sector] {
+        &[
+            Sector::Tech,
+            Sector::Energy,
+            Sector::Finance,
+            Sector::Healthcare,
+            Sector::Consumer,
+            Sector::Industrials,
+            Sector::Materials,
+            Sector::Utilities,
+            Sector::RealEstate,
+            Sector::Communications,
+        ]
+    }
+}
+
+impl std::fmt::Display for Sector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Sector::Tech => write!(f, "Technology"),
+            Sector::Energy => write!(f, "Energy"),
+            Sector::Finance => write!(f, "Finance"),
+            Sector::Healthcare => write!(f, "Healthcare"),
+            Sector::Consumer => write!(f, "Consumer"),
+            Sector::Industrials => write!(f, "Industrials"),
+            Sector::Materials => write!(f, "Materials"),
+            Sector::Utilities => write!(f, "Utilities"),
+            Sector::RealEstate => write!(f, "Real Estate"),
+            Sector::Communications => write!(f, "Communications"),
+        }
+    }
+}

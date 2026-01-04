@@ -264,8 +264,19 @@ mod tests {
         indicators: &'a IndicatorSnapshot,
         trades: &'a HashMap<Symbol, Vec<Trade>>,
         market: &'a SingleSymbolMarket<'a>,
+        events: &'a [news::NewsEvent],
+        fundamentals: &'a news::SymbolFundamentals,
     ) -> StrategyContext<'a> {
-        StrategyContext::new(100, 1000, market, candles, indicators, trades)
+        StrategyContext::new(
+            100,
+            1000,
+            market,
+            candles,
+            indicators,
+            trades,
+            events,
+            fundamentals,
+        )
     }
 
     fn create_order_book(symbol: &str, bid_price: f64, ask_price: f64) -> OrderBook {
@@ -296,13 +307,23 @@ mod tests {
         let market = SingleSymbolMarket::new(&order_book);
         let indicators = IndicatorSnapshot::default();
         let trades: HashMap<Symbol, Vec<Trade>> = HashMap::new();
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
 
         // Only 10 candles, need 26 + 9 = 35 minimum
         let candle_vec = make_trending_candles(true, 10);
         let mut candles: HashMap<Symbol, Vec<Candle>> = HashMap::new();
         candles.insert("ACME".into(), candle_vec);
 
-        let ctx = make_context_with_candles(&order_book, &candles, &indicators, &trades, &market);
+        let ctx = make_context_with_candles(
+            &order_book,
+            &candles,
+            &indicators,
+            &trades,
+            &market,
+            &events,
+            &fundamentals,
+        );
         let action = trader.on_tick(&ctx);
         assert!(action.orders.is_empty());
     }
@@ -314,13 +335,23 @@ mod tests {
         let market = SingleSymbolMarket::new(&order_book);
         let indicators = IndicatorSnapshot::default();
         let trades: HashMap<Symbol, Vec<Trade>> = HashMap::new();
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
 
         // Enough data for MACD
         let candle_vec = make_trending_candles(true, 50);
         let mut candles: HashMap<Symbol, Vec<Candle>> = HashMap::new();
         candles.insert("ACME".into(), candle_vec);
 
-        let ctx = make_context_with_candles(&order_book, &candles, &indicators, &trades, &market);
+        let ctx = make_context_with_candles(
+            &order_book,
+            &candles,
+            &indicators,
+            &trades,
+            &market,
+            &events,
+            &fundamentals,
+        );
         // First tick should only set state, not generate orders
         // (prev_state is Unknown, which doesn't trigger crossover)
         let action = trader.on_tick(&ctx);

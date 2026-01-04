@@ -105,12 +105,19 @@ pub struct StrategyContext<'a> {
 
     /// Recent trades per symbol (most recent first).
     recent_trades: &'a HashMap<Symbol, Vec<Trade>>,
+
+    /// Active news events (V2.4).
+    events: &'a [news::NewsEvent],
+
+    /// Symbol fundamentals for fair value lookups (V2.4).
+    fundamentals: &'a news::SymbolFundamentals,
 }
 
 impl<'a> StrategyContext<'a> {
     /// Create a new strategy context.
     ///
     /// This is typically called by the simulation runner at the start of each tick.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         tick: Tick,
         timestamp: Timestamp,
@@ -118,6 +125,8 @@ impl<'a> StrategyContext<'a> {
         candles: &'a HashMap<Symbol, Vec<Candle>>,
         indicators: &'a IndicatorSnapshot,
         recent_trades: &'a HashMap<Symbol, Vec<Trade>>,
+        events: &'a [news::NewsEvent],
+        fundamentals: &'a news::SymbolFundamentals,
     ) -> Self {
         Self {
             tick,
@@ -126,6 +135,8 @@ impl<'a> StrategyContext<'a> {
             candles,
             indicators,
             recent_trades,
+            events,
+            fundamentals,
         }
     }
 
@@ -268,6 +279,63 @@ impl<'a> StrategyContext<'a> {
     pub fn primary_last_price(&self) -> Option<Price> {
         self.primary_symbol().and_then(|s| self.last_price(&s))
     }
+
+    // =========================================================================
+    // News & Fundamentals Access (V2.4)
+    // =========================================================================
+
+    /// Get all active news events.
+    pub fn active_events(&self) -> &[news::NewsEvent] {
+        self.events
+    }
+
+    /// Get active events affecting a specific symbol.
+    pub fn events_for_symbol(&self, symbol: &Symbol) -> Vec<&news::NewsEvent> {
+        self.events
+            .iter()
+            .filter(|e| e.symbol() == Some(symbol))
+            .collect()
+    }
+
+    /// Get active events affecting a specific sector.
+    pub fn events_for_sector(&self, sector: types::Sector) -> Vec<&news::NewsEvent> {
+        self.events
+            .iter()
+            .filter(|e| e.sector() == Some(sector))
+            .collect()
+    }
+
+    /// Get the fair value for a symbol based on fundamentals.
+    ///
+    /// Returns `None` if no fundamentals exist for the symbol.
+    pub fn fair_value(&self, symbol: &Symbol) -> Option<Price> {
+        self.fundamentals.fair_value(symbol)
+    }
+
+    /// Get the fundamentals for a symbol.
+    pub fn get_fundamentals(&self, symbol: &Symbol) -> Option<&news::Fundamentals> {
+        self.fundamentals.get(symbol)
+    }
+
+    /// Get the macro environment (risk-free rate, equity risk premium).
+    pub fn macro_env(&self) -> &news::MacroEnvironment {
+        &self.fundamentals.macro_env
+    }
+
+    /// Calculate aggregate sentiment for a symbol from active events.
+    ///
+    /// Combines direct symbol events and sector events with decay.
+    pub fn symbol_sentiment(&self, symbol: &Symbol) -> f64 {
+        let direct: f64 = self
+            .events
+            .iter()
+            .filter(|e| e.symbol() == Some(symbol))
+            .map(|e| e.effective_sentiment(self.tick))
+            .sum();
+
+        // TODO: Add sector sentiment when sector model is available in context
+        direct
+    }
 }
 
 impl std::fmt::Debug for StrategyContext<'_> {
@@ -277,6 +345,7 @@ impl std::fmt::Debug for StrategyContext<'_> {
             .field("timestamp", &self.timestamp)
             .field("symbols", &self.market.symbols())
             .field("candle_symbols", &self.candles.keys().collect::<Vec<_>>())
+            .field("active_events", &self.events.len())
             .finish()
     }
 }
@@ -284,6 +353,7 @@ impl std::fmt::Debug for StrategyContext<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use news::SymbolFundamentals;
     use quant::IndicatorSnapshot;
     use sim_core::SingleSymbolMarket;
     use types::{AgentId, Order, OrderId, OrderSide, Quantity};
@@ -318,8 +388,19 @@ mod tests {
         let candles = HashMap::new();
         let indicators = IndicatorSnapshot::new(100);
         let recent_trades = HashMap::new();
+        let events = vec![];
+        let fundamentals = SymbolFundamentals::default();
 
-        let ctx = StrategyContext::new(100, 1000, &market, &candles, &indicators, &recent_trades);
+        let ctx = StrategyContext::new(
+            100,
+            1000,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
+        );
 
         let symbol = "TEST".to_string();
         assert!(ctx.has_symbol(&symbol));
@@ -334,6 +415,8 @@ mod tests {
         let market = SingleSymbolMarket::new(&book);
         let indicators = IndicatorSnapshot::new(100);
         let recent_trades = HashMap::new();
+        let events = vec![];
+        let fundamentals = SymbolFundamentals::default();
 
         let symbol = "TEST".to_string();
         let mut candles = HashMap::new();
@@ -363,7 +446,16 @@ mod tests {
             ],
         );
 
-        let ctx = StrategyContext::new(100, 1000, &market, &candles, &indicators, &recent_trades);
+        let ctx = StrategyContext::new(
+            100,
+            1000,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
+        );
 
         assert_eq!(ctx.candles(&symbol).len(), 2);
         assert_eq!(
@@ -380,8 +472,19 @@ mod tests {
         let candles = HashMap::new();
         let indicators = IndicatorSnapshot::new(100);
         let recent_trades = HashMap::new();
+        let events = vec![];
+        let fundamentals = SymbolFundamentals::default();
 
-        let ctx = StrategyContext::new(100, 1000, &market, &candles, &indicators, &recent_trades);
+        let ctx = StrategyContext::new(
+            100,
+            1000,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
+        );
 
         assert_eq!(ctx.primary_symbol(), Some("TEST".to_string()));
         assert_eq!(ctx.primary_mid_price(), Some(Price::from_float(100.0)));

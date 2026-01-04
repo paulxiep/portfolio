@@ -5,9 +5,15 @@
 //! the "zombie simulation" problem where no trades occur.
 //!
 //! # Strategy
-//! - Maintains bid/ask orders around the current mid price
+//! - Anchors quotes to fair value when fundamentals are available
+//! - Falls back to mid price or initial price otherwise  
 //! - Adjusts quotes based on inventory (skew away from large positions)
 //! - Cancels stale orders when prices move significantly
+//!
+//! # V2.4 Fair Value Integration
+//! When fundamentals are configured, quotes anchor to the Gordon Growth Model
+//! fair value rather than market mid price. This creates price discovery
+//! pressure toward intrinsic value.
 
 use crate::state::AgentState;
 use crate::{Agent, AgentAction, StrategyContext};
@@ -104,9 +110,16 @@ impl MarketMaker {
     }
 
     /// Determine the reference price for quoting.
+    ///
+    /// Priority:
+    /// 1. Fair value from fundamentals (anchors to intrinsic value)
+    /// 2. Mid price from order book
+    /// 3. Last trade price
+    /// 4. Initial price (fallback)
     fn get_reference_price(&self, ctx: &StrategyContext<'_>) -> Price {
-        // Priority: mid price > last trade > initial price
-        ctx.mid_price(&self.config.symbol)
+        // Prefer fair value if available - this anchors quotes to fundamentals
+        ctx.fair_value(&self.config.symbol)
+            .or_else(|| ctx.mid_price(&self.config.symbol))
             .or_else(|| ctx.last_price(&self.config.symbol))
             .unwrap_or(self.config.initial_price)
     }
@@ -276,7 +289,18 @@ mod tests {
         let (book, candles, indicators, recent_trades) =
             mock_context(Some(Price::from_float(100.0)), 0);
         let market = SingleSymbolMarket::new(&book);
-        let ctx = StrategyContext::new(0, 0, &market, &candles, &indicators, &recent_trades);
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
+        let ctx = StrategyContext::new(
+            0,
+            0,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
+        );
         let action = mm.on_tick(&ctx);
 
         assert_eq!(action.orders.len(), 2);
@@ -303,12 +327,23 @@ mod tests {
             ..Default::default()
         };
         let mut mm = MarketMaker::new(AgentId(1), config);
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
 
         // Tick 0: should place orders
         let (book, candles, indicators, recent_trades) =
             mock_context(Some(Price::from_float(100.0)), 0);
         let market = SingleSymbolMarket::new(&book);
-        let ctx = StrategyContext::new(0, 0, &market, &candles, &indicators, &recent_trades);
+        let ctx = StrategyContext::new(
+            0,
+            0,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
+        );
         let action = mm.on_tick(&ctx);
         assert_eq!(action.orders.len(), 2);
 
@@ -316,7 +351,16 @@ mod tests {
         let (book, candles, indicators, recent_trades) =
             mock_context(Some(Price::from_float(100.0)), 5);
         let market = SingleSymbolMarket::new(&book);
-        let ctx = StrategyContext::new(5, 0, &market, &candles, &indicators, &recent_trades);
+        let ctx = StrategyContext::new(
+            5,
+            0,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
+        );
         let action = mm.on_tick(&ctx);
         assert!(action.orders.is_empty());
 
@@ -324,7 +368,16 @@ mod tests {
         let (book, candles, indicators, recent_trades) =
             mock_context(Some(Price::from_float(100.0)), 10);
         let market = SingleSymbolMarket::new(&book);
-        let ctx = StrategyContext::new(10, 0, &market, &candles, &indicators, &recent_trades);
+        let ctx = StrategyContext::new(
+            10,
+            0,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
+        );
         let action = mm.on_tick(&ctx);
         assert_eq!(action.orders.len(), 2);
     }

@@ -1,5 +1,96 @@
 # Development Log
 
+## 2026-01-04: V2.4 - Fundamentals, Events & TUI Controls
+
+### Summary
+Complete news/events system with Gordon Growth Model fair value, sector-based event generation, TUI start/stop control, and event distribution fixes.
+
+### Completed
+
+#### News & Events System (`news/`)
+- ✅ `FundamentalEvent` enum: `EarningsSurprise`, `GuidanceChange`, `RateDecision`, `SectorNews`
+- ✅ `NewsEvent`: Time-bounded event with sentiment, magnitude, decay
+- ✅ `NewsGenerator`: Configurable event generation with min intervals
+- ✅ `NewsGeneratorConfig`: Per-event-type frequency and magnitude settings
+
+#### Fundamentals Model (`news/fundamentals.rs`)
+- ✅ `Fundamentals`: Per-symbol EPS, growth estimate, payout ratio
+- ✅ `MacroEnvironment`: Risk-free rate (4%), equity risk premium (5%)
+- ✅ `SymbolFundamentals`: Container with `fair_value(&symbol)` method
+- ✅ Gordon Growth Model: `fair_value = D1 / (r - g)` with P/E fallback
+
+#### Sector Support (`types/`)
+- ✅ `Sector` enum: 10 sectors (Tech, Energy, Finance, Healthcare, Consumer, Industrials, Materials, Utilities, RealEstate, Communications)
+- ✅ `SymbolConfig.sector` field for sector assignment
+- ✅ `SectorModel`: Maps symbols to sectors for sector-wide events
+
+#### TUI Start/Stop Control
+- ✅ `SimCommand` enum: `Start`, `Pause`, `Toggle`, `Quit`
+- ✅ Bidirectional channels: `SimUpdate` (Sim→TUI), `SimCommand` (TUI→Sim)
+- ✅ TUI starts paused, Space key toggles running state
+- ✅ Header shows PAUSED (red) / RUNNING (yellow) / FINISHED (green)
+- ✅ Footer shows Space key hint
+
+#### Event Distribution Fix
+- ✅ **Bug**: Fixed seed caused same symbols to always get same event outcomes
+- ✅ **Fix**: Generate event value (surprise/growth) BEFORE selecting symbol
+- ✅ **Result**: Events now distributed fairly across all symbols
+
+#### Guidance Range Fix
+- ✅ **Bug**: Growth range (-2% to +12%) could exceed required return (9%)
+- ✅ **Fix**: Capped growth_range max at 7% to prevent Gordon Growth Model breakdown
+- ✅ **Result**: Fair values stay bounded, no runaway $400+ prices
+
+### Technical Notes
+
+**Market Behavior (Mean-Reverting):**
+- Tick-level simulation is realistic for liquid equity markets
+- Prices anchor to fair value (~$52.50 from Gordon Growth Model)
+- Momentum strategies have low activity (RSI rarely hits 30/70 extremes)
+- This matches real HFT environments where momentum has negative alpha
+
+**Fair Value Calculation:**
+```
+EPS = initial_price / 20  (P/E of 20)
+D1 = EPS × payout_ratio × (1 + growth) = $5 × 0.40 × 1.05 = $2.10
+r = risk_free + equity_premium = 4% + 5% = 9%
+g = growth_estimate = 5%
+fair_value = $2.10 / (0.09 - 0.05) = $52.50
+```
+
+**Event Frequencies (Default):**
+| Event | Probability | Min Interval | Duration |
+|-------|-------------|--------------|----------|
+| Earnings | 0.2% | 100 ticks | 50 ticks |
+| Guidance | 0.1% | 200 ticks | 30 ticks |
+| Rate Decision | 0.05% | 500 ticks | 100 ticks |
+| Sector News | 0.3% | 50 ticks | 40 ticks |
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `crates/news/src/events.rs` | `FundamentalEvent`, `NewsEvent` |
+| `crates/news/src/fundamentals.rs` | Gordon Growth Model, `SymbolFundamentals` |
+| `crates/news/src/generator.rs` | Event generation, correlation fix |
+| `crates/news/src/config.rs` | Event frequencies, guidance range cap |
+| `crates/news/src/sectors.rs` | `SectorModel` for sector lookup |
+| `crates/types/src/config.rs` | `Sector` enum, `SymbolConfig.sector` |
+| `crates/tui/src/lib.rs` | `SimCommand` enum |
+| `crates/tui/src/app.rs` | Start/stop control, status display |
+| `crates/simulation/src/runner.rs` | Event processing, fundamentals integration |
+| `src/main.rs` | Command channel, paused start |
+| `docs/executive_summary.md` | Business overview |
+| `docs/technical_summary.md` | Technical architecture |
+
+### Exit Criteria
+```
+cargo fmt --check      # ✅ No formatting issues
+cargo clippy           # ✅ No warnings  
+cargo test --workspace # ✅ All 213 tests pass
+```
+
+---
+
 ## 2026-01-04: V2.3 - Multi-Symbol Infrastructure
 
 ### Summary

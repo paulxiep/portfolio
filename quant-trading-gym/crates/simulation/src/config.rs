@@ -29,6 +29,12 @@ pub struct SimulationConfig {
 
     /// Enable verbose logging.
     pub verbose: bool,
+
+    /// News event generation configuration (V2.4).
+    pub news: news::NewsGeneratorConfig,
+
+    /// Random seed for deterministic simulation.
+    pub seed: u64,
 }
 
 impl Default for SimulationConfig {
@@ -42,6 +48,8 @@ impl Default for SimulationConfig {
             max_candles: 200,    // Keep 200 candles (~2000 ticks of history)
             enforce_position_limits: true,
             verbose: false,
+            news: news::NewsGeneratorConfig::default(),
+            seed: 42,
         }
     }
 }
@@ -168,6 +176,24 @@ impl SimulationConfig {
     /// Enable verbose mode.
     pub fn with_verbose(mut self, verbose: bool) -> Self {
         self.verbose = verbose;
+        self
+    }
+
+    /// Set news event generation configuration (V2.4).
+    pub fn with_news_config(mut self, news: news::NewsGeneratorConfig) -> Self {
+        self.news = news;
+        self
+    }
+
+    /// Disable news event generation.
+    pub fn with_news_disabled(mut self) -> Self {
+        self.news = news::NewsGeneratorConfig::disabled();
+        self
+    }
+
+    /// Set random seed for deterministic simulation.
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = seed;
         self
     }
 }

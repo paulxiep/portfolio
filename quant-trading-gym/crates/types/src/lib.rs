@@ -55,7 +55,7 @@ pub use market_data::{BookLevel, BookSnapshot, Candle};
 pub use indicators::{BollingerOutput, IndicatorType, IndicatorValue, MacdOutput};
 
 // Configuration types
-pub use config::{RiskViolation, ShortSellingConfig, SymbolConfig};
+pub use config::{RiskViolation, Sector, ShortSellingConfig, SymbolConfig};
 
 // =============================================================================
 // Tests

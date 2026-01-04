@@ -238,8 +238,19 @@ mod tests {
         indicators: &'a IndicatorSnapshot,
         trades: &'a HashMap<Symbol, Vec<Trade>>,
         market: &'a SingleSymbolMarket<'a>,
+        events: &'a [news::NewsEvent],
+        fundamentals: &'a news::SymbolFundamentals,
     ) -> StrategyContext<'a> {
-        StrategyContext::new(100, 1000, market, candles, indicators, trades)
+        StrategyContext::new(
+            100,
+            1000,
+            market,
+            candles,
+            indicators,
+            trades,
+            events,
+            fundamentals,
+        )
     }
 
     fn create_order_book(symbol: &str, bid_price: f64, ask_price: f64) -> OrderBook {
@@ -284,17 +295,33 @@ mod tests {
         let market = SingleSymbolMarket::new(&order_book);
         let candles: HashMap<Symbol, Vec<Candle>> = HashMap::new();
         let trades: HashMap<Symbol, Vec<Trade>> = HashMap::new();
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
 
         // First tick: fast below slow (set prev_state)
         let indicators1 = make_indicators(Some(49.0), Some(50.0));
-        let ctx1 =
-            make_context_with_indicators(&order_book, &candles, &indicators1, &trades, &market);
+        let ctx1 = make_context_with_indicators(
+            &order_book,
+            &candles,
+            &indicators1,
+            &trades,
+            &market,
+            &events,
+            &fundamentals,
+        );
         let _ = trader.on_tick(&ctx1);
 
         // Second tick: fast above slow (golden cross!)
         let indicators2 = make_indicators(Some(51.0), Some(50.0));
-        let ctx2 =
-            make_context_with_indicators(&order_book, &candles, &indicators2, &trades, &market);
+        let ctx2 = make_context_with_indicators(
+            &order_book,
+            &candles,
+            &indicators2,
+            &trades,
+            &market,
+            &events,
+            &fundamentals,
+        );
         let action = trader.on_tick(&ctx2);
 
         assert_eq!(action.orders.len(), 1);
@@ -308,17 +335,33 @@ mod tests {
         let market = SingleSymbolMarket::new(&order_book);
         let candles: HashMap<Symbol, Vec<Candle>> = HashMap::new();
         let trades: HashMap<Symbol, Vec<Trade>> = HashMap::new();
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
 
         // First tick: fast above slow
         let indicators1 = make_indicators(Some(51.0), Some(50.0));
-        let ctx1 =
-            make_context_with_indicators(&order_book, &candles, &indicators1, &trades, &market);
+        let ctx1 = make_context_with_indicators(
+            &order_book,
+            &candles,
+            &indicators1,
+            &trades,
+            &market,
+            &events,
+            &fundamentals,
+        );
         let _ = trader.on_tick(&ctx1);
 
         // Second tick: fast below slow (death cross!)
         let indicators2 = make_indicators(Some(49.0), Some(50.0));
-        let ctx2 =
-            make_context_with_indicators(&order_book, &candles, &indicators2, &trades, &market);
+        let ctx2 = make_context_with_indicators(
+            &order_book,
+            &candles,
+            &indicators2,
+            &trades,
+            &market,
+            &events,
+            &fundamentals,
+        );
         let action = trader.on_tick(&ctx2);
 
         assert_eq!(action.orders.len(), 1);
@@ -332,16 +375,32 @@ mod tests {
         let market = SingleSymbolMarket::new(&order_book);
         let candles: HashMap<Symbol, Vec<Candle>> = HashMap::new();
         let trades: HashMap<Symbol, Vec<Trade>> = HashMap::new();
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
 
         // Both ticks: fast above slow (no crossover)
         let indicators1 = make_indicators(Some(51.0), Some(50.0));
-        let ctx1 =
-            make_context_with_indicators(&order_book, &candles, &indicators1, &trades, &market);
+        let ctx1 = make_context_with_indicators(
+            &order_book,
+            &candles,
+            &indicators1,
+            &trades,
+            &market,
+            &events,
+            &fundamentals,
+        );
         let _ = trader.on_tick(&ctx1);
 
         let indicators2 = make_indicators(Some(52.0), Some(50.0));
-        let ctx2 =
-            make_context_with_indicators(&order_book, &candles, &indicators2, &trades, &market);
+        let ctx2 = make_context_with_indicators(
+            &order_book,
+            &candles,
+            &indicators2,
+            &trades,
+            &market,
+            &events,
+            &fundamentals,
+        );
         let action = trader.on_tick(&ctx2);
 
         assert!(action.orders.is_empty());

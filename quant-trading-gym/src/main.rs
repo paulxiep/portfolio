@@ -9,9 +9,12 @@
 //! ```text
 //! ┌────────────────┐     SimUpdate      ┌────────────────┐
 //! │   Simulation   │ ────────────────►  │      TUI       │
-//! │   (Thread A)   │    (channel)       │   (Thread B)   │
-//! └────────────────┘                    └────────────────┘
+//! │   (Thread A)   │   (channel)        │   (Thread B)   │
+//! │                │ ◄────────────────  │                │
+//! └────────────────┘     SimCommand     └────────────────┘
 //! ```
+//!
+//! The TUI starts paused. Press Space to start/stop the simulation.
 
 mod config;
 
@@ -24,10 +27,10 @@ use agents::{
     MarketMakerConfig, MomentumConfig, MomentumTrader, NoiseTrader, NoiseTraderConfig,
     TrendFollower, TrendFollowerConfig, VwapExecutor, VwapExecutorConfig,
 };
-use crossbeam_channel::{Sender, bounded};
+use crossbeam_channel::{Receiver, Sender, bounded};
 use rand::prelude::IndexedRandom;
 use simulation::{Simulation, SimulationConfig};
-use tui::{AgentInfo, RiskInfo, SimUpdate, TuiApp};
+use tui::{AgentInfo, RiskInfo, SimCommand, SimUpdate, TuiApp};
 use types::{AgentId, Cash, Price, Quantity, ShortSellingConfig, Symbol, SymbolConfig};
 
 pub use config::{SimConfig, SymbolSpec, Tier1AgentType};
@@ -245,16 +248,20 @@ fn spawn_agent(
 }
 
 /// Run the simulation, sending updates to the TUI via channel.
-fn run_simulation(tx: Sender<SimUpdate>, config: SimConfig) {
+///
+/// The simulation starts **paused** and waits for a Start or Toggle command.
+/// Use the command receiver to control start/stop/quit.
+fn run_simulation(tx: Sender<SimUpdate>, cmd_rx: Receiver<SimCommand>, config: SimConfig) {
     // Build symbol configs from SimConfig symbols (V2.3)
     let symbol_configs: Vec<SymbolConfig> = config
         .get_symbols()
         .iter()
         .map(|spec| {
-            SymbolConfig::new(
+            SymbolConfig::with_sector(
                 &spec.symbol,
                 Quantity(10_000_000), // 10M shares outstanding
                 spec.initial_price,
+                spec.sector,
             )
             .with_borrow_pool_bps(2000) // 20% available to borrow
         })
@@ -285,9 +292,8 @@ fn run_simulation(tx: Sender<SimUpdate>, config: SimConfig) {
     let mut rng = rand::rng();
 
     // Helper to pick a random symbol
-    let pick_symbol = |rng: &mut rand::prelude::ThreadRng| -> &SymbolSpec {
-        all_symbols.choose(rng).unwrap()
-    };
+    let pick_symbol =
+        |rng: &mut rand::prelude::ThreadRng| -> &SymbolSpec { all_symbols.choose(rng).unwrap() };
 
     // Market Makers (infrastructure, distributed across symbols)
     // First ensure each symbol gets at least num_market_makers / num_symbols
@@ -457,10 +463,59 @@ fn run_simulation(tx: Sender<SimUpdate>, config: SimConfig) {
         price_history.insert(symbol.clone(), Vec::with_capacity(config.max_price_history));
     }
 
-    // Run simulation loop
-    for _tick in 0..config.total_ticks {
+    // Initialize price history with initial prices
+    for spec in config.get_symbols() {
+        if let Some(history) = price_history.get_mut(&spec.symbol) {
+            history.push(spec.initial_price.to_float());
+        }
+    }
+
+    // Send initial state before starting (so TUI has something to display)
+    let _ = tx.send(build_update(&sim, &price_history, false));
+
+    // Simulation control state
+    let mut running = false;
+    let mut tick = 0u64;
+    let total_ticks = config.total_ticks;
+
+    // Main simulation loop with start/stop control
+    loop {
+        // Check for commands (non-blocking)
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            match cmd {
+                SimCommand::Start => running = true,
+                SimCommand::Pause => running = false,
+                SimCommand::Toggle => running = !running,
+                SimCommand::Quit => {
+                    // Send final update and exit
+                    let _ = tx.send(build_update(&sim, &price_history, true));
+                    return;
+                }
+            }
+        }
+
+        // If paused, sleep briefly and continue (don't burn CPU)
+        if !running {
+            thread::sleep(Duration::from_millis(10));
+            continue;
+        }
+
+        // Check if we've reached max ticks
+        if tick >= total_ticks {
+            // Send final update
+            let _ = tx.send(build_update(&sim, &price_history, true));
+            // Keep checking for quit command
+            loop {
+                match cmd_rx.recv() {
+                    Ok(SimCommand::Quit) | Err(_) => return,
+                    _ => {}
+                }
+            }
+        }
+
         // Step simulation
         sim.step();
+        tick += 1;
 
         // Update price history for each symbol (V2.3)
         for symbol in &symbols {
@@ -487,12 +542,6 @@ fn run_simulation(tx: Sender<SimUpdate>, config: SimConfig) {
             thread::sleep(Duration::from_millis(config.tick_delay_ms));
         }
     }
-
-    // Send final update
-    let _ = tx.send(build_update(&sim, &price_history, true));
-
-    // Keep channel open briefly so TUI can display final state
-    thread::sleep(Duration::from_secs(1));
 }
 
 fn main() {
@@ -562,18 +611,26 @@ fn main() {
         config.total_starting_cash().to_float()
     );
     eprintln!("╚═══════════════════════════════════════════════════════════════════════╝");
+    eprintln!();
+    eprintln!("  Press Space to start simulation...");
+    eprintln!();
 
-    // Create bounded channel (backpressure if TUI falls behind)
+    // Create bounded channel for updates (backpressure if TUI falls behind)
     let (tx, rx) = bounded::<SimUpdate>(100);
+
+    // Create unbounded channel for commands (TUI → simulation)
+    let (cmd_tx, cmd_rx) = bounded::<SimCommand>(10);
 
     // Spawn simulation thread
     let tui_frame_rate = config.tui_frame_rate;
     let sim_handle = thread::spawn(move || {
-        run_simulation(tx, config);
+        run_simulation(tx, cmd_rx, config);
     });
 
     // Run TUI in main thread (required for terminal control)
-    let app = TuiApp::new(rx).frame_rate(tui_frame_rate);
+    let app = TuiApp::new(rx)
+        .with_command_sender(cmd_tx)
+        .frame_rate(tui_frame_rate);
     if let Err(e) = app.run() {
         eprintln!("TUI error: {}", e);
     }

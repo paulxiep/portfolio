@@ -242,7 +242,18 @@ mod tests {
         let mut trader = MomentumTrader::with_defaults(AgentId(1));
         let (book, candles, indicators, recent_trades) = setup_test_context(Some(25.0)); // Oversold
         let market = SingleSymbolMarket::new(&book);
-        let ctx = StrategyContext::new(100, 1000, &market, &candles, &indicators, &recent_trades);
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
+        let ctx = StrategyContext::new(
+            100,
+            1000,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
+        );
 
         let action = trader.on_tick(&ctx);
         assert_eq!(action.orders.len(), 1);
@@ -254,7 +265,18 @@ mod tests {
         let mut trader = MomentumTrader::with_defaults(AgentId(1));
         let (book, candles, indicators, recent_trades) = setup_test_context(Some(75.0)); // Overbought
         let market = SingleSymbolMarket::new(&book);
-        let ctx = StrategyContext::new(100, 1000, &market, &candles, &indicators, &recent_trades);
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
+        let ctx = StrategyContext::new(
+            100,
+            1000,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
+        );
 
         let action = trader.on_tick(&ctx);
         assert_eq!(action.orders.len(), 1);
@@ -266,7 +288,18 @@ mod tests {
         let mut trader = MomentumTrader::with_defaults(AgentId(1));
         let (book, candles, indicators, recent_trades) = setup_test_context(Some(50.0)); // Neutral
         let market = SingleSymbolMarket::new(&book);
-        let ctx = StrategyContext::new(100, 1000, &market, &candles, &indicators, &recent_trades);
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
+        let ctx = StrategyContext::new(
+            100,
+            1000,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
+        );
 
         let action = trader.on_tick(&ctx);
         assert!(action.orders.is_empty());
@@ -277,7 +310,18 @@ mod tests {
         let mut trader = MomentumTrader::with_defaults(AgentId(1));
         let (book, candles, indicators, recent_trades) = setup_test_context(None);
         let market = SingleSymbolMarket::new(&book);
-        let ctx = StrategyContext::new(100, 1000, &market, &candles, &indicators, &recent_trades);
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
+        let ctx = StrategyContext::new(
+            100,
+            1000,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
+        );
 
         let action = trader.on_tick(&ctx);
         assert!(action.orders.is_empty());
