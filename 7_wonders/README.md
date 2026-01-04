@@ -1,5 +1,18 @@
 # 7 Wonders
 
+### Keywords
+*Extracted by GitHub Copilot*
+
+- **Language:** `Python`
+- **ML/DL Framework:** `TensorFlow` · `Keras` · `Adam Optimizer`
+- **Reinforcement Learning:** `Deep Q-Learning (DQN)` · `Gymnasium` · `Experience Replay` · `Target Networks` · `Monte Carlo Methods` · `Epsilon-Greedy Exploration` · `State-Action Space Design` · `Reward Shaping` · `Policy Networks`
+- **Training Infrastructure:** `Distributed Training` · `MirroredStrategy` · `WandB Experiment Tracking`
+- **Architecture & Patterns:** `Gymnasium Env Interface` · `Factory Pattern (Effect.from_dict)` · `Inheritance Hierarchy (Effect Subclasses)` · `Observation/Action Space Design` · `Memory Replay Buffer` · `Mixin Classes (BuildOption)` · `Template Method (apply)` · `Data-Driven Configuration (JSON)`
+- **Application:** `Game AI` · `Neural Networks` · `Streamlit` · `Cloud Deployment`
+- **Python Features:** `Dataclasses` · `JSON Parsing` · `Type Hints`
+
+---
+
 **training log of 1st phase can be found [phase_1_training_log_deep_q.md](phase_1_training_log_deep_q.md)**
 
 **The AI can be accessed via the streamlit [app](https://7-wonders-ai.streamlit.app/)**

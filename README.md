@@ -12,6 +12,28 @@ I'm currently testing and pushing the boundaries of AI-assisted coding on [quant
 
 More project info can be found on the projects' own readme.
 
+---
+
+## Skills & Technologies from Projects
+
+*Keywords extracted by GitHub Copilot*
+
+- **Programming Languages:** `Python` · `Rust` · `Typescript` · `SQL`
+- **Machine Learning & AI:** `TensorFlow` · `Keras` · `Scikit-learn` · `CatBoost` · `XGBoost` · `Deep Q-Learning (DQN)` · `Reinforcement Learning` · `LSTM` · `Bidirectional LSTM` · `Neural Networks` · `Embeddings` · `Experience Replay` · `Target Networks` · `Policy Networks` · `Gymnasium` · `Distributed Training` · `MirroredStrategy` · `WandB Experiment Tracking`
+- **NLP & LLM:** `LangChain` · `OpenAI API (GPT-4/GPT-3.5)` · `Google Gemini` · `RAG (Retrieval-Augmented Generation)` · `Vector Databases` · `LanceDB` · `FastEmbed` · `BGE Embeddings` · `Semantic Search` · `Sentiment Analysis` · `Text Classification` · `TF-IDF Vectorization` · `PyThaiNLP` · `Tokenization` · `Prompt Engineering` · `Natural Language to SQL`
+- **Quantitative Finance:** `Trading Simulation` · `Order Book / LOB` · `Matching Engine` · `Market Microstructure` · `Technical Indicators (SMA, EMA, RSI, MACD, Bollinger Bands, ATR)` · `Risk Metrics (VaR, Sharpe, Sortino, Max Drawdown)` · `VWAP Execution` · `Market Making` · `Fair Value Models` · `Fixed-Point Arithmetic`
+- **Web Development & APIs:** `Axum` · `Flask` · `REST API` · `Streamlit` · `htmx` · `Askama Templates` · `Tower HTTP` · `CORS`
+- **Data Engineering & Visualization:** `Pandas` · `Plotly` · `Interactive Dashboards` · `Geospatial Visualization` · `Time Series Analysis` · `Signal Processing` · `Data Pipelines` · `Kaggle API`
+- **Databases:** `PostgreSQL` · `SQLAlchemy` · `LanceDB` · `Vector Search`
+- **DevOps & MLOps:** `Docker` · `Docker Compose` · `Apache Airflow` · `DAG Orchestration` · `Model Serving` · `Batch Prediction` · `Containerization` · `CI/CD Concepts`
+- **Systems Programming (Rust):** `Tokio (Async Runtime)` · `Cargo Workspaces` · *`PyO3 Python Bindings (planned)`* · `Tree-sitter (AST Parsing)` · `Ratatui/Crossterm (TUI)` · `Serde` · `Error Handling (anyhow/thiserror)` · `tracing`
+- **Software Engineering & Architecture:** `Object-Oriented Programming` · `Dataclasses` · `Factory Pattern` · `Strategy Pattern` · `Template Method Pattern` · `Command Pattern` · `Repository Pattern` · `Pipeline Pattern` · `Trait-Based Polymorphism` · `Dependency Injection` · `Layered Architecture` · `Plugin Architecture` · `Modular Design` · `Separation of Concerns (SoC)` · `Data-Driven Configuration` · `Multi-Agent Systems` · `Event-Driven Architecture` · `High-Performance Computing`
+- **Game AI & Simulation:** `Game Engine Development` · `Hexagonal Grid Geometry` · `Pathfinding Algorithms` · `Heuristic Functions` · `Rule-Based AI` · `Monte Carlo Methods`
+- **Testing & Quality:** `Locust Load Testing` · `Model Evaluation (F1, Confusion Matrix)` · `Cross-Validation` · `Early Stopping`
+- **Other Tools:** `Tkinter GUI` · `Selenium Web Scraping` · `Multi-Threading` · `Generators` · `Lazy Evaluation`
+
+---
+
 ## 2025 onwards (AI-assisted projects)
 
 1. [quant-trading-gym](quant-trading-gym) (Rust - for now): a quantitative trading simulation in Rust with RL training in Python, modular quant strategies, risk management, microservices architecture, and chatbot interface to execute trading API.

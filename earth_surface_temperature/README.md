@@ -1,5 +1,17 @@
 ### Earth Surface Temperature
 
+### Keywords
+*Extracted by GitHub Copilot*
+
+- **Language:** `Python`
+- **Visualization:** `Plotly` · `Plotly Express` · `Interactive Dashboard` · `Scatter Geo Maps` · `Animation Frames` · `Temperature Mapping`
+- **Web App:** `Streamlit` · `Data Caching` · `Cloud Deployment`
+- **Data Processing:** `Geospatial Data` · `Climate Data Analysis` · `Time Series Analysis` · `Data Aggregation`
+- **Scientific Computing:** `SciPy` · `Signal Processing` · `Savitzky-Golay Filter`
+- **Data Source:** `Kaggle API`
+
+---
+
 This is a spin-off from Geospatial project. 
 
 I intended to add interactive dashboards of business data to my portfolio, but it turned out climate data is more readily available than business data, so this was done first.

@@ -1,4 +1,18 @@
 # machine-learning-operations-test
+
+### Keywords
+*Extracted by GitHub Copilot*
+
+- **Language:** `Python`
+- **MLOps:** `Machine Learning Deployment` · `Model Serving` · `Model Persistence` · `Batch Prediction` · `CI/CD Concepts`
+- **ML Frameworks:** `Scikit-learn` · `CatBoost` · `XGBoost` · `Ensemble Models`
+- **Orchestration:** `Apache Airflow` · `DAG Orchestration` · `Scheduled Jobs` · `Task Decorators` · `Data Pipeline`
+- **Web & API:** `Flask API` · `REST API` · `Streamlit`
+- **DevOps:** `Docker` · `Docker Compose` · `Containerization` · `Environment Variables` · `Wheel Packaging`
+- **Data:** `Synthetic Data Generation` · `Feature Engineering`
+
+---
+
 Originally a test for mid level Machine learning Engineer for a company in Thailand.
 
 Since no data and model were actually provided, I synthesized them and adapted the test into my portfolio.

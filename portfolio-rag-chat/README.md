@@ -1,5 +1,20 @@
 # Portfolio RAG Chat
 
+### Keywords
+*Extracted by GitHub Copilot*
+
+- **Language:** `Rust`
+- **Architecture & Patterns:** `Layered Architecture (API/Store/Ingestion)` · `Router Pattern` · `Handler Pattern` · `Shared State (Arc)` · `Repository Pattern` · `DTO Pattern` · `Modular Design` · `Pipeline Pattern (Ingest→Embed→Store)` · `Visitor Pattern (WalkDir)` · `Error Propagation (thiserror)`
+- **LLM & RAG:** `RAG (Retrieval-Augmented Generation)` · `LLM Integration` · `Google Gemini` · `rig-core` · `Semantic Search` · `Chatbot`
+- **Vector Database:** `LanceDB` · `FastEmbed` · `BGE Embeddings`
+- **Code Analysis:** `Tree-sitter` · `AST Parsing` · `Code Parsing` · `Code Chunking` · `Multi-Language Support`
+- **Web Framework:** `Axum` · `htmx` · `Askama Templates` · `Tower HTTP` · `CORS`
+- **Async & Runtime:** `Tokio Runtime` · `Async Programming`
+- **DevOps:** `Docker` · `Docker Compose`
+- **Rust Ecosystem:** `tracing` · `Error Handling (anyhow/thiserror)` · `Serde`
+
+---
+
 This is my first LLM-era portfolio project. The AI coding assistant has changed the portfolio game.
 
 This project was (with planned Shuttle deployment removed) completed within 1 day. I'm starting to question what kind of problems I should solve to both be useful, add new skills and have some level of challenge.

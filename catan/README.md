@@ -1,5 +1,15 @@
 ## Catan
 
+### Keywords
+*Extracted by GitHub Copilot*
+
+- **Language:** `Python`
+- **GUI:** `Tkinter` · `Canvas Graphics`
+- **Game Development:** `Game Engine` · `Hexagonal Grid Geometry` · `Custom Coordinate Systems` · `Graph Theory` · `Topological Connections` · `Pathfinding Algorithms` · `State Management`
+- **AI & ML:** `AI Agent Design` · `Rule-Based AI` · `Heuristic Functions` · `Scoring Functions` · `Multi-Agent Systems` · `CatBoost` · `Hyperparameter Tuning`
+- **Software Design:** `Object-Oriented Design` · `Dataclasses` · `Subclass Composition` · `Strategy Pattern`
+- **Data:** `Simulation` · `Data Logging` · `Machine Learning`
+
 ---
 #### Showcase (For recruiters looking for highlights)
 

@@ -1,5 +1,16 @@
 ## Data Assistance Wizard
 
+### Keywords
+*Extracted by GitHub Copilot*
+
+- **Language:** `Python`
+- **LLM & NLP:** `LangChain` · `OpenAI API` · `GPT-4` · `GPT-3.5` · `LLM Integration` · `Prompt Engineering` · `Natural Language to SQL` · `Natural Language to Pandas` · `Text-to-Query` · `Token Management`
+- **LangChain Components:** `DataFrame Agent` · `SQL Database Chain`
+- **Web App:** `Streamlit` · `Chat Interface` · `Session State Management` · `Cloud Deployment`
+- **Data & Database:** `Pandas` · `PostgreSQL` · `SQLAlchemy` · `psycopg2` · `Data Analysis`
+
+---
+
 [Preview application on cloud](https://pxp-data-chat.streamlit.app/)
 
 ### What it is

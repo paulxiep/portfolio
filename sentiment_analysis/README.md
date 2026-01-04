@@ -1,5 +1,18 @@
 # Sentiment Analysis
 
+### Keywords
+*Extracted by GitHub Copilot*
+
+- **Language:** `Python`
+- **NLP:** `Sentiment Analysis` · `Text Classification` · `PyThaiNLP` · `Thai Language Processing` · `Tokenization` · `TF-IDF Vectorization`
+- **Deep Learning:** `TensorFlow` · `Keras` · `LSTM` · `Bidirectional LSTM` · `Embeddings` · `Early Stopping`
+- **Traditional ML:** `Scikit-learn` · `Naive Bayes` · `Logistic Regression` · `Model Ensemble (Voting)`
+- **Data Processing:** `Data Augmentation` · `Text Slicing` · `Oversampling` · `Stratified Split` · `Web Scraping` · `Selenium` · `Multi-Threading (ThreadPoolExecutor)`
+- **Model Evaluation:** `F1 Score` · `Confusion Matrix` · `Locust Load Testing`
+- **Deployment:** `Flask API` · `REST API` · `Docker` · `Streamlit` · `Model Serialization (Pickle/H5)`
+
+---
+
 ### What it is
 My experiment on Sentiment Analysis task using Thai google map reviews data.
 
