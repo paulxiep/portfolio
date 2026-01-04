@@ -1,6 +1,6 @@
 # Development Log
 
-## 2026-01-04: V1.3 - Phase 7-8 Strategies, Tier Configuration & TUI Scrolling
+## 2026-01-03: V1.3 - Phase 7-8 Strategies, Tier Configuration & TUI Scrolling
 
 ### Completed
 

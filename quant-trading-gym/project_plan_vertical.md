@@ -235,30 +235,49 @@ V0 (Steel Thread)
 
 ## V2: Agent Scaling (+2 weeks)
 
-**Add:** Tiered agent architecture for 100k+ scale
+**Add:** Tiered agent architecture for 100k+ scale, multi-symbol support, position limits
 
-### V2.1: Tier 2 Reactive Agents (~5 days)
+### V2.1: Position Limits & Short-Selling (~2 days)
+- `SymbolConfig` with `shares_outstanding` (natural long limit)
+- `ShortSellingConfig` with borrow pool derived from float
+- `BorrowLedger` for tracking borrowed shares
+- Order validation: cash + shares_outstanding for longs, borrow availability for shorts
+- **Addresses V1 issue:** agents accumulating -1000+ positions unrealistically
+
+### V2.2: Multi-Symbol Infrastructure (~2 days)
+- `Market` with `HashMap<Symbol, OrderBook>`
+- `SimulationConfig` with `symbols: Vec<SymbolConfig>`
+- Symbol-scoped `WakeConditionIndex`
+- Generalize position limits to work per-symbol
+
+### V2.3: Tier 2 Reactive Agents (~4 days)
 - `ReactiveAgent` struct (lightweight)
-- Wake conditions (price cross, interval)
-- `WakeConditionIndex` for O(1) lookups
+- Wake conditions (price cross, interval, news)
+- `WakeConditionIndex` for O(log n) lookups
+- **Parametric condition updates** — agents can modify their wake conditions at runtime without being recreated
 
-### V2.2: Tier 3 Background Pool (~4 days)
+### V2.4: Tier 3 Background Pool (~3 days)
 - Statistical order generation (no individual agents)
 - `BackgroundAgentPool` struct
 - Configurable distributions (size, price, direction)
+- Per-sector sentiment tracking
 
-### V2.3: Performance Tuning (~3 days)
+### V2.5: Performance Tuning (~3 days)
 - Benchmark 100k agents
 - Profile and optimize hot paths
 - Memory budget validation
+- Two-phase tick architecture (read phase parallel, write phase sequential)
 
-**Maps to Original:** Phase 6 (Agent Scaling) + Phase 12 (Scale Testing)
+**Borrow-Checking Pitfalls to Address:**
+1. **Parallel agent execution:** Use two-phase tick (immutable market read → sequential order write)
+2. **WakeConditionIndex updates:** Collect `ConditionUpdate` during tick, apply after tick completes
+3. **Background pool accounting:** Append-only fill recording
+
+**Maps to Original:** Phase 6 (Agent Scaling) + Phase 12 (Scale Testing) + Part 16 (Architectural Considerations)
 
 **Optional additions at V2:** More Tier 1 strategies for agent variety:
 - Phase 7: MACD Crossover, Bollinger Reversion, Trend Following
-- Phase 8: Pairs Trading, Factor Long-Short, VWAP Executor
-
-These are independent — add based on interest, not obligation.
+- Phase 8: Pairs Trading (requires multi-symbol), Factor Long-Short, VWAP Executor
 
 ---
 
@@ -460,22 +479,102 @@ If you did BOTH V4-RL and V4-Game:
 
 ---
 
+## Architectural Considerations (V2+)
+
+### Multi-Symbol Support (V2)
+
+Multi-symbol infrastructure is added in V2 because:
+1. `TieredOrchestrator` needs agent-symbol relationships
+2. `WakeConditionIndex` benefits from symbol-scoped indexing
+3. Background pool sentiment should be per-sector
+4. Pairs trading strategy requires correlated symbols
+
+```rust
+// crates/sim-core/market.rs
+pub struct Market {
+    books: HashMap<Symbol, OrderBook>,  // Multiple symbols
+    pending: PendingOrderQueue,
+}
+```
+
+### Position Limits & Short-Selling (V2)
+
+**Problem:** V1 allows unrestricted positions (agents with -1500 shares = unrealistic).
+
+**Solution:** Natural constraints for long positions, explicit infrastructure for shorts:
+
+| Constraint | Type | Implementation |
+|------------|------|----------------|
+| **Long positions** | Natural | Cash available + `shares_outstanding` per symbol |
+| **Short positions** | Explicit | `max_short` per agent + borrow availability |
+| **Borrow pool** | Derived | % of `shares_outstanding` available to borrow |
+| **Locate** | Optional | Require locate before shorting |
+
+No artificial `max_long` — you can buy as many shares as exist and you can afford.
+
+### Reactive Agent Parametric Conditions (V2)
+
+Agents can update their wake conditions at runtime without being recreated:
+
+```rust
+pub struct ConditionUpdate {
+    pub agent_id: AgentId,
+    pub remove: Vec<WakeCondition>,
+    pub add: Vec<WakeCondition>,
+}
+```
+
+**Use cases:**
+- Price thresholds become stale as market moves → update thresholds
+- Sector rotation → change news filters
+- Volatility regimes → adjust time intervals
+
+### Borrow-Checking Pitfalls by Version
+
+| Version | Pitfall | Solution |
+|---------|---------|----------|
+| V2 | Parallel agent execution | Two-phase tick: read (parallel) → write (sequential) |
+| V2 | WakeConditionIndex updates during tick | Deferred `ConditionUpdate` buffer |
+| V2 | Background pool accounting | Append-only fill recording |
+| V3 | SimulationHook borrows | Sequential hook invocation |
+| V3 | Snapshot during active tick | Snapshots only at tick boundaries |
+| V4-RL | PyO3 GIL blocking | `py.allow_threads()` for Rust computation |
+| V4-Game | Async/sync boundary | Channel-based `SimulationBridge` |
+
+### Two-Phase Tick Architecture (V2)
+
+```rust
+impl TieredOrchestrator {
+    pub fn tick(&mut self, market: &Market) -> Vec<Order> {
+        // Phase 1: Read (parallel-safe, borrows &Market immutably)
+        let tier1_orders = self.run_tier1_parallel(market);  // rayon
+        let tier2_orders = self.run_tier2_triggered(market);
+        let tier3_orders = self.pool.generate(market);
+        
+        // Phase 2: Collect (orders returned, applied by Simulation)
+        [tier1_orders, tier2_orders, tier3_orders].concat()
+    }
+}
+```
+
+---
+
 ## Iteration Timeline Summary
 
 | Version | Focus | Duration | Cumulative |
 |---------|-------|----------|------------|
-| V0 | Steel Thread MVP | 4 wks | 4 wks |
-| V1 | Quant Layer | 2 wks | 6 wks |
-| V2 | Agent Scaling | 2 wks | 8 wks |
-| V3 | Persistence & Events | 2 wks | 10 wks |
-| V4-RL | RL Track | 5 wks | 15 wks |
-| V4-Game | Game Track (4 services + frontend) | 8 wks | 18 wks |
-| V5 | Full Integration | 1 wk | 19 wks |
+| V0 | MVP Simulation | 4 wks | 4 wks |
+| V1 | Quant Strategy Agents | 2 wks | 6 wks |
+| V2 | Agent Scaling + Multi-Symbol + Position Limits | 2.5 wks | 8.5 wks |
+| V3 | Persistence & Events | 2 wks | 10.5 wks |
+| V4-RL | RL Track | 5 wks | 15.5 wks |
+| V4-Game | Game Track (4 services + frontend) | 8 wks | 18.5 wks |
+| V5 | Full Integration | 1 wk | 19.5 wks |
 
 **Key Decision Points:**
 - After V0: Do you want to keep going? (4 wks invested)
-- After V2: Is performance important, or skip to features? (8 wks invested)
-- After V3: RL or Game? Pick one first. (10 wks invested)
+- After V2: Is performance important, or skip to features? (8.5 wks invested)
+- After V3: RL or Game? Pick one first. (10.5 wks invested)
 
 ---
 
@@ -514,8 +613,10 @@ agents/             agents/             agents/             agents/
   strategies/         strategies/         tiers.rs            tiers.rs
     mod.rs              mod.rs            context.rs          context.rs
     noise_trader.rs     noise_trader.rs   orchestrator.rs     orchestrator.rs
-    market_maker.rs     market_maker.rs   tier1/              tier1/
-                        momentum.rs         mod.rs              mod.rs
+    market_maker.rs     market_maker.rs   position_limits.rs  position_limits.rs  ← V2 addition
+                        momentum.rs       borrow_ledger.rs    borrow_ledger.rs    ← V2 addition
+                                          tier1/              tier1/
+                                            mod.rs              mod.rs
                                             agent.rs            agent.rs
                                             strategies/         strategies/
                                               mod.rs              mod.rs
@@ -526,6 +627,7 @@ agents/             agents/             agents/             agents/
                                             mod.rs              mod.rs
                                             agent.rs            agent.rs
                                             wake_index.rs       wake_index.rs
+                                            condition_update.rs ← V2 addition (parametric)
                                           tier3/              tier3/
                                             mod.rs              mod.rs
                                             pool.rs             pool.rs

@@ -46,6 +46,7 @@ Every implementation decision should be evaluated against these three principles
 | Agent Tiering | Smart/Reactive/Background tiers for 100k+ scale |
 | Statistical Modeling | Background agents modeled statistically, not individually |
 | Human-Playable Design | Time controls + quant dashboard for meaningful human gameplay |
+| Position Realism | Short-selling requires borrows; position limits enforced per-agent |
 
 ## Scaling Targets
 
@@ -532,8 +533,14 @@ Note: Indicator/factor values are `f64` — they're statistical, not monetary.
 | Type | Fields |
 |------|--------|
 | `RiskMetrics` | `var_95: f64`, `var_99: f64`, `sharpe: f64`, `sortino: f64`, `max_drawdown: f64`, `volatility: f64` |
-| `PositionLimits` | `max_position: Quantity`, `max_sector_exposure: f64`, `max_drawdown: f64` |
-| `RiskViolation` | `PositionLimit`, `DrawdownLimit`, `SectorExposure`, `InsufficientCash`, `NegativePosition` |
+| `PositionLimits` | `max_short: Quantity`, `max_sector_exposure: f64`, `max_drawdown: f64` |
+| `RiskViolation` | `DrawdownLimit`, `SectorExposure`, `InsufficientCash`, `ShortLimitExceeded`, `NoBorrowAvailable`, `InsufficientShares` |
+| `ShortSellingConfig` | `enabled: bool`, `borrow_rate_bps: u32`, `locate_required: bool` |
+| `BorrowPosition` | `symbol`, `quantity`, `borrow_rate`, `borrowed_at: Tick` |
+
+**Note on Long Positions:** There is no `max_long` limit. Long positions are naturally constrained by:
+1. **Cash available** — can't buy what you can't afford
+2. **Shares outstanding** — can't buy more shares than exist (see `SymbolConfig.shares_outstanding`)
 
 ## Portfolio Types
 
@@ -547,7 +554,7 @@ Note: Indicator/factor values are `f64` — they're statistical, not monetary.
 
 | Type | Fields |
 |------|--------|
-| `SymbolConfig` | `symbol`, `sector`, `initial_price: Price`, `tick_size: Price`, `lot_size: Quantity` |
+| `SymbolConfig` | `symbol`, `sector`, `initial_price: Price`, `tick_size: Price`, `lot_size: Quantity`, `shares_outstanding: Quantity` |
 | `AgentConfig` | `id`, `initial_cash: Cash`, `strategy_name`, `strategy_params: serde_json::Value`, `tier: AgentTier` |
 | `AgentTier` | `Smart`, `Reactive`, `Background` |
 
@@ -564,6 +571,8 @@ pub struct SymbolConfig {
     pub tick_size: Price,
     /// Minimum order quantity (e.g., 1 for most equities)
     pub lot_size: Quantity,
+    /// Total shares that exist for this symbol (limits max purchasable)
+    pub shares_outstanding: Quantity,
 }
 ```
 
@@ -847,6 +856,50 @@ pub struct WakeConditionIndex {
     news_subscriptions: HashMap<EventType, Vec<AgentId>>,
     /// Time-based intervals: min-heap of (wake_tick, agent_id)
     time_intervals: BinaryHeap<Reverse<(Tick, AgentId)>>,
+}
+
+impl WakeConditionIndex {
+    /// Register a new wake condition for an agent
+    pub fn register(&mut self, agent_id: AgentId, condition: WakeCondition);
+    
+    /// Remove a wake condition (agent adapts to market)
+    pub fn unregister(&mut self, agent_id: AgentId, condition: &WakeCondition);
+    
+    /// Update a condition's parameters without full re-registration
+    pub fn update_threshold(&mut self, agent_id: AgentId, old: &WakeCondition, new: WakeCondition);
+}
+```
+
+### Parametric Condition Updates
+
+Reactive agents can adapt to changing market conditions by updating their wake conditions at runtime, rather than being destroyed and recreated:
+
+```rust
+/// Deferred condition update (applied after tick completes)
+pub struct ConditionUpdate {
+    pub agent_id: AgentId,
+    pub remove: Vec<WakeCondition>,
+    pub add: Vec<WakeCondition>,
+}
+
+impl ReactiveAgent {
+    /// Request condition changes (collected during tick, applied after)
+    pub fn request_condition_update(&self, ctx: &LightweightContext) -> Option<ConditionUpdate> {
+        // Example: price threshold became stale, update to new level
+        if self.threshold_stale(ctx.price) {
+            Some(ConditionUpdate {
+                agent_id: self.id,
+                remove: vec![self.current_condition.clone()],
+                add: vec![WakeCondition::PriceCross {
+                    symbol: ctx.symbol.clone(),
+                    threshold: self.compute_new_threshold(ctx.price),
+                    direction: CrossDirection::Below,
+                }],
+            })
+        } else {
+            None
+        }
+    }
 }
 ```
 
@@ -2203,7 +2256,339 @@ Phase 12 (Scale) ────────────┤                        
 
 ---
 
-# Part 16: Phase Details
+# Part 16: Architectural Considerations
+
+## Multi-Symbol Support
+
+Multi-symbol trading infrastructure should be added in **V2** alongside agent scaling:
+
+### Market Structure for Multiple Symbols
+
+```rust
+// crates/sim-core/market.rs
+pub struct Market {
+    books: HashMap<Symbol, OrderBook>,
+    pending: PendingOrderQueue,  // Shared across symbols
+    order_id_counter: AtomicU64,
+    current_tick: Tick,
+}
+
+impl Market {
+    pub fn symbols(&self) -> Vec<Symbol> {
+        self.books.keys().cloned().collect()
+    }
+    
+    pub fn book(&self, symbol: &Symbol) -> Option<&OrderBook> {
+        self.books.get(symbol)
+    }
+}
+```
+
+### Configuration
+
+```rust
+// crates/simulation/config.rs
+pub struct SimulationConfig {
+    pub symbols: Vec<SymbolConfig>,  // Multiple symbols
+    pub sectors: SectorConfig,        // Symbol-to-sector mapping
+    // ...
+}
+```
+
+### Why V2?
+1. `TieredOrchestrator` already needs agent-symbol relationships
+2. `WakeConditionIndex` benefits from symbol-scoped indexing
+3. Background pool sentiment should be per-sector
+4. Pairs trading strategy (Phase 8) requires correlated symbols
+
+---
+
+## Short-Selling and Position Limits
+
+### Problem Statement
+
+Unrestricted short-selling leads to unrealistic scenarios:
+- Agents accumulate positions of -1000+ shares without borrowing
+- No margin requirements or borrow costs
+- Infinite liquidity for shorting
+
+### Realistic Position Model
+
+**Long positions** are constrained naturally by:
+1. **Cash available** — can't buy what you can't afford
+2. **Shares outstanding** — can't buy more shares than exist in the market
+
+**Short positions** require explicit infrastructure:
+
+```rust
+// crates/types/lib.rs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShortSellingConfig {
+    /// Whether short selling is allowed at all
+    pub enabled: bool,
+    /// Annual borrow rate in basis points (e.g., 50 = 0.5%/year)
+    pub borrow_rate_bps: u32,
+    /// Require explicit locate before shorting
+    pub locate_required: bool,
+    /// Maximum short position per agent (risk limit)
+    pub max_short_per_agent: Quantity,
+}
+
+#[derive(Debug, Clone)]
+pub struct BorrowLedger {
+    /// Available shares to borrow per symbol (derived from shares_outstanding * borrow_fraction)
+    available: HashMap<Symbol, Quantity>,
+    /// Borrowed positions: agent_id → symbol → BorrowPosition
+    borrows: HashMap<AgentId, HashMap<Symbol, BorrowPosition>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BorrowPosition {
+    pub symbol: Symbol,
+    pub quantity: Quantity,
+    pub borrow_rate_bps: u32,
+    pub borrowed_at: Tick,
+}
+```
+
+### Order Validation
+
+```rust
+// crates/agents/src/portfolio.rs
+impl Portfolio {
+    /// Validate order against constraints before submission
+    pub fn validate_order(
+        &self,
+        order: &Order,
+        symbol_config: &SymbolConfig,
+        short_config: &ShortSellingConfig,
+        borrow_ledger: &BorrowLedger,
+        total_held: Quantity,  // Sum of all agents' long positions
+    ) -> Result<(), RiskViolation> {
+        let current_pos = self.position(&order.symbol);
+        let projected = match order.side {
+            OrderSide::Buy => current_pos + order.quantity as i64,
+            OrderSide::Sell => current_pos - order.quantity as i64,
+        };
+        
+        // Check shares outstanding limit (long positions)
+        if projected > 0 {
+            let new_total = total_held + order.quantity;
+            if new_total > symbol_config.shares_outstanding {
+                return Err(RiskViolation::InsufficientShares);
+            }
+        }
+        
+        // Check short limit (negative position)
+        if projected < -(short_config.max_short_per_agent as i64) {
+            return Err(RiskViolation::ShortLimitExceeded);
+        }
+        
+        // Check borrow availability for shorts
+        if projected < 0 {
+            let needed_borrow = (-projected) as Quantity;
+            let existing_borrow = borrow_ledger.borrowed(self.agent_id, &order.symbol);
+            let additional_needed = needed_borrow.saturating_sub(existing_borrow);
+            
+            if !borrow_ledger.can_borrow(&order.symbol, additional_needed) {
+                return Err(RiskViolation::NoBorrowAvailable);
+            }
+        }
+        
+        Ok(())
+    }
+}
+```
+
+### Default Configuration
+
+| Scenario | `shares_outstanding` | `max_short` | Borrow Pool (% of float) | Use Case |
+|----------|---------------------|-------------|-------------------------|----------|
+| Training | 1,000,000 | 0 | 0% | Long-only RL agents |
+| Realistic | 10,000,000 | 10,000 | 15% | Balanced simulation |
+| Liquid | 100,000,000 | 50,000 | 25% | Large cap stocks |
+
+---
+
+## Borrow-Checking and Data-Race Pitfalls
+
+### V2 Pitfalls (Agent Scaling)
+
+**Pitfall 1: Parallel Agent Execution with Shared Market State**
+
+```rust
+// PROBLEM: Agents read market, produce orders simultaneously
+agents.par_iter_mut().map(|agent| {
+    agent.decide(&context)  // context borrows market immutably
+}).collect::<Vec<_>>();
+```
+
+**Solution:** Two-phase tick architecture:
+1. **Read phase:** All agents read `&MarketView` (immutable, safe to parallelize via rayon)
+2. **Write phase:** Collected orders applied sequentially to `&mut Market`
+
+```rust
+impl TieredOrchestrator {
+    pub fn tick(&mut self, market: &Market) -> Vec<Order> {
+        // Phase 1: Read (parallel-safe)
+        let tier1_orders = self.run_tier1_parallel(market);
+        let tier2_orders = self.run_tier2_triggered(market);
+        let tier3_orders = self.pool.generate(market);
+        
+        // Phase 2: Collect (sequential merge)
+        [tier1_orders, tier2_orders, tier3_orders].concat()
+        // Orders applied to &mut Market by Simulation, not Orchestrator
+    }
+}
+```
+
+**Pitfall 2: WakeConditionIndex Updates During Tick**
+
+```rust
+// PROBLEM: Agent wakes, decides to change its own wake conditions
+fn on_wake(&mut self, ctx: &LightweightContext, index: &mut WakeConditionIndex) {
+    // Can't mutate index while iterating triggered agents!
+}
+```
+
+**Solution:** Deferred condition updates (see Parametric Condition Updates section above).
+
+**Pitfall 3: Background Pool Accounting**
+
+```rust
+// PROBLEM: Pool generates orders, fills come back asynchronously
+impl BackgroundAgentPool {
+    fn tick(&mut self, ctx: &PoolContext) -> Vec<Order>;  // Generates orders
+    fn on_fill(&mut self, fill: &Fill);  // Called later when matched
+}
+```
+
+**Solution:** `BackgroundPoolAccounting` is append-only—fills are recorded but never read during order generation.
+
+### V3 Pitfalls (Persistence & Events)
+
+**Pitfall 4: SimulationHook Borrows**
+
+```rust
+// PROBLEM: Multiple hooks need &mut self
+for hook in &mut self.hooks {
+    hook.on_tick(&result);  // Each hook gets exclusive &mut self sequentially
+}
+```
+
+**Solution:** Hooks are called sequentially (no parallelism for hooks).
+
+**Pitfall 5: Snapshot During Active Simulation**
+
+**Solution:** Snapshots only at tick boundaries:
+```rust
+impl Simulation {
+    pub fn step(&mut self) -> TickResult {
+        // ... complete tick atomically ...
+        if self.should_snapshot() {
+            self.snapshot_buffer = Some(self.to_snapshot());
+        }
+    }
+}
+```
+
+### V4 Pitfalls (RL/Game Tracks)
+
+**V4-RL: PyO3 GIL Considerations**
+
+```rust
+// Release GIL during Rust computation
+#[pyfunction]
+fn step(py: Python, env: &mut TradingEnv, action: i32) -> PyResult<StepResult> {
+    py.allow_threads(|| env.step_internal(action))  // Pure Rust, no GIL
+}
+```
+
+**V4-Game: Async Bridge**
+
+Channel-based communication between async services and sync simulation (see Part 7: Sync/Async Architecture).
+
+---
+
+## Error Handling Strategy
+
+### Unified Error Chain
+
+```rust
+// crates/simulation/error.rs
+#[derive(Debug, thiserror::Error)]
+pub enum SimulationError {
+    #[error("agent error: {0}")]
+    Agent(#[from] AgentError),
+    #[error("market error: {0}")]
+    Market(#[from] SimCoreError),
+    #[error("quant error: {0}")]
+    Quant(#[from] QuantError),
+    #[error("config error: {0}")]
+    Config(#[from] ConfigError),
+}
+```
+
+### Configuration Validation
+
+```rust
+impl SimulationConfig {
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.tier1_count > 1000 {
+            warn!("Tier 1 count {} exceeds recommended max 100", self.tier1_count);
+        }
+        if self.tier2_count > 0 && self.symbols.is_empty() {
+            return Err(ConfigError::NoSymbolsForReactiveAgents);
+        }
+        if self.short_selling.enabled && self.short_selling.borrow_pool_size == 0 {
+            return Err(ConfigError::ShortSellingWithNoBorrowPool);
+        }
+        Ok(())
+    }
+}
+```
+
+---
+
+## Observability & Metrics
+
+### TickMetrics for Debugging
+
+```rust
+pub struct TickMetrics {
+    pub tick_number: Tick,
+    pub tier1_decision_time_us: u64,
+    pub tier2_wakeups: usize,
+    pub tier3_orders_generated: usize,
+    pub matching_time_us: u64,
+    pub total_tick_time_us: u64,
+    pub orders_submitted: usize,
+    pub trades_executed: usize,
+}
+```
+
+### Memory Budget Tracking
+
+```rust
+pub struct MemoryStats {
+    pub tier1_bytes: usize,
+    pub tier2_bytes: usize,
+    pub tier3_bytes: usize,
+    pub book_bytes: usize,
+    pub cache_bytes: usize,
+    pub total_bytes: usize,
+}
+
+impl Simulation {
+    pub fn memory_stats(&self) -> MemoryStats {
+        // Implementation measures actual heap usage
+    }
+}
+```
+
+---
+
+# Part 17: Phase Details
 
 ## Phase 1: Types
 
@@ -3299,7 +3684,7 @@ impl From<Price> for PriceResponse {
 
 ---
 
-# Part 17: Timeline Summary
+# Part 18: Timeline Summary
 
 **Phase Structure:** Core (1-12) → Parallel tracks (13+ RL/G) → Integration (19)
 
@@ -3357,7 +3742,7 @@ impl From<Price> for PriceResponse {
 
 ---
 
-# Part 18: MVP Milestones
+# Part 19: MVP Milestones
 
 | MVP | Phases | Demo | Portfolio Value |
 |-----|--------|------|-----------------|
@@ -3375,7 +3760,7 @@ impl From<Price> for PriceResponse {
 
 ---
 
-# Part 19: Context Requirements Per Phase
+# Part 20: Context Requirements Per Phase
 
 | Phase | Files to Load | Est. Lines |
 |-------|---------------|------------|
@@ -3411,7 +3796,7 @@ Each phase fits in one LLM context window.
 
 ---
 
-# Part 20: Technical Talking Points
+# Part 21: Technical Talking Points
 
 | Topic | What You Built |
 |-------|----------------|
@@ -3436,7 +3821,7 @@ Each phase fits in one LLM context window.
 
 ---
 
-# Part 21: Key Technical Decisions Summary
+# Part 22: Key Technical Decisions Summary
 
 | Decision | Rationale |
 |----------|-----------|

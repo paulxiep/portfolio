@@ -12,7 +12,7 @@ More project info can be found on the projects' own readme.
 
 ## 2025 onwards (AI-assisted projects)
 
-1. [quant-trading-gym](quant-trading-gym) (V0-1 - MVP simulation + Quant strategy agents): a quantitative trading simulation Rust with RL training in Python, modular quant strategies, risk management, microservices architecture, and chatbot interface to execute trading API.
+1. [quant-trading-gym](quant-trading-gym) (V1 - MVP simulation + Quant strategy agents): a quantitative trading simulation in Rust with RL training in Python, modular quant strategies, risk management, microservices architecture, and chatbot interface to execute trading API.
 2. [portfolio-rag-chat](portfolio-rag-chat): Chatbot and RAG implemented in Rust. Uses chatbot to answer questions about this portfolio.
 
 ## 2023-2024 (100% hand-written)
