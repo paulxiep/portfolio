@@ -1,16 +1,28 @@
 //! Simulation runner implementing the tick-based event loop.
 //!
 //! The simulation holds the order book, agents, and coordinates the tick loop.
+//!
+//! # Position Limits (V2.1)
+//!
+//! When `enforce_position_limits` is enabled in config, orders are validated
+//! against:
+//! - Cash sufficiency for buys
+//! - Shares outstanding limits for long positions
+//! - Short-selling constraints and borrow availability
+//!
+//! Rejected orders are logged but do not cause errors.
 
 use std::collections::HashMap;
 
-use agents::{Agent, AgentAction, MarketData};
+use agents::{Agent, AgentAction, BorrowLedger, MarketData, PositionValidator};
 use quant::{
     AgentRiskSnapshot, AgentRiskTracker, IndicatorCache, IndicatorEngine, IndicatorSnapshot,
 };
 use rand::seq::SliceRandom;
 use sim_core::{MatchingEngine, OrderBook};
-use types::{AgentId, Candle, Order, OrderId, Price, Quantity, Tick, Timestamp, Trade};
+use types::{
+    AgentId, Candle, Order, OrderId, Price, Quantity, RiskViolation, Tick, Timestamp, Trade,
+};
 
 use crate::config::SimulationConfig;
 
@@ -31,6 +43,9 @@ pub struct SimulationStats {
 
     /// Total orders that were added to book (resting).
     pub resting_orders: u64,
+
+    /// Total orders rejected due to position limit violations (V2.1).
+    pub rejected_orders: u64,
 }
 
 /// The main simulation runner.
@@ -38,9 +53,11 @@ pub struct SimulationStats {
 /// Coordinates the tick-based event loop:
 /// 1. Build market data snapshot
 /// 2. Call each agent's `on_tick` to get their orders
-/// 3. Process orders through the matching engine
-/// 4. Notify agents of fills
-/// 5. Advance tick counter
+/// 3. Validate orders against position limits (V2.1)
+/// 4. Process valid orders through the matching engine
+/// 5. Update borrow ledger on short trades (V2.1)
+/// 6. Notify agents of fills
+/// 7. Advance tick counter
 pub struct Simulation {
     /// Configuration for this simulation.
     config: SimulationConfig,
@@ -84,6 +101,16 @@ pub struct Simulation {
 
     /// Per-agent risk tracking.
     risk_tracker: AgentRiskTracker,
+
+    /// Position validator for order validation (V2.1).
+    position_validator: PositionValidator,
+
+    /// Borrow ledger for short-selling tracking (V2.1).
+    borrow_ledger: BorrowLedger,
+
+    /// Cache of total shares held (sum of all long positions) for validation.
+    /// Updated after each trade.
+    total_shares_held: Quantity,
 }
 
 /// Helper for building candles incrementally.
@@ -139,9 +166,17 @@ impl CandleBuilder {
 impl Simulation {
     /// Create a new simulation with the given configuration.
     pub fn new(config: SimulationConfig) -> Self {
-        let book = OrderBook::new(&config.symbol);
+        let book = OrderBook::new(config.symbol());
+
+        // Initialize position validator from config
+        let position_validator =
+            PositionValidator::new(config.symbol_config.clone(), config.short_selling.clone());
+
+        // Initialize borrow ledger with symbol's borrow pool
+        let mut borrow_ledger = BorrowLedger::new();
+        borrow_ledger.init_symbol(config.symbol(), config.symbol_config.borrow_pool_size());
+
         Self {
-            config,
             book,
             engine: MatchingEngine::new(),
             agents: Vec::new(),
@@ -155,6 +190,10 @@ impl Simulation {
             indicator_engine: IndicatorEngine::with_common_indicators(),
             indicator_cache: IndicatorCache::new(),
             risk_tracker: AgentRiskTracker::with_defaults(),
+            position_validator,
+            borrow_ledger,
+            total_shares_held: Quantity::ZERO,
+            config,
         }
     }
 
@@ -191,6 +230,21 @@ impl Simulation {
     /// Get the number of agents.
     pub fn agent_count(&self) -> usize {
         self.agents.len()
+    }
+
+    /// Get a reference to the borrow ledger (V2.1).
+    pub fn borrow_ledger(&self) -> &BorrowLedger {
+        &self.borrow_ledger
+    }
+
+    /// Get a reference to the position validator (V2.1).
+    pub fn position_validator(&self) -> &PositionValidator {
+        &self.position_validator
+    }
+
+    /// Get the total shares currently held (long positions) across all agents.
+    pub fn total_shares_held(&self) -> Quantity {
+        self.total_shares_held
     }
 
     /// Get agent summaries (name, position, cash) for display.
@@ -246,7 +300,7 @@ impl Simulation {
         }
 
         let mut snapshot = IndicatorSnapshot::new(self.tick);
-        let symbol = self.config.symbol.clone();
+        let symbol = self.config.symbol().to_string();
 
         // Compute all registered indicators
         let values = self.indicator_engine.compute_all(&self.candles);
@@ -283,7 +337,7 @@ impl Simulation {
             // Initialize candle builder if needed
             if self.current_candle.is_none() {
                 self.current_candle = Some(CandleBuilder::new(
-                    &self.config.symbol,
+                    self.config.symbol(),
                     trade.price,
                     self.tick,
                 ));
@@ -307,6 +361,109 @@ impl Simulation {
             if self.candles.len() > self.config.max_candles {
                 self.candles.remove(0);
             }
+        }
+    }
+
+    /// Validate an order against position limits (V2.1).
+    ///
+    /// Returns `Ok(())` if the order passes validation, or `Err(RiskViolation)` if rejected.
+    fn validate_order(
+        &self,
+        order: &Order,
+        agent_position: i64,
+        agent_cash: types::Cash,
+        is_market_maker: bool,
+    ) -> Result<(), RiskViolation> {
+        if !self.config.enforce_position_limits {
+            return Ok(());
+        }
+
+        self.position_validator.validate_order(
+            order,
+            agent_position,
+            agent_cash,
+            &self.borrow_ledger,
+            self.total_shares_held,
+            is_market_maker, // MMs exempt from short limit
+        )
+    }
+
+    /// Update borrow ledger after a trade (V2.1).
+    ///
+    /// When a short sale occurs, the seller borrows shares.
+    /// When covering a short, the buyer returns borrowed shares.
+    fn update_borrow_ledger(
+        &mut self,
+        trade: &Trade,
+        seller_position_before: i64,
+        buyer_position_before: i64,
+    ) {
+        // Check if seller is going short (position becoming more negative)
+        let seller_position_after = seller_position_before - trade.quantity.raw() as i64;
+        if seller_position_after < 0 && seller_position_before >= seller_position_after {
+            // Calculate additional borrow needed
+            let was_short = seller_position_before.min(0).unsigned_abs();
+            let now_short = seller_position_after.unsigned_abs();
+            let additional_borrow = now_short.saturating_sub(was_short);
+
+            if additional_borrow > 0 {
+                // Attempt to borrow (should succeed as we validated earlier)
+                let _ = self.borrow_ledger.borrow(
+                    trade.seller_id,
+                    &trade.symbol,
+                    Quantity(additional_borrow),
+                    self.tick,
+                );
+            }
+        }
+
+        // Check if buyer is covering a short (position becoming less negative)
+        let buyer_position_after = buyer_position_before + trade.quantity.raw() as i64;
+        if buyer_position_before < 0 && buyer_position_after > buyer_position_before {
+            // Calculate shares to return
+            let was_short = buyer_position_before.unsigned_abs();
+            let now_short = buyer_position_after.min(0).unsigned_abs();
+            let to_return = was_short.saturating_sub(now_short);
+
+            if to_return > 0 {
+                self.borrow_ledger.return_shares(
+                    trade.buyer_id,
+                    &trade.symbol,
+                    Quantity(to_return),
+                );
+            }
+        }
+    }
+
+    /// Update total shares held after a trade.
+    fn update_total_shares_held(
+        &mut self,
+        trade: &Trade,
+        seller_position_before: i64,
+        buyer_position_before: i64,
+    ) {
+        // Calculate change in aggregate long positions
+        let seller_position_after = seller_position_before - trade.quantity.raw() as i64;
+        let buyer_position_after = buyer_position_before + trade.quantity.raw() as i64;
+
+        // Seller's long position change (only count positive positions)
+        let seller_long_before = seller_position_before.max(0) as u64;
+        let seller_long_after = seller_position_after.max(0) as u64;
+
+        // Buyer's long position change
+        let buyer_long_before = buyer_position_before.max(0) as u64;
+        let buyer_long_after = buyer_position_after.max(0) as u64;
+
+        // Net change
+        let delta = (buyer_long_after + seller_long_after) as i64
+            - (buyer_long_before + seller_long_before) as i64;
+
+        if delta > 0 {
+            self.total_shares_held += Quantity(delta as u64);
+        } else {
+            self.total_shares_held = self
+                .total_shares_held
+                .saturating_sub(Quantity((-delta) as u64));
         }
     }
 
@@ -360,30 +517,90 @@ impl Simulation {
         let mut indices: Vec<usize> = (0..self.agents.len()).collect();
         indices.shuffle(&mut rand::rng());
 
-        // Collect all agent actions in randomized order (to avoid borrow issues)
-        let actions: Vec<(AgentId, AgentAction)> = indices
+        // Collect all agent actions with their current state for validation.
+        // We need to snapshot position/cash before processing to validate orders.
+        let actions_with_state: Vec<(AgentId, AgentAction, i64, types::Cash, bool)> = indices
             .iter()
             .map(|&i| {
                 let agent = &mut self.agents[i];
                 let action = agent.on_tick(&market_data);
-                (agent.id(), action)
+                let position = agent.position();
+                let cash = agent.cash();
+                let is_mm = agent.is_market_maker();
+                (agent.id(), action, position, cash, is_mm)
             })
             .collect();
 
-        // Process all orders
-        let mut fill_notifications: Vec<(AgentId, Trade)> = Vec::new();
+        // Process all orders with validation
+        let mut fill_notifications: Vec<(AgentId, Trade, i64)> = Vec::new(); // Include position before trade
 
-        for (_agent_id, action) in actions {
+        for (agent_id, action, agent_position, agent_cash, is_market_maker) in actions_with_state {
+            let mut current_position = agent_position;
+
             for order in action.orders {
+                // Validate order against position limits (V2.1)
+                if let Err(violation) =
+                    self.validate_order(&order, current_position, agent_cash, is_market_maker)
+                {
+                    self.stats.rejected_orders += 1;
+                    if self.config.verbose {
+                        eprintln!(
+                            "Order rejected for {}: {} (order: {} {} @ {:?})",
+                            agent_id,
+                            violation,
+                            order.side,
+                            order.quantity,
+                            order.limit_price()
+                        );
+                    }
+                    continue; // Skip this order
+                }
+
                 let (trades, _is_resting) = self.process_order(order);
 
                 // Record trades and prepare fill notifications
                 for trade in trades {
                     self.stats.total_trades += 1;
 
-                    // Notify both parties
-                    fill_notifications.push((trade.buyer_id, trade.clone()));
-                    fill_notifications.push((trade.seller_id, trade.clone()));
+                    // Track position before trade for borrow ledger updates
+                    let buyer_pos_before = if trade.buyer_id == agent_id {
+                        current_position
+                    } else {
+                        // Need to look up other agent's position
+                        self.agents
+                            .iter()
+                            .find(|a| a.id() == trade.buyer_id)
+                            .map(|a| a.position())
+                            .unwrap_or(0)
+                    };
+
+                    let seller_pos_before = if trade.seller_id == agent_id {
+                        current_position
+                    } else {
+                        self.agents
+                            .iter()
+                            .find(|a| a.id() == trade.seller_id)
+                            .map(|a| a.position())
+                            .unwrap_or(0)
+                    };
+
+                    // Update borrow ledger (V2.1)
+                    self.update_borrow_ledger(&trade, seller_pos_before, buyer_pos_before);
+
+                    // Update total shares held
+                    self.update_total_shares_held(&trade, seller_pos_before, buyer_pos_before);
+
+                    // Notify both parties with position before trade
+                    fill_notifications.push((trade.buyer_id, trade.clone(), buyer_pos_before));
+                    fill_notifications.push((trade.seller_id, trade.clone(), seller_pos_before));
+
+                    // Update tracking of current position for this agent's remaining orders
+                    if trade.buyer_id == agent_id {
+                        current_position += trade.quantity.raw() as i64;
+                    }
+                    if trade.seller_id == agent_id {
+                        current_position -= trade.quantity.raw() as i64;
+                    }
 
                     tick_trades.push(trade);
                 }
@@ -404,7 +621,7 @@ impl Simulation {
         self.update_candles(&tick_trades);
 
         // Notify agents of fills
-        for (agent_id, trade) in fill_notifications {
+        for (agent_id, trade, _pos_before) in fill_notifications {
             if let Some(agent) = self.agents.iter_mut().find(|a| a.id() == agent_id) {
                 agent.on_fill(&trade);
             }
@@ -412,7 +629,10 @@ impl Simulation {
 
         // Update risk tracking with current equity values
         // Use last price or initial price for mark-to-market
-        let mark_price = self.book.last_price().unwrap_or(self.config.initial_price);
+        let mark_price = self
+            .book
+            .last_price()
+            .unwrap_or(self.config.initial_price());
         for agent in &self.agents {
             let equity = agent.equity(mark_price).to_float();
             self.risk_tracker.record_equity(agent.id(), equity);
@@ -530,7 +750,7 @@ mod tests {
 
     #[test]
     fn test_orders_match() {
-        let config = SimulationConfig::new("TEST");
+        let config = SimulationConfig::new("TEST").with_position_limits(false); // Disable for V0 test
         let mut sim = Simulation::new(config);
 
         // Agent 1 places a sell order
@@ -567,7 +787,7 @@ mod tests {
 
     #[test]
     fn test_market_data_updated() {
-        let config = SimulationConfig::new("TEST");
+        let config = SimulationConfig::new("TEST").with_position_limits(false); // Disable for V0 test
         let mut sim = Simulation::new(config);
 
         // Add an agent that places a limit order
@@ -591,7 +811,9 @@ mod tests {
 
     #[test]
     fn test_recent_trades_tracked() {
-        let config = SimulationConfig::new("TEST").with_max_recent_trades(5);
+        let config = SimulationConfig::new("TEST")
+            .with_max_recent_trades(5)
+            .with_position_limits(false); // Disable for V0 test
         let mut sim = Simulation::new(config);
 
         // Pre-populate book with sell orders
@@ -628,7 +850,8 @@ mod tests {
 
     #[test]
     fn test_order_ids_unique() {
-        let mut sim = Simulation::with_defaults();
+        let config = SimulationConfig::new("SIM").with_position_limits(false); // Disable for V0 test
+        let mut sim = Simulation::new(config);
 
         let order1 = Order::market(AgentId(1), "SIM", OrderSide::Buy, Quantity(10));
         let order2 = Order::market(AgentId(1), "SIM", OrderSide::Buy, Quantity(10));

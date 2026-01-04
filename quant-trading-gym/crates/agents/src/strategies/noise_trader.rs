@@ -31,6 +31,8 @@ pub struct NoiseTraderConfig {
     pub initial_price: Price,
     /// Starting cash balance.
     pub initial_cash: Cash,
+    /// Starting position in shares (allows some traders to start as sellers).
+    pub initial_position: i64,
 }
 
 impl Default for NoiseTraderConfig {
@@ -43,6 +45,7 @@ impl Default for NoiseTraderConfig {
             max_quantity: 100,
             initial_price: Price::from_float(100.0),
             initial_cash: Cash::from_float(100_000.0),
+            initial_position: 50, // Start with some shares to allow selling
         }
     }
 }
@@ -66,10 +69,13 @@ impl NoiseTrader {
     /// Create a new NoiseTrader with the given configuration.
     pub fn new(id: AgentId, config: NoiseTraderConfig) -> Self {
         let initial_cash = config.initial_cash;
+        let initial_position = config.initial_position;
+        let mut state = AgentState::new(initial_cash);
+        state.set_position(initial_position);
         Self {
             id,
             config,
-            state: AgentState::new(initial_cash),
+            state,
             rng: StdRng::from_os_rng(),
         }
     }
@@ -77,10 +83,13 @@ impl NoiseTrader {
     /// Create a new NoiseTrader with a specific seed (for reproducible testing).
     pub fn with_seed(id: AgentId, config: NoiseTraderConfig, seed: u64) -> Self {
         let initial_cash = config.initial_cash;
+        let initial_position = config.initial_position;
+        let mut state = AgentState::new(initial_cash);
+        state.set_position(initial_position);
         Self {
             id,
             config,
-            state: AgentState::new(initial_cash),
+            state,
             rng: StdRng::seed_from_u64(seed),
         }
     }
@@ -110,9 +119,15 @@ impl NoiseTrader {
     }
 
     /// Generate a random order around the reference price.
-    fn generate_order(&mut self, reference_price: Price) -> Order {
-        // Random side
-        let side = if self.rng.random_bool(0.5) {
+    /// Noise traders can only sell shares they own (no short selling).
+    fn generate_order(&mut self, reference_price: Price) -> Option<Order> {
+        let position = self.state.position();
+
+        // Determine side: can only sell if we have shares
+        let side = if position <= 0 {
+            // No shares to sell, must buy
+            OrderSide::Buy
+        } else if self.rng.random_bool(0.5) {
             OrderSide::Buy
         } else {
             OrderSide::Sell
@@ -124,13 +139,26 @@ impl NoiseTrader {
         let price_float = reference_price.to_float() * (1.0 + deviation);
         let price = Price::from_float(price_float.max(0.01)); // Ensure positive
 
-        // Random quantity
-        let quantity = Quantity(
-            self.rng
-                .random_range(self.config.min_quantity..=self.config.max_quantity),
-        );
+        // Random quantity, but for sells cap at current position
+        let max_qty = if side == OrderSide::Sell {
+            (position as u64).min(self.config.max_quantity)
+        } else {
+            self.config.max_quantity
+        };
 
-        Order::limit(self.id, &self.config.symbol, side, price, quantity)
+        if max_qty < self.config.min_quantity {
+            return None; // Not enough to trade
+        }
+
+        let quantity = Quantity(self.rng.random_range(self.config.min_quantity..=max_qty));
+
+        Some(Order::limit(
+            self.id,
+            &self.config.symbol,
+            side,
+            price,
+            quantity,
+        ))
     }
 }
 
@@ -146,10 +174,13 @@ impl Agent for NoiseTrader {
         }
 
         let reference_price = self.get_reference_price(market);
-        let order = self.generate_order(reference_price);
 
-        self.state.record_order();
-        AgentAction::single(order)
+        if let Some(order) = self.generate_order(reference_price) {
+            self.state.record_order();
+            AgentAction::single(order)
+        } else {
+            AgentAction::none()
+        }
     }
 
     fn on_fill(&mut self, trade: &Trade) {
@@ -217,7 +248,7 @@ mod tests {
     fn test_noise_trader_creation() {
         let trader = NoiseTrader::with_defaults(AgentId(1));
         assert_eq!(trader.id(), AgentId(1));
-        assert_eq!(trader.position(), 0);
+        assert_eq!(trader.position(), 50); // Default initial_position
         assert_eq!(trader.cash(), Cash::from_float(100_000.0));
     }
 
@@ -256,7 +287,7 @@ mod tests {
 
         trader.on_fill(&trade);
 
-        assert_eq!(trader.position(), 10);
+        assert_eq!(trader.position(), 60); // 50 initial + 10 bought
         // Cash decreased by 10 * 100 = 1000
         assert_eq!(trader.cash(), Cash::from_float(99_000.0));
     }
@@ -281,7 +312,7 @@ mod tests {
 
         trader.on_fill(&trade);
 
-        assert_eq!(trader.position(), -10);
+        assert_eq!(trader.position(), 40); // 50 initial - 10 sold
         // Cash increased by 10 * 100 = 1000
         assert_eq!(trader.cash(), Cash::from_float(101_000.0));
     }

@@ -94,6 +94,12 @@ pub trait Agent: Send {
         "Agent"
     }
 
+    /// Whether this agent is a market maker (exempt from short position limits).
+    /// Market makers need flexibility to provide two-sided liquidity.
+    fn is_market_maker(&self) -> bool {
+        false
+    }
+
     /// Get the agent's current position (shares held).
     /// Positive = long, negative = short, zero = flat.
     /// Default returns 0 (unknown/not tracked).

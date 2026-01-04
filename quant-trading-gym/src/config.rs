@@ -79,6 +79,8 @@ pub struct SimConfig {
     // ─────────────────────────────────────────────────────────────────────────
     /// Starting cash for each noise trader.
     pub nt_initial_cash: Cash,
+    /// Starting position in shares (allows balanced buy/sell from start).
+    pub nt_initial_position: i64,
     /// Probability of placing an order each tick (0.0 - 1.0).
     pub nt_order_probability: f64,
     /// Maximum price deviation from mid price as a fraction.
@@ -114,19 +116,19 @@ impl Default for SimConfig {
             symbol: "ACME".to_string(),
             initial_price: Price::from_float(100.0),
             total_ticks: 5000,
-            tick_delay_ms: 10, // ~100 ticks/sec for watchable visualization
+            tick_delay_ms: 0, // ~100 ticks/sec for watchable visualization
             verbose: false,
 
             // Tier 1 Agent Counts (minimums per type)
-            num_market_makers: 10,
-            num_noise_traders: 30,
-            num_momentum_traders: 5,
-            num_trend_followers: 5,
-            num_macd_traders: 5,
-            num_bollinger_traders: 5,
-            num_vwap_executors: 5,
+            num_market_makers: 100,
+            num_noise_traders: 400,
+            num_momentum_traders: 50,
+            num_trend_followers: 50,
+            num_macd_traders: 50,
+            num_bollinger_traders: 50,
+            num_vwap_executors: 50,
             // Tier Minimums
-            min_tier1_agents: 100, // Fill with random agents if needed
+            min_tier1_agents: 1000, // Random agents fill the gap
 
             // Market Maker Parameters
             mm_initial_cash: Cash::from_float(1_000_000.0),
@@ -137,7 +139,10 @@ impl Default for SimConfig {
             mm_inventory_skew: 0.001,
 
             // Noise Trader Parameters
-            nt_initial_cash: Cash::from_float(100_000.0),
+            // Note: Noise traders start with 50 shares (~$5,000), so cash is reduced
+            // to keep total starting value equal to quant traders ($100,000)
+            nt_initial_cash: Cash::from_float(95_000.0),
+            nt_initial_position: 50,
             nt_order_probability: 0.3, // 30% chance each tick
             nt_price_deviation: 0.01,  // 1% from mid price
             nt_min_quantity: 5,
@@ -341,39 +346,47 @@ impl SimConfig {
 // ─────────────────────────────────────────────────────────────────────────────
 
 impl SimConfig {
-    /// Quick demo: fewer ticks, faster visualization.
+    /// Quick demo: 10% of default agents, fewer ticks, faster visualization.
     pub fn demo() -> Self {
         Self::default()
             .total_ticks(1000)
             .tick_delay_ms(5)
-            .min_tier1(10)
-    }
-
-    /// Stress test: many agents, many ticks, no delay.
-    pub fn stress_test() -> Self {
-        Self::default()
-            .total_ticks(100_000)
-            .tick_delay_ms(0)
-            .market_makers(5)
-            .noise_traders(30)
+            .market_makers(10)
+            .noise_traders(40)
             .momentum_traders(5)
             .trend_followers(5)
             .macd_traders(5)
             .bollinger_traders(5)
-            .min_tier1(60)
+            .vwap_executors(5)
+            .min_tier1(100)
     }
 
-    /// Low activity: conservative parameters.
+    /// Stress test: 2x default agents, many ticks, no delay.
+    pub fn stress_test() -> Self {
+        Self::default()
+            .total_ticks(100_000)
+            .tick_delay_ms(0)
+            .min_tier1(2000)
+    }
+
+    /// Low activity: 20% of default agents, conservative parameters.
     pub fn low_activity() -> Self {
         Self::default()
-            .noise_traders(5)
+            .market_makers(20)
+            .noise_traders(80)
+            .momentum_traders(10)
+            .trend_followers(10)
+            .macd_traders(10)
+            .bollinger_traders(10)
+            .vwap_executors(10)
             .nt_probability(0.1)
-            .min_tier1(10)
+            .min_tier1(200)
     }
 
-    /// High volatility: aggressive noise traders.
+    /// High volatility: aggressive noise traders, wider spreads.
     pub fn high_volatility() -> Self {
         Self::default()
+            .noise_traders(600) // 1.5x noise traders
             .nt_probability(0.5)
             .nt_cash(50_000.0)
             .mm_spread(0.005) // Wider spread to compensate
@@ -382,12 +395,12 @@ impl SimConfig {
     /// Quant-heavy: More algorithmic traders, fewer noise traders.
     pub fn quant_heavy() -> Self {
         Self::default()
-            .noise_traders(5)
-            .momentum_traders(10)
-            .trend_followers(10)
-            .macd_traders(10)
-            .bollinger_traders(10)
-            .min_tier1(50)
+            .noise_traders(100) // 25% of default noise
+            .momentum_traders(150) // 3x quant strategies
+            .trend_followers(150)
+            .macd_traders(150)
+            .bollinger_traders(150)
+            .vwap_executors(100)
     }
 }
 
@@ -489,10 +502,10 @@ mod tests {
 
         // Presets should modify at least one parameter from default
         assert_ne!(demo.total_ticks, default.total_ticks);
-        assert_ne!(stress.tick_delay_ms, default.tick_delay_ms);
-        assert_ne!(low.num_noise_traders, default.num_noise_traders);
+        assert_ne!(stress.total_ticks, default.total_ticks);
+        assert_ne!(low.nt_order_probability, default.nt_order_probability);
         assert_ne!(high.nt_order_probability, default.nt_order_probability);
-        assert_ne!(quant.num_momentum_traders, default.num_momentum_traders);
+        assert_ne!(quant.num_noise_traders, default.num_noise_traders);
     }
 
     #[test]

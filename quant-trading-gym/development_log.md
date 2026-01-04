@@ -1,5 +1,62 @@
 # Development Log
 
+## 2026-01-04: V2.1 - Position Limits & Short-Selling Infrastructure
+
+### Completed
+
+#### Position Limits & Short-Selling (V2.1)
+- ✅ `SymbolConfig`: Tracks `shares_outstanding` per symbol
+- ✅ `ShortSellingConfig`: Controls short selling rules
+  - `enabled`: Master toggle for short selling
+  - `max_short_per_agent`: Per-agent short position limit (default 500)
+  - `locate_required`: Whether borrow locate is required before shorting
+- ✅ `BorrowLedger` (`borrow_ledger.rs`): Tracks share borrowing
+  - Manages available borrow pool (default 10% of shares outstanding)
+  - Tracks individual agent borrows with tick timestamps
+  - `borrow()`, `return_shares()`, `can_borrow()` API
+- ✅ `PositionValidator` (`position_limits.rs`): Pre-trade risk checks
+  - Cash sufficiency validation for buys
+  - Shares outstanding limit (aggregate long positions)
+  - Short limit enforcement with exemption flag for market makers
+  - Borrow availability checks for short sales
+- ✅ `RiskViolation` enum: `InsufficientCash`, `InsufficientShares`, `ShortSellingDisabled`, `ShortLimitExceeded`, `NoBorrowAvailable`
+
+#### Agent Improvements
+- ✅ **Market Maker Exemption**: `is_market_maker()` trait method
+  - Market makers exempt from `max_short_per_agent` limit
+  - Allows them to provide liquidity without position constraints
+- ✅ **Market Maker Initial Position**: `initial_position` config (default 500)
+  - MMs start with inventory to provide two-sided quotes
+- ✅ **Noise Trader Position Constraints**:
+  - Can only sell shares they own (no short selling)
+  - `initial_position` config (default 50) for balanced buy/sell
+  - `initial_cash` reduced to $95,000 (total value = $100,000 with shares)
+
+#### Configuration Updates
+- ✅ Scaled to 1000 Tier 1 agents (100 MM, 400 noise, 50 each quant type)
+- ✅ Added `nt_initial_position` to `SimulationConfig` (default 50)
+- ✅ Short limit set to 500 per agent (down from 10,000)
+- ✅ `tick_delay_ms` set to 2ms for larger agent counts
+
+#### Project Plan Restructure
+- ✅ V2 renamed to "Events & Market Realism" (V2.1-V2.4)
+- ✅ V3 renamed to "Scaling & Persistence" (V3.1-V3.3)
+- ✅ Updated phase reference map for each version
+
+### Technical Notes
+
+**Why noise traders can't short sell:**
+- Noise traders represent retail-like random participants
+- Short selling requires sophistication (margin, borrow locate, etc.)
+- Prevents unrealistic one-sided order flow at simulation start
+
+**Why market makers are exempt from short limits:**
+- MMs must provide liquidity on both sides of the book
+- Position limits would prevent them from fulfilling their role
+- Real MMs have special exemptions and higher limits
+
+---
+
 ## 2026-01-03: V1.3 - Phase 7-8 Strategies, Tier Configuration & TUI Scrolling
 
 ### Completed

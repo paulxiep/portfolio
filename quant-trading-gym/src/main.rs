@@ -26,7 +26,7 @@ use agents::{
 use crossbeam_channel::{Sender, bounded};
 use simulation::{Simulation, SimulationConfig};
 use tui::{AgentInfo, RiskInfo, SimUpdate, TuiApp};
-use types::{AgentId, Cash};
+use types::{AgentId, Cash, Quantity, ShortSellingConfig, SymbolConfig};
 
 pub use config::{SimConfig, Tier1AgentType};
 
@@ -126,6 +126,7 @@ fn spawn_agent(
                 min_quantity: config.nt_min_quantity,
                 max_quantity: config.nt_max_quantity,
                 initial_cash: config.nt_initial_cash,
+                initial_position: config.nt_initial_position,
             };
             sim.add_agent(Box::new(NoiseTrader::new(id, nt_config)));
         }
@@ -187,9 +188,22 @@ fn spawn_agent(
 
 /// Run the simulation, sending updates to the TUI via channel.
 fn run_simulation(tx: Sender<SimUpdate>, config: SimConfig) {
-    // Create simulation from central config
+    // Create symbol config with realistic constraints
+    let symbol_config = SymbolConfig::new(
+        &config.symbol,
+        Quantity(10_000_000), // 10M shares outstanding
+        config.initial_price,
+    )
+    .with_borrow_pool_bps(2000); // 20% available to borrow
+
+    // Enable short selling with tight limits matching agent configs
+    // Most agents have max_position of 200, MMs have max_inventory of 200
+    let short_config = ShortSellingConfig::enabled_default().with_max_short(Quantity(500)); // Max 500 short per agent
+
+    // Create simulation with position limits and short selling enabled
     let sim_config = SimulationConfig::new(&config.symbol)
-        .with_initial_price(config.initial_price)
+        .with_symbol_config(symbol_config)
+        .with_short_selling(short_config)
         .with_verbose(config.verbose);
 
     let mut sim = Simulation::new(sim_config);
@@ -210,6 +224,7 @@ fn run_simulation(tx: Sender<SimUpdate>, config: SimConfig) {
             max_inventory: config.mm_max_inventory,
             inventory_skew: config.mm_inventory_skew,
             initial_cash: config.mm_initial_cash,
+            initial_position: 500, // Start with inventory from the float
         };
         sim.add_agent(Box::new(MarketMaker::new(AgentId(next_id), mm_config)));
         next_id += 1;

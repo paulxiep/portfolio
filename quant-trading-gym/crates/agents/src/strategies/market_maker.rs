@@ -26,6 +26,9 @@ pub struct MarketMakerConfig {
     pub initial_price: Price,
     /// Starting cash balance.
     pub initial_cash: Cash,
+    /// Initial share position (from the float).
+    /// MarketMakers start with inventory to provide liquidity.
+    pub initial_position: i64,
     /// Maximum inventory before skewing quotes (in shares).
     pub max_inventory: i64,
     /// Inventory skew factor (how much to adjust price per unit of inventory).
@@ -42,6 +45,7 @@ impl Default for MarketMakerConfig {
             quote_size: 100,
             initial_price: Price::from_float(100.0),
             initial_cash: Cash::from_float(1_000_000.0),
+            initial_position: 500, // Start with inventory from the float
             max_inventory: 1000,
             inventory_skew: 0.0001, // Adjust price 0.01% per share of inventory
             refresh_interval: 5,
@@ -71,10 +75,14 @@ impl MarketMaker {
     /// Create a new MarketMaker with the given configuration.
     pub fn new(id: AgentId, config: MarketMakerConfig) -> Self {
         let initial_cash = config.initial_cash;
+        let initial_position = config.initial_position;
+        let mut state = AgentState::new(initial_cash);
+        // MarketMakers start with inventory from the float
+        state.set_position(initial_position);
         Self {
             id,
             config,
-            state: AgentState::new(initial_cash),
+            state,
             last_quote_tick: 0,
             total_volume: 0,
         }
@@ -193,6 +201,10 @@ impl Agent for MarketMaker {
         "MarketMaker"
     }
 
+    fn is_market_maker(&self) -> bool {
+        true
+    }
+
     fn position(&self) -> i64 {
         self.state.position()
     }
@@ -245,13 +257,17 @@ mod tests {
     fn test_market_maker_creation() {
         let mm = MarketMaker::with_defaults(AgentId(1));
         assert_eq!(mm.id(), AgentId(1));
-        assert_eq!(mm.position(), 0);
+        assert_eq!(mm.position(), 500); // Default initial_position
         assert_eq!(mm.cash(), Cash::from_float(1_000_000.0));
     }
 
     #[test]
     fn test_market_maker_generates_two_sided_quotes() {
-        let mut mm = MarketMaker::with_defaults(AgentId(1));
+        let config = MarketMakerConfig {
+            initial_position: 0, // Start neutral for this test
+            ..Default::default()
+        };
+        let mut mm = MarketMaker::new(AgentId(1), config);
 
         let market = mock_market_data(Some(Price::from_float(100.0)), 0);
         let action = mm.on_tick(&market);
@@ -318,7 +334,11 @@ mod tests {
 
     #[test]
     fn test_on_fill_updates_state() {
-        let mut mm = MarketMaker::with_defaults(AgentId(1));
+        let config = MarketMakerConfig {
+            initial_position: 0, // Start at 0 for this test
+            ..Default::default()
+        };
+        let mut mm = MarketMaker::new(AgentId(1), config);
 
         // Simulate a buy fill
         let trade = Trade {

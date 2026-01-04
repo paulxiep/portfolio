@@ -197,11 +197,11 @@ After V0, expand **iteratively** — each iteration adds a vertical slice of fun
 ```
 V0 (Steel Thread)
  │
- ├──► V1: Quant Layer
+ ├──► V1: Quant Layer (indicators, risk, strategies)
  │
- ├──► V2: Agent Scaling
+ ├──► V2: Events & Market Realism (fundamentals, multi-symbol, position limits)
  │
- ├──► V3: Persistence
+ ├──► V3: Scaling & Persistence (tiers, storage, hooks)
  │
  ├──► V4: RL Track OR Game Track
  │
@@ -233,78 +233,98 @@ V0 (Steel Thread)
 
 ---
 
-## V2: Agent Scaling (+2 weeks)
+## V2: Events & Market Realism (+3 weeks)
 
-**Add:** Tiered agent architecture for 100k+ scale, multi-symbol support, position limits
+**Add:** Realistic market constraints, fundamental value system, multi-symbol trading
 
-### V2.1: Position Limits & Short-Selling (~2 days)
+### V2.1: Position Limits & Short-Selling (~2 days) ✓ DONE
 - `SymbolConfig` with `shares_outstanding` (natural long limit)
 - `ShortSellingConfig` with borrow pool derived from float
 - `BorrowLedger` for tracking borrowed shares
 - Order validation: cash + shares_outstanding for longs, borrow availability for shorts
-- **Addresses V1 issue:** agents accumulating -1000+ positions unrealistically
+- MarketMakers start with `initial_position` (inventory from float)
+- **Addresses V1 issue:** agents accumulating unrealistic positions
 
-### V2.2: Multi-Symbol Infrastructure (~2 days)
+### V2.2: Slippage & Partial Fills (~2 days)
+- Market orders experience slippage based on book depth
+- Large orders partially fill across price levels
+- Add `Fill` events distinct from full `Trade`
+- Impact model: `slippage = f(order_size / available_liquidity)`
+
+### V2.3: Multi-Symbol Infrastructure (~3 days)
 - `Market` with `HashMap<Symbol, OrderBook>`
 - `SimulationConfig` with `symbols: Vec<SymbolConfig>`
-- Symbol-scoped `WakeConditionIndex`
-- Generalize position limits to work per-symbol
+- Per-symbol position tracking in `AgentState`
+- Portfolio-level risk metrics (correlation, beta exposure)
+- Enable pairs trading strategies
 
-### V2.3: Tier 2 Reactive Agents (~4 days)
-- `ReactiveAgent` struct (lightweight)
-- Wake conditions (price cross, interval, news)
+### V2.4: Fundamentals & Events (~5 days)
+- `Fundamentals` struct: EPS, growth estimate, payout ratio
+- `MacroEnvironment`: risk-free rate, equity risk premium
+- `fair_value()` derived via Gordon Growth Model
+- `FundamentalEvent` enum: earnings surprise, guidance change, rate decision
+- **MarketMaker anchors quotes to `fair_value()`** instead of last price
+- **NoiseTrader trades around `fair_value()`** with configurable deviation
+- Event generator with configurable frequency and magnitude
+- **Result:** Smart strategies now have alpha — prices mean-revert to fundamentals
+
+**Why Events in V2?**
+Without a fundamental anchor, momentum/mean-reversion strategies trade noise.
+V2.4 gives price a "reason" to move, making strategy performance meaningful.
+Tier 1 agents poll events each tick (fine for <1000 agents).
+V3 adds efficient event subscriptions for scale.
+
+**Maps to Original:** Part 16 (Position Limits/Short-Selling) + Phase 4 (News/Events) + Phase 9 (Multi-Symbol in Simulation)
+
+---
+
+## V3: Scaling & Persistence (+3 weeks)
+
+**Add:** Tiered agent architecture for 100k+ scale, storage layer
+
+### V3.1: Tier 2 Reactive Agents (~4 days)
+- `ReactiveAgent` struct (lightweight, event-driven)
+- Wake conditions: price threshold, interval, event subscription
 - `WakeConditionIndex` for O(log n) lookups
-- **Parametric condition updates** — agents can modify their wake conditions at runtime without being recreated
+- **Event subscription:** Tier 2 agents wake only on relevant `FundamentalEvent`
+- **Parametric condition updates** — modify wake conditions at runtime
 
-### V2.4: Tier 3 Background Pool (~3 days)
+### V3.2: Tier 3 Background Pool (~4 days)
 - Statistical order generation (no individual agents)
 - `BackgroundAgentPool` struct
 - Configurable distributions (size, price, direction)
+- **Sentiment-driven:** Pool bias shifts with active `FundamentalEvent`s
 - Per-sector sentiment tracking
 
-### V2.5: Performance Tuning (~3 days)
+### V3.3: Performance Tuning (~3 days)
 - Benchmark 100k agents
 - Profile and optimize hot paths
 - Memory budget validation
 - Two-phase tick architecture (read phase parallel, write phase sequential)
 
-**Borrow-Checking Pitfalls to Address:**
-1. **Parallel agent execution:** Use two-phase tick (immutable market read → sequential order write)
-2. **WakeConditionIndex updates:** Collect `ConditionUpdate` during tick, apply after tick completes
-3. **Background pool accounting:** Append-only fill recording
-
-**Maps to Original:** Phase 6 (Agent Scaling) + Phase 12 (Scale Testing) + Part 16 (Architectural Considerations)
-
-**Optional additions at V2:** More Tier 1 strategies for agent variety:
-- Phase 7: MACD Crossover, Bollinger Reversion, Trend Following
-- Phase 8: Pairs Trading (requires multi-symbol), Factor Long-Short, VWAP Executor
-
----
-
-## V3: Persistence & Events (+2 weeks)
-
-**Add:** Storage layer and news events
-
-### V3.1: News Events (~4 days)
-- `NewsEvent` type with sentiment
-- `NewsGenerator` for random events
-- Background pool reacts to news
-
-### V3.2: SQLite Storage (~5 days)
+### V3.4: SQLite Storage (~4 days)
 - Trade history persistence
-- Candle aggregation
+- Candle aggregation (1m, 5m, 1h)
 - Portfolio snapshots
-- **Game snapshots for save/resume** (`GameSnapshot`, `AgentSnapshot` structs)
+- **Game snapshots for save/resume** (`GameSnapshot`, `AgentSnapshot`)
 - **Trade log** (append-only, for post-game analysis)
 
-### V3.3: Hooks System (~3 days)
+### V3.5: Hooks System (~2 days)
 - `SimulationHook` trait
 - Metrics hook, persistence hook
-- TUI becomes a hook
+- TUI becomes a hook (optional observer)
 
-**Maps to Original:** Phase 4 (News infrastructure) + Phase 10 (Storage)
+**Borrow-Checking Pitfalls to Address:**
+1. **Parallel agent execution:** Two-phase tick (immutable read → sequential write)
+2. **WakeConditionIndex updates:** Collect `ConditionUpdate` during tick, apply after
+3. **Background pool accounting:** Append-only fill recording
 
-**Optional addition at V3:** `news_reactive.rs` strategy (Phase 8) — now that news infra exists
+**Maps to Original:** Phase 6 (Agent Scaling) + Phase 10 (Storage) + Phase 12 (Scale Testing)
+
+**Optional additions at V3:** 
+- `NewsReactiveTrader` (Tier 2 strategy that wakes on events)
+- Pairs Trading (now that multi-symbol exists from V2.3)
+
 
 ---
 
@@ -465,6 +485,24 @@ Game Service :8002  (/game/dashboard, /game/stream)
 
 **Maps to Original:** Phases 13-22 (Game Track) + Part 11 (Human Player Interface)
 
+#### Containerization (V4-Game)
+
+All services containerized for environment-agnostic deployment:
+
+| Environment | Tooling | Use Case |
+|-------------|---------|----------|
+| Development | Docker Compose | Local multi-service testing |
+| Staging | Docker Compose | Demo, integration testing |
+| Production | Kubernetes | Scalable cloud deployment |
+
+Key elements:
+- Multi-stage Dockerfiles (Rust builder → slim runtime)
+- Health checks on all services (`/health` endpoint)
+- Environment-based configuration (`.env` files)
+- CI/CD builds on push to main
+
+**See:** Part 16 (Containerization & Deployment) in full plan
+
 ---
 
 ## V5: Full Integration (+1 week)
@@ -565,16 +603,16 @@ impl TieredOrchestrator {
 |---------|-------|----------|------------|
 | V0 | MVP Simulation | 4 wks | 4 wks |
 | V1 | Quant Strategy Agents | 2 wks | 6 wks |
-| V2 | Agent Scaling + Multi-Symbol + Position Limits | 2.5 wks | 8.5 wks |
-| V3 | Persistence & Events | 2 wks | 10.5 wks |
-| V4-RL | RL Track | 5 wks | 15.5 wks |
-| V4-Game | Game Track (4 services + frontend) | 8 wks | 18.5 wks |
-| V5 | Full Integration | 1 wk | 19.5 wks |
+| V2 | Events & Market Realism | 3 wks | 9 wks |
+| V3 | Scaling & Persistence | 3 wks | 12 wks |
+| V4-RL | RL Track | 5 wks | 17 wks |
+| V4-Game | Game Track (4 services + frontend) | 8 wks | 20 wks |
+| V5 | Full Integration | 1 wk | 21 wks |
 
 **Key Decision Points:**
 - After V0: Do you want to keep going? (4 wks invested)
-- After V2: Is performance important, or skip to features? (8.5 wks invested)
-- After V3: RL or Game? Pick one first. (10.5 wks invested)
+- After V2: Strategies validated with real alpha. Ready for scale? (9 wks invested)
+- After V3: RL or Game? Pick one first. (12 wks invested)
 
 ---
 
@@ -593,7 +631,6 @@ sim-core/           sim-core/           sim-core/           sim-core/
   lib.rs              lib.rs              lib.rs              lib.rs
   order_book.rs       order_book.rs       order_book.rs       order_book.rs
   matching.rs         matching.rs         matching.rs         matching.rs
-                                          pending_orders.rs   pending_orders.rs
                                           market.rs           market.rs
 
                     quant/              quant/              quant/
@@ -602,35 +639,25 @@ sim-core/           sim-core/           sim-core/           sim-core/
                       risk.rs             risk.rs             risk.rs
                       stats.rs            stats.rs            stats.rs
 
-                                                            news/
-                                                              lib.rs
-                                                              generator.rs
-                                                              sectors.rs
+                                        fundamentals/       fundamentals/
+                                          lib.rs              lib.rs
+                                          events.rs           events.rs
+                                          generator.rs        generator.rs
 
 agents/             agents/             agents/             agents/
   lib.rs              lib.rs              lib.rs              lib.rs
   traits.rs           traits.rs           traits.rs           traits.rs
-  strategies/         strategies/         tiers.rs            tiers.rs
-    mod.rs              mod.rs            context.rs          context.rs
-    noise_trader.rs     noise_trader.rs   orchestrator.rs     orchestrator.rs
-    market_maker.rs     market_maker.rs   position_limits.rs  position_limits.rs  ← V2 addition
-                        momentum.rs       borrow_ledger.rs    borrow_ledger.rs    ← V2 addition
-                                          tier1/              tier1/
-                                            mod.rs              mod.rs
-                                            agent.rs            agent.rs
-                                            strategies/         strategies/
-                                              mod.rs              mod.rs
-                                              noise_trader.rs ←── (moved from strategies/)
-                                              market_maker.rs
-                                              momentum.rs
-                                          tier2/              tier2/
-                                            mod.rs              mod.rs
-                                            agent.rs            agent.rs
-                                            wake_index.rs       wake_index.rs
-                                            condition_update.rs ← V2 addition (parametric)
-                                          tier3/              tier3/
-                                            mod.rs              mod.rs
-                                            pool.rs             pool.rs
+  strategies/         strategies/         strategies/         tiers.rs            ← V3 addition
+    mod.rs              mod.rs              mod.rs            orchestrator.rs     ← V3 addition
+    noise_trader.rs     noise_trader.rs     noise_trader.rs   tier1/
+    market_maker.rs     market_maker.rs     market_maker.rs     strategies/ (moved)
+                        momentum.rs         momentum.rs       tier2/
+                                          position_limits.rs    mod.rs
+                                          borrow_ledger.rs      agent.rs
+                                                                wake_index.rs
+                                                              tier3/
+                                                                mod.rs
+                                                                pool.rs
 
 simulation/         simulation/         simulation/         simulation/
   lib.rs              lib.rs              lib.rs              lib.rs
@@ -640,13 +667,14 @@ simulation/         simulation/         simulation/         simulation/
                                           metrics.rs          metrics.rs
                                                               hooks.rs
 
-tui/                tui/                tui/                tui/ (optional)
+tui/                tui/                tui/                tui/ (becomes hook)
   lib.rs              lib.rs              lib.rs              lib.rs
   app.rs              app.rs              app.rs              app.rs
   price_chart.rs      price_chart.rs      price_chart.rs      price_chart.rs
   book_depth.rs       book_depth.rs       book_depth.rs       book_depth.rs
-                      indicators.rs       agents_table.rs     agents_table.rs
+                      indicators.rs       indicators.rs       indicators.rs
                       risk_panel.rs       risk_panel.rs       risk_panel.rs
+                                          agents_table.rs     agents_table.rs
 
                                                             storage/
                                                               lib.rs
@@ -661,22 +689,22 @@ tui/                tui/                tui/                tui/ (optional)
 
 **Key Migration Points:**
 - **V0→V1:** Add `quant/` crate, wire indicators into `context.rs`
-- **V1→V2:** Restructure `agents/strategies/` into `agents/tier1/strategies/`, add tier2/tier3
-- **V2→V3:** Add `news/`, `storage/`, implement `SimulationHook` trait, TUI becomes a hook
+- **V1→V2:** Add `fundamentals/` crate, position limits in agents, multi-symbol in sim-core
+- **V2→V3:** Restructure `agents/` into tiers, add `storage/`, implement `SimulationHook` trait
 - **V3→V4:** Add `gym/` (RL track) or `services/` (Game track)
 
 ---
 
 ## What We're NOT Doing (Yet)
 
-Explicitly deferred to keep V0-V3 lean:
+Explicitly deferred to keep V0-V2 lean:
 
 | Feature | Deferred To | Reason |
 |---------|-------------|--------|
-| 100k agent scale | V2 | Optimization, not learning |
+| 100k agent scale | V3 | Optimization, not learning |
 | Database persistence | V3 | Tedious plumbing |
-| News/sentiment | V3 | Orthogonal domain |
-| Multi-threading | V2+ | Single-threaded is simpler to debug |
+| Tier 2/3 agents | V3 | Scale optimization |
+| Multi-threading | V3+ | Single-threaded is simpler to debug |
 | ONNX inference | V4-RL | Requires full gym first |
 | HTTP services | V4-Game | Requires stable core first |
 | React frontend | V4-Game | TUI is enough for learning |

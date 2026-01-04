@@ -5,12 +5,20 @@
 //! - `MarketData` context passed to agents each tick
 //! - `AgentAction` for returning agent decisions
 //! - `AgentState` for common state tracking (position, cash, metrics)
+//! - `BorrowLedger` for tracking short-selling borrows (V2.1)
+//! - `PositionValidator` for order validation against position limits (V2.1)
 //! - Concrete strategy implementations (`strategies` module)
 //!
 //! # Architecture
 //! Agents receive a `MarketData` snapshot each tick and return an `AgentAction`
 //! containing any orders they wish to submit. The simulation handles order
 //! routing, matching, and notifying agents of fills.
+//!
+//! # Position Limits (V2.1)
+//!
+//! The `PositionValidator` enforces realistic constraints:
+//! - **Long positions**: Limited by cash available and shares_outstanding
+//! - **Short positions**: Require borrows from `BorrowLedger`, limited by max_short_per_agent
 //!
 //! # Available Strategies
 //!
@@ -45,10 +53,14 @@
 //! }
 //! ```
 
+mod borrow_ledger;
+mod position_limits;
 mod state;
 pub mod strategies;
 mod traits;
 
+pub use borrow_ledger::{BorrowLedger, BorrowPosition};
+pub use position_limits::PositionValidator;
 pub use state::AgentState;
 pub use strategies::{
     BollingerReversion, BollingerReversionConfig, MacdCrossover, MacdCrossoverConfig, MarketMaker,
