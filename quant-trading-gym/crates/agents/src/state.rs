@@ -39,6 +39,11 @@ impl AgentState {
         self.position
     }
 
+    /// Set position directly (for initial allocation from float).
+    pub fn set_position(&mut self, position: i64) {
+        self.position = position;
+    }
+
     /// Get current cash balance.
     pub fn cash(&self) -> Cash {
         self.cash
@@ -76,12 +81,6 @@ impl AgentState {
     /// Increment orders placed counter by count.
     pub fn record_orders(&mut self, count: u64) {
         self.orders_placed += count;
-    }
-
-    /// Set position directly (for testing).
-    #[cfg(test)]
-    pub fn set_position(&mut self, position: i64) {
-        self.position = position;
     }
 }
 

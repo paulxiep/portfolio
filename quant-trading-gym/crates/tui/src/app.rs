@@ -1,13 +1,26 @@
 //! Main TUI application - composes widgets and handles rendering loop.
+//!
+//! # V2.3 Multi-Symbol Support
+//!
+//! The TUI now supports multiple symbols with tab-based navigation:
+//! - `Tab`/`→`: Next symbol
+//! - `Shift+Tab`/`←`: Previous symbol  
+//! - `1`-`9`: Jump to symbol by number
+//! - `O`: Toggle price overlay mode (show all symbols on chart)
+//!
+//! # Start/Stop Control
+//!
+//! The simulation starts paused. Use `Space` to start/stop:
+//! - `Space`: Toggle simulation running state
 
 use std::io::{self, Stdout};
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{Receiver, Sender};
 use crossterm::{
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton,
-        MouseEventKind,
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+        MouseButton, MouseEventKind,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -21,16 +34,21 @@ use ratatui::{
     widgets::{Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 
+use crate::SimCommand;
 use crate::widgets::{AgentTable, BookDepth, PriceChart, RiskPanel, SimUpdate, StatsPanel};
 
 /// TUI application state.
 pub struct TuiApp {
     /// Channel receiver for simulation updates.
     receiver: Receiver<SimUpdate>,
+    /// Channel sender for commands to simulation.
+    command_sender: Option<Sender<SimCommand>>,
     /// Latest simulation state.
     state: SimUpdate,
     /// Whether the simulation has finished.
     finished: bool,
+    /// Whether the simulation is currently running.
+    running: bool,
     /// Target frame rate.
     frame_rate: u64,
     /// Risk panel scroll offset.
@@ -41,23 +59,37 @@ pub struct TuiApp {
     risk_area: Option<Rect>,
     /// Last known agent panel area (for mouse detection).
     agent_area: Option<Rect>,
+    /// Currently selected symbol index (V2.3).
+    selected_symbol: usize,
+    /// Overlay mode: show all symbols on chart (V2.3).
+    overlay_mode: bool,
 }
 
 impl TuiApp {
     /// Create a new TUI app with the given channel receiver.
     ///
-    /// Uses `try_iter()` internally for non-blocking updates.
+    /// The simulation starts **paused**. Press Space to start.
     pub fn new(receiver: Receiver<SimUpdate>) -> Self {
         Self {
             receiver,
+            command_sender: None,
             state: SimUpdate::default(),
             finished: false,
+            running: false, // Start paused
             frame_rate: 30, // 30 FPS
             risk_scroll: 0,
             agent_scroll: 0,
             risk_area: None,
             agent_area: None,
+            selected_symbol: 0,
+            overlay_mode: false,
         }
+    }
+
+    /// Set the command sender for controlling the simulation.
+    pub fn with_command_sender(mut self, sender: Sender<SimCommand>) -> Self {
+        self.command_sender = Some(sender);
+        self
     }
 
     /// Set the target frame rate (frames per second).
@@ -107,10 +139,11 @@ impl TuiApp {
 
             if event::poll(timeout)? {
                 match event::read()? {
-                    Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                        _ => {}
-                    },
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        if self.handle_key_event(key.code, key.modifiers) {
+                            return Ok(());
+                        }
+                    }
                     Event::Mouse(mouse) => {
                         self.handle_mouse_event(mouse);
                     }
@@ -128,6 +161,78 @@ impl TuiApp {
             if self.finished {
                 // Keep showing until user presses q
             }
+        }
+    }
+
+    /// Handle keyboard input. Returns true if should quit.
+    fn handle_key_event(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
+        match code {
+            // Quit
+            KeyCode::Char('q') | KeyCode::Esc => {
+                // Send quit command to simulation
+                if let Some(ref sender) = self.command_sender {
+                    let _ = sender.send(SimCommand::Quit);
+                }
+                return true;
+            }
+
+            // Start/Stop toggle
+            KeyCode::Char(' ') => {
+                if !self.finished {
+                    self.running = !self.running;
+                    if let Some(ref sender) = self.command_sender {
+                        let _ = sender.send(SimCommand::Toggle);
+                    }
+                }
+            }
+
+            // Symbol navigation: Tab/Right = next, Shift+Tab/Left = previous
+            KeyCode::Tab if modifiers.contains(KeyModifiers::SHIFT) => {
+                self.select_previous_symbol();
+            }
+            KeyCode::Tab | KeyCode::Right => {
+                self.select_next_symbol();
+            }
+            KeyCode::Left => {
+                self.select_previous_symbol();
+            }
+
+            // Number keys 1-9 jump to symbol
+            KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
+                let idx = (c as usize) - ('1' as usize);
+                if idx < self.state.symbols.len() {
+                    self.selected_symbol = idx;
+                    self.state.selected_symbol = self.selected_symbol;
+                }
+            }
+
+            // Toggle overlay mode
+            KeyCode::Char('o') | KeyCode::Char('O') => {
+                self.overlay_mode = !self.overlay_mode;
+            }
+
+            _ => {}
+        }
+        false
+    }
+
+    /// Select the next symbol (wraps around).
+    fn select_next_symbol(&mut self) {
+        if !self.state.symbols.is_empty() {
+            self.selected_symbol = (self.selected_symbol + 1) % self.state.symbols.len();
+            self.state.selected_symbol = self.selected_symbol;
+        }
+    }
+
+    /// Select the previous symbol (wraps around).
+    fn select_previous_symbol(&mut self) {
+        if !self.state.symbols.is_empty() {
+            self.selected_symbol = if self.selected_symbol == 0 {
+                self.state.symbols.len() - 1
+            } else {
+                self.selected_symbol - 1
+            };
+            self.state.selected_symbol = self.selected_symbol;
         }
     }
 
@@ -231,8 +336,14 @@ impl TuiApp {
             if update.finished {
                 self.finished = true;
             }
+            // Keep selected_symbol in bounds
+            if self.selected_symbol >= update.symbols.len() && !update.symbols.is_empty() {
+                self.selected_symbol = 0;
+            }
             self.state = update;
         }
+        // Sync TuiApp's selected_symbol to SimUpdate so helper methods work
+        self.state.selected_symbol = self.selected_symbol;
     }
 
     /// Draw the UI.
@@ -244,6 +355,7 @@ impl TuiApp {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(1), // Header
+                Constraint::Length(1), // Symbol tabs (V2.3)
                 Constraint::Min(0),    // Content
                 Constraint::Length(1), // Footer
             ])
@@ -252,11 +364,14 @@ impl TuiApp {
         // Render header
         self.draw_header(frame, main_chunks[0]);
 
+        // Render symbol tabs (V2.3)
+        self.draw_symbol_tabs(frame, main_chunks[1]);
+
         // Content layout: left panel (stats + book + risk) + right panel (chart + agents)
         let content_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
-            .split(main_chunks[1]);
+            .split(main_chunks[2]);
 
         // Left panel: stats + order book + risk panel
         let left_chunks = Layout::default()
@@ -286,7 +401,7 @@ impl TuiApp {
         self.draw_agent_table(frame, right_chunks[1]);
 
         // Render footer
-        self.draw_footer(frame, main_chunks[2]);
+        self.draw_footer(frame, main_chunks[3]);
     }
 
     /// Draw the header bar.
@@ -299,7 +414,7 @@ impl TuiApp {
                     .bg(Color::Green)
                     .add_modifier(Modifier::BOLD),
             )
-        } else {
+        } else if self.running {
             Span::styled(
                 " RUNNING ",
                 Style::default()
@@ -307,6 +422,26 @@ impl TuiApp {
                     .bg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             )
+        } else {
+            Span::styled(
+                " PAUSED ",
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Red)
+                    .add_modifier(Modifier::BOLD),
+            )
+        };
+
+        let overlay_indicator = if self.overlay_mode {
+            Span::styled(
+                " OVERLAY ",
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::raw("")
         };
 
         let title = Line::from(vec![
@@ -318,20 +453,78 @@ impl TuiApp {
             ),
             Span::raw(" │ "),
             status,
+            Span::raw(" "),
+            overlay_indicator,
         ]);
 
         let header = Paragraph::new(title).style(Style::default().bg(Color::DarkGray));
         frame.render_widget(header, area);
     }
 
+    /// Draw the symbol tabs (V2.3).
+    fn draw_symbol_tabs(&self, frame: &mut Frame, area: Rect) {
+        if self.state.symbols.is_empty() {
+            // Single symbol mode or no symbols yet
+            let current = self.state.current_symbol().cloned().unwrap_or_default();
+            let tabs = Paragraph::new(Line::from(vec![Span::styled(
+                format!(" [{}] ", current),
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )]))
+            .style(Style::default().bg(Color::DarkGray));
+            frame.render_widget(tabs, area);
+            return;
+        }
+
+        let mut spans: Vec<Span> = vec![Span::raw(" ")];
+        for (i, symbol) in self.state.symbols.iter().enumerate() {
+            let style = if i == self.selected_symbol {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            spans.push(Span::styled(format!("[{}:{}]", i + 1, symbol), style));
+            spans.push(Span::raw(" "));
+        }
+
+        let tabs = Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::DarkGray));
+        frame.render_widget(tabs, area);
+    }
+
     /// Draw the footer bar.
     fn draw_footer(&self, frame: &mut Frame, area: Rect) {
+        let start_stop_hint = if self.finished {
+            Span::raw("")
+        } else if self.running {
+            Span::styled("Space", Style::default().fg(Color::Yellow))
+        } else {
+            Span::styled("Space", Style::default().fg(Color::Green))
+        };
+
+        let start_stop_label = if self.finished {
+            Span::raw("")
+        } else if self.running {
+            Span::raw(" Pause  │ ")
+        } else {
+            Span::raw(" Start  │ ")
+        };
+
         let footer = Paragraph::new(Line::from(vec![
             Span::styled(" q", Style::default().fg(Color::Yellow)),
-            Span::raw(" Quit  "),
-            Span::raw("│ "),
+            Span::raw(" Quit  │ "),
+            start_stop_hint,
+            start_stop_label,
+            Span::styled("Tab/←→", Style::default().fg(Color::Cyan)),
+            Span::raw(" Symbol  │ "),
+            Span::styled("o", Style::default().fg(Color::Cyan)),
+            Span::raw(" Overlay  │ "),
             Span::styled("🖱 Scroll", Style::default().fg(Color::Cyan)),
-            Span::raw(" Mouse wheel or drag scrollbar"),
+            Span::raw(" Mouse wheel"),
         ]))
         .style(Style::default().bg(Color::DarkGray));
         frame.render_widget(footer, area);
@@ -339,15 +532,19 @@ impl TuiApp {
 
     /// Draw the stats panel.
     fn draw_stats(&self, frame: &mut Frame, area: Rect) {
+        // Get data for selected symbol
+        let bids = self.state.current_bids();
+        let asks = self.state.current_asks();
+
         // Calculate spread from book data
-        let spread = match (self.state.bids.first(), self.state.asks.first()) {
+        let spread = match (bids.first(), asks.first()) {
             (Some(bid), Some(ask)) => Some(ask.price - bid.price),
             _ => None,
         };
 
         let stats = StatsPanel::new()
             .tick(self.state.tick)
-            .last_price(self.state.last_price)
+            .last_price(self.state.current_last_price())
             .total_trades(self.state.total_trades)
             .total_orders(self.state.total_orders)
             .agent_count(self.state.agents.len())
@@ -358,18 +555,30 @@ impl TuiApp {
 
     /// Draw the order book depth.
     fn draw_book_depth(&self, frame: &mut Frame, area: Rect) {
-        let book = BookDepth::new(&self.state.bids, &self.state.asks).max_levels(10);
+        let bids = self.state.current_bids();
+        let asks = self.state.current_asks();
+        let book = BookDepth::new(bids, asks).max_levels(10);
         frame.render_widget(book, area);
     }
 
     /// Draw the price chart.
     fn draw_price_chart(&self, frame: &mut Frame, area: Rect) {
-        let title = match self.state.last_price {
-            Some(p) => format!("Price: ${:.2}", p.to_float()),
-            None => "Price".to_string(),
-        };
-        let chart = PriceChart::new(&self.state.price_history).title(&title);
-        frame.render_widget(chart, area);
+        if self.overlay_mode && self.state.symbols.len() > 1 {
+            // Overlay mode: show all symbols
+            let title = "Price (Overlay)".to_string();
+            let chart =
+                PriceChart::multi(&self.state.price_history, &self.state.symbols).title(&title);
+            frame.render_widget(chart, area);
+        } else {
+            // Single symbol mode
+            let price_history = self.state.current_price_history();
+            let title = match self.state.current_last_price() {
+                Some(p) => format!("Price: ${:.2}", p.to_float()),
+                None => "Price".to_string(),
+            };
+            let chart = PriceChart::new(price_history).title(&title);
+            frame.render_widget(chart, area);
+        }
     }
 
     /// Draw the agent P&L table.
@@ -476,6 +685,10 @@ pub struct SimpleTui {
     risk_scroll: usize,
     /// Agent P&L scroll offset.
     agent_scroll: usize,
+    /// Currently selected symbol index.
+    selected_symbol: usize,
+    /// Overlay mode.
+    overlay_mode: bool,
 }
 
 impl SimpleTui {
@@ -485,6 +698,8 @@ impl SimpleTui {
             state: SimUpdate::default(),
             risk_scroll: 0,
             agent_scroll: 0,
+            selected_symbol: 0,
+            overlay_mode: false,
         }
     }
 
@@ -506,6 +721,10 @@ impl SimpleTui {
             agent_scroll: self.agent_scroll,
             risk_area: None,
             agent_area: None,
+            selected_symbol: self.selected_symbol,
+            overlay_mode: self.overlay_mode,
+            command_sender: None,
+            running: true, // SimpleTui assumes running for display
         };
         app.draw(frame);
     }

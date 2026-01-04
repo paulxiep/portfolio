@@ -11,10 +11,52 @@
 //! 1. Specify minimum count for each specific agent type
 //! 2. Specify minimum total for each tier
 //! 3. If tier minimum not met by specific agents, random tier agents are spawned
+//!
+//! # Multi-Symbol Support (V2.3)
+//!
+//! The `symbols` field allows configuring multiple symbols. Currently the simulation
+//! runs the first symbol only (single-symbol mode), but the TUI infrastructure
+//! supports displaying multiple symbols once the simulation is upgraded.
+//!
+//! **Recommended limits:**
+//! - Development/testing: 1-3 symbols
+//! - Production: Up to 10 symbols (performance depends on agent count per symbol)
+//! - Hard limit: None, but memory grows linearly with symbols × price history
 
 use rand::Rng;
 use rand::prelude::IndexedRandom;
-use types::{Cash, Price};
+use types::{Cash, Price, Sector};
+
+/// Configuration for a single symbol.
+#[derive(Debug, Clone)]
+pub struct SymbolSpec {
+    /// Symbol ticker (e.g., "AAPL", "GOOG").
+    pub symbol: String,
+    /// Initial price of the asset.
+    pub initial_price: Price,
+    /// Industry sector for news events and grouping (V2.4).
+    pub sector: Sector,
+}
+
+impl SymbolSpec {
+    /// Create a new symbol specification.
+    pub fn new(symbol: impl Into<String>, initial_price: f64) -> Self {
+        Self {
+            symbol: symbol.into(),
+            initial_price: Price::from_float(initial_price),
+            sector: Sector::Tech, // Default sector
+        }
+    }
+
+    /// Create a symbol specification with explicit sector.
+    pub fn with_sector(symbol: impl Into<String>, initial_price: f64, sector: Sector) -> Self {
+        Self {
+            symbol: symbol.into(),
+            initial_price: Price::from_float(initial_price),
+            sector,
+        }
+    }
+}
 
 /// Master configuration for the entire simulation.
 #[derive(Debug, Clone)]
@@ -22,10 +64,8 @@ pub struct SimConfig {
     // ─────────────────────────────────────────────────────────────────────────
     // Simulation Control
     // ─────────────────────────────────────────────────────────────────────────
-    /// Symbol being traded.
-    pub symbol: String,
-    /// Initial price of the asset.
-    pub initial_price: Price,
+    /// Symbols to trade (first symbol is primary for single-symbol simulation).
+    pub symbols: Vec<SymbolSpec>,
     /// Total ticks to run (0 = infinite).
     pub total_ticks: u64,
     /// Delay between ticks in milliseconds (0 = fastest).
@@ -79,6 +119,8 @@ pub struct SimConfig {
     // ─────────────────────────────────────────────────────────────────────────
     /// Starting cash for each noise trader.
     pub nt_initial_cash: Cash,
+    /// Starting position in shares (allows balanced buy/sell from start).
+    pub nt_initial_position: i64,
     /// Probability of placing an order each tick (0.0 - 1.0).
     pub nt_order_probability: f64,
     /// Maximum price deviation from mid price as a fraction.
@@ -110,23 +152,27 @@ pub struct SimConfig {
 impl Default for SimConfig {
     fn default() -> Self {
         Self {
-            // Simulation Control
-            symbol: "ACME".to_string(),
-            initial_price: Price::from_float(100.0),
+            // Simulation Control - default multi-symbol with different sectors (V2.4)
+            symbols: vec![
+                SymbolSpec::with_sector("Duck Delish", 100.0, Sector::Consumer),
+                SymbolSpec::with_sector("Zephyr Zap", 100.0, Sector::Energy),
+                SymbolSpec::with_sector("Vraiment Villa", 100.0, Sector::RealEstate),
+                SymbolSpec::with_sector("Quant Quotation", 100.0, Sector::Finance),
+            ],
             total_ticks: 5000,
-            tick_delay_ms: 10, // ~100 ticks/sec for watchable visualization
+            tick_delay_ms: 0, // ~100 ticks/sec for watchable visualization
             verbose: false,
 
             // Tier 1 Agent Counts (minimums per type)
-            num_market_makers: 10,
-            num_noise_traders: 30,
-            num_momentum_traders: 5,
-            num_trend_followers: 5,
-            num_macd_traders: 5,
-            num_bollinger_traders: 5,
-            num_vwap_executors: 5,
+            num_market_makers: 100,
+            num_noise_traders: 400,
+            num_momentum_traders: 50,
+            num_trend_followers: 50,
+            num_macd_traders: 50,
+            num_bollinger_traders: 50,
+            num_vwap_executors: 50,
             // Tier Minimums
-            min_tier1_agents: 100, // Fill with random agents if needed
+            min_tier1_agents: 1000, // Random agents fill the gap
 
             // Market Maker Parameters
             mm_initial_cash: Cash::from_float(1_000_000.0),
@@ -137,7 +183,10 @@ impl Default for SimConfig {
             mm_inventory_skew: 0.001,
 
             // Noise Trader Parameters
+            // Noise traders start flat (0 position) to avoid adding to long imbalance
+            // from market makers. Cash equals quant_initial_cash for equal net worth.
             nt_initial_cash: Cash::from_float(100_000.0),
+            nt_initial_position: 0,
             nt_order_probability: 0.3, // 30% chance each tick
             nt_price_deviation: 0.01,  // 1% from mid price
             nt_min_quantity: 5,
@@ -193,15 +242,37 @@ impl SimConfig {
     // Builder-style setters for fluent configuration
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// Set the trading symbol.
-    pub fn symbol(mut self, symbol: impl Into<String>) -> Self {
-        self.symbol = symbol.into();
+    /// Set the complete list of symbols to trade.
+    pub fn symbols(mut self, symbols: Vec<SymbolSpec>) -> Self {
+        self.symbols = symbols;
         self
     }
 
-    /// Set the initial asset price.
+    /// Add a symbol to the trading list.
+    pub fn add_symbol(mut self, symbol: impl Into<String>, initial_price: f64) -> Self {
+        self.symbols.push(SymbolSpec::new(symbol, initial_price));
+        self
+    }
+
+    /// Convenience: Set a single trading symbol (replaces all existing).
+    /// For multi-symbol, use `symbols()` or `add_symbol()`.
+    pub fn symbol(mut self, symbol: impl Into<String>) -> Self {
+        if self.symbols.is_empty() {
+            self.symbols.push(SymbolSpec::new(symbol, 100.0));
+        } else {
+            self.symbols[0].symbol = symbol.into();
+        }
+        self
+    }
+
+    /// Convenience: Set initial price for the first symbol.
+    /// For multi-symbol, configure via `symbols()` or `SymbolSpec`.
     pub fn initial_price(mut self, price: f64) -> Self {
-        self.initial_price = Price::from_float(price);
+        if self.symbols.is_empty() {
+            self.symbols.push(SymbolSpec::new("ACME", price));
+        } else {
+            self.symbols[0].initial_price = Price::from_float(price);
+        }
         self
     }
 
@@ -296,6 +367,32 @@ impl SimConfig {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // Symbol Accessors
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Get all symbol specifications.
+    pub fn get_symbols(&self) -> &[SymbolSpec] {
+        &self.symbols
+    }
+
+    /// Get the primary (first) symbol name.
+    /// Panics if no symbols are configured.
+    pub fn primary_symbol(&self) -> &str {
+        &self.symbols[0].symbol
+    }
+
+    /// Get the primary (first) symbol's initial price.
+    /// Panics if no symbols are configured.
+    pub fn primary_initial_price(&self) -> Price {
+        self.symbols[0].initial_price
+    }
+
+    /// Number of configured symbols.
+    pub fn symbol_count(&self) -> usize {
+        self.symbols.len()
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // Computed Properties
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -341,39 +438,47 @@ impl SimConfig {
 // ─────────────────────────────────────────────────────────────────────────────
 
 impl SimConfig {
-    /// Quick demo: fewer ticks, faster visualization.
+    /// Quick demo: 10% of default agents, fewer ticks, faster visualization.
     pub fn demo() -> Self {
         Self::default()
             .total_ticks(1000)
             .tick_delay_ms(5)
-            .min_tier1(10)
-    }
-
-    /// Stress test: many agents, many ticks, no delay.
-    pub fn stress_test() -> Self {
-        Self::default()
-            .total_ticks(100_000)
-            .tick_delay_ms(0)
-            .market_makers(5)
-            .noise_traders(30)
+            .market_makers(10)
+            .noise_traders(40)
             .momentum_traders(5)
             .trend_followers(5)
             .macd_traders(5)
             .bollinger_traders(5)
-            .min_tier1(60)
+            .vwap_executors(5)
+            .min_tier1(100)
     }
 
-    /// Low activity: conservative parameters.
+    /// Stress test: 2x default agents, many ticks, no delay.
+    pub fn stress_test() -> Self {
+        Self::default()
+            .total_ticks(100_000)
+            .tick_delay_ms(0)
+            .min_tier1(2000)
+    }
+
+    /// Low activity: 20% of default agents, conservative parameters.
     pub fn low_activity() -> Self {
         Self::default()
-            .noise_traders(5)
+            .market_makers(20)
+            .noise_traders(80)
+            .momentum_traders(10)
+            .trend_followers(10)
+            .macd_traders(10)
+            .bollinger_traders(10)
+            .vwap_executors(10)
             .nt_probability(0.1)
-            .min_tier1(10)
+            .min_tier1(200)
     }
 
-    /// High volatility: aggressive noise traders.
+    /// High volatility: aggressive noise traders, wider spreads.
     pub fn high_volatility() -> Self {
         Self::default()
+            .noise_traders(600) // 1.5x noise traders
             .nt_probability(0.5)
             .nt_cash(50_000.0)
             .mm_spread(0.005) // Wider spread to compensate
@@ -382,12 +487,12 @@ impl SimConfig {
     /// Quant-heavy: More algorithmic traders, fewer noise traders.
     pub fn quant_heavy() -> Self {
         Self::default()
-            .noise_traders(5)
-            .momentum_traders(10)
-            .trend_followers(10)
-            .macd_traders(10)
-            .bollinger_traders(10)
-            .min_tier1(50)
+            .noise_traders(100) // 25% of default noise
+            .momentum_traders(150) // 3x quant strategies
+            .trend_followers(150)
+            .macd_traders(150)
+            .bollinger_traders(150)
+            .vwap_executors(100)
     }
 }
 
@@ -414,7 +519,7 @@ mod tests {
         assert!(config.num_market_makers >= 1, "Should have at least 1 MM");
         assert!(config.total_ticks > 0, "Should run at least 1 tick");
         assert!(
-            config.initial_price > Price::ZERO,
+            config.primary_initial_price() > Price::ZERO,
             "Initial price should be positive"
         );
     }
@@ -489,10 +594,10 @@ mod tests {
 
         // Presets should modify at least one parameter from default
         assert_ne!(demo.total_ticks, default.total_ticks);
-        assert_ne!(stress.tick_delay_ms, default.tick_delay_ms);
-        assert_ne!(low.num_noise_traders, default.num_noise_traders);
+        assert_ne!(stress.total_ticks, default.total_ticks);
+        assert_ne!(low.nt_order_probability, default.nt_order_probability);
         assert_ne!(high.nt_order_probability, default.nt_order_probability);
-        assert_ne!(quant.num_momentum_traders, default.num_momentum_traders);
+        assert_ne!(quant.num_noise_traders, default.num_noise_traders);
     }
 
     #[test]

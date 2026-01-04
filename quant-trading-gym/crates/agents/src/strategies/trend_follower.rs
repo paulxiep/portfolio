@@ -12,7 +12,7 @@
 //! The strategy is fully declarative via [`TrendFollowerConfig`].
 
 use crate::state::AgentState;
-use crate::{Agent, AgentAction, MarketData};
+use crate::{Agent, AgentAction, StrategyContext};
 use types::{AgentId, Cash, IndicatorType, Order, OrderSide, Price, Quantity, Trade};
 
 /// Configuration for a Trend Following trader.
@@ -105,10 +105,9 @@ impl TrendFollower {
     }
 
     /// Determine the reference price for orders.
-    fn get_reference_price(&self, market: &MarketData) -> Price {
-        market
-            .mid_price()
-            .or(market.last_price)
+    fn get_reference_price(&self, ctx: &StrategyContext<'_>) -> Price {
+        ctx.mid_price(&self.config.symbol)
+            .or_else(|| ctx.last_price(&self.config.symbol))
             .unwrap_or(self.config.initial_price)
     }
 
@@ -123,8 +122,8 @@ impl TrendFollower {
     }
 
     /// Generate a buy order.
-    fn generate_buy_order(&self, market: &MarketData) -> Order {
-        let price = self.get_reference_price(market);
+    fn generate_buy_order(&self, ctx: &StrategyContext<'_>) -> Order {
+        let price = self.get_reference_price(ctx);
         let order_price = Price::from_float(price.to_float() * 0.999);
         Order::limit(
             self.id,
@@ -136,8 +135,8 @@ impl TrendFollower {
     }
 
     /// Generate a sell order.
-    fn generate_sell_order(&self, market: &MarketData) -> Order {
-        let price = self.get_reference_price(market);
+    fn generate_sell_order(&self, ctx: &StrategyContext<'_>) -> Order {
+        let price = self.get_reference_price(ctx);
         let order_price = Price::from_float(price.to_float() * 1.001);
         Order::limit(
             self.id,
@@ -163,14 +162,20 @@ impl Agent for TrendFollower {
         self.id
     }
 
-    fn on_tick(&mut self, market: &MarketData) -> AgentAction {
+    fn on_tick(&mut self, ctx: &StrategyContext<'_>) -> AgentAction {
         // Get both SMAs from pre-computed indicators
-        let fast_sma = match market.get_indicator(IndicatorType::Sma(self.config.fast_period)) {
+        let fast_sma = match ctx.get_indicator(
+            &self.config.symbol,
+            IndicatorType::Sma(self.config.fast_period),
+        ) {
             Some(v) => v,
             None => return AgentAction::none(),
         };
 
-        let slow_sma = match market.get_indicator(IndicatorType::Sma(self.config.slow_period)) {
+        let slow_sma = match ctx.get_indicator(
+            &self.config.symbol,
+            IndicatorType::Sma(self.config.slow_period),
+        ) {
             Some(v) => v,
             None => return AgentAction::none(),
         };
@@ -183,13 +188,13 @@ impl Agent for TrendFollower {
         match (prev_state, current_state) {
             // Golden cross: fast crosses above slow -> buy
             (CrossoverState::Below, CrossoverState::Above) if self.can_buy() => {
-                let order = self.generate_buy_order(market);
+                let order = self.generate_buy_order(ctx);
                 self.state.record_order();
                 AgentAction::single(order)
             }
             // Death cross: fast crosses below slow -> sell
             (CrossoverState::Above, CrossoverState::Below) if self.can_sell() => {
-                let order = self.generate_sell_order(market);
+                let order = self.generate_sell_order(ctx);
                 self.state.record_order();
                 AgentAction::single(order)
             }
@@ -221,60 +226,103 @@ impl Agent for TrendFollower {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::StrategyContext;
+    use quant::IndicatorSnapshot;
+    use sim_core::{OrderBook, SingleSymbolMarket};
     use std::collections::HashMap;
-    use types::BookSnapshot;
+    use types::{Candle, Order, Symbol};
 
-    fn make_market_data(fast_sma: Option<f64>, slow_sma: Option<f64>) -> MarketData {
-        use quant::IndicatorSnapshot;
+    fn make_context_with_indicators<'a>(
+        _order_book: &'a OrderBook,
+        candles: &'a HashMap<Symbol, Vec<Candle>>,
+        indicators: &'a IndicatorSnapshot,
+        trades: &'a HashMap<Symbol, Vec<Trade>>,
+        market: &'a SingleSymbolMarket<'a>,
+        events: &'a [news::NewsEvent],
+        fundamentals: &'a news::SymbolFundamentals,
+    ) -> StrategyContext<'a> {
+        StrategyContext::new(
+            100,
+            1000,
+            market,
+            candles,
+            indicators,
+            trades,
+            events,
+            fundamentals,
+        )
+    }
 
-        let indicators = match (fast_sma, slow_sma) {
+    fn create_order_book(symbol: &str, bid_price: f64, ask_price: f64) -> OrderBook {
+        let mut book = OrderBook::new(symbol.to_string());
+        let bid = Order::limit(
+            AgentId(999),
+            symbol,
+            OrderSide::Buy,
+            Price::from_float(bid_price),
+            Quantity(100),
+        );
+        let ask = Order::limit(
+            AgentId(999),
+            symbol,
+            OrderSide::Sell,
+            Price::from_float(ask_price),
+            Quantity(100),
+        );
+        book.add_order(bid).unwrap();
+        book.add_order(ask).unwrap();
+        book
+    }
+
+    fn make_indicators(fast_sma: Option<f64>, slow_sma: Option<f64>) -> IndicatorSnapshot {
+        match (fast_sma, slow_sma) {
             (Some(fast), Some(slow)) => {
                 let mut snap = IndicatorSnapshot::new(100);
                 let mut indicators = HashMap::new();
                 indicators.insert(IndicatorType::Sma(10), fast);
                 indicators.insert(IndicatorType::Sma(50), slow);
                 snap.insert("ACME".to_string(), indicators);
-                Some(snap)
+                snap
             }
-            _ => None,
-        };
-
-        MarketData {
-            tick: 100,
-            timestamp: 1000,
-            book_snapshot: BookSnapshot {
-                symbol: "ACME".to_string(),
-                bids: vec![types::BookLevel {
-                    price: Price::from_float(99.0),
-                    quantity: Quantity(100),
-                    order_count: 1,
-                }],
-                asks: vec![types::BookLevel {
-                    price: Price::from_float(101.0),
-                    quantity: Quantity(100),
-                    order_count: 1,
-                }],
-                timestamp: 1000,
-                tick: 100,
-            },
-            recent_trades: vec![],
-            last_price: Some(Price::from_float(100.0)),
-            candles: vec![],
-            indicators,
+            _ => IndicatorSnapshot::default(),
         }
     }
 
     #[test]
     fn test_trend_golden_cross_buys() {
         let mut trader = TrendFollower::with_defaults(AgentId(1));
+        let order_book = create_order_book("ACME", 99.0, 101.0);
+        let market = SingleSymbolMarket::new(&order_book);
+        let candles: HashMap<Symbol, Vec<Candle>> = HashMap::new();
+        let trades: HashMap<Symbol, Vec<Trade>> = HashMap::new();
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
 
         // First tick: fast below slow (set prev_state)
-        let market1 = make_market_data(Some(49.0), Some(50.0));
-        let _ = trader.on_tick(&market1);
+        let indicators1 = make_indicators(Some(49.0), Some(50.0));
+        let ctx1 = make_context_with_indicators(
+            &order_book,
+            &candles,
+            &indicators1,
+            &trades,
+            &market,
+            &events,
+            &fundamentals,
+        );
+        let _ = trader.on_tick(&ctx1);
 
         // Second tick: fast above slow (golden cross!)
-        let market2 = make_market_data(Some(51.0), Some(50.0));
-        let action = trader.on_tick(&market2);
+        let indicators2 = make_indicators(Some(51.0), Some(50.0));
+        let ctx2 = make_context_with_indicators(
+            &order_book,
+            &candles,
+            &indicators2,
+            &trades,
+            &market,
+            &events,
+            &fundamentals,
+        );
+        let action = trader.on_tick(&ctx2);
 
         assert_eq!(action.orders.len(), 1);
         assert_eq!(action.orders[0].side, OrderSide::Buy);
@@ -283,14 +331,38 @@ mod tests {
     #[test]
     fn test_trend_death_cross_sells() {
         let mut trader = TrendFollower::with_defaults(AgentId(1));
+        let order_book = create_order_book("ACME", 99.0, 101.0);
+        let market = SingleSymbolMarket::new(&order_book);
+        let candles: HashMap<Symbol, Vec<Candle>> = HashMap::new();
+        let trades: HashMap<Symbol, Vec<Trade>> = HashMap::new();
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
 
         // First tick: fast above slow
-        let market1 = make_market_data(Some(51.0), Some(50.0));
-        let _ = trader.on_tick(&market1);
+        let indicators1 = make_indicators(Some(51.0), Some(50.0));
+        let ctx1 = make_context_with_indicators(
+            &order_book,
+            &candles,
+            &indicators1,
+            &trades,
+            &market,
+            &events,
+            &fundamentals,
+        );
+        let _ = trader.on_tick(&ctx1);
 
         // Second tick: fast below slow (death cross!)
-        let market2 = make_market_data(Some(49.0), Some(50.0));
-        let action = trader.on_tick(&market2);
+        let indicators2 = make_indicators(Some(49.0), Some(50.0));
+        let ctx2 = make_context_with_indicators(
+            &order_book,
+            &candles,
+            &indicators2,
+            &trades,
+            &market,
+            &events,
+            &fundamentals,
+        );
+        let action = trader.on_tick(&ctx2);
 
         assert_eq!(action.orders.len(), 1);
         assert_eq!(action.orders[0].side, OrderSide::Sell);
@@ -299,13 +371,37 @@ mod tests {
     #[test]
     fn test_trend_no_action_without_crossover() {
         let mut trader = TrendFollower::with_defaults(AgentId(1));
+        let order_book = create_order_book("ACME", 99.0, 101.0);
+        let market = SingleSymbolMarket::new(&order_book);
+        let candles: HashMap<Symbol, Vec<Candle>> = HashMap::new();
+        let trades: HashMap<Symbol, Vec<Trade>> = HashMap::new();
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
 
         // Both ticks: fast above slow (no crossover)
-        let market1 = make_market_data(Some(51.0), Some(50.0));
-        let _ = trader.on_tick(&market1);
+        let indicators1 = make_indicators(Some(51.0), Some(50.0));
+        let ctx1 = make_context_with_indicators(
+            &order_book,
+            &candles,
+            &indicators1,
+            &trades,
+            &market,
+            &events,
+            &fundamentals,
+        );
+        let _ = trader.on_tick(&ctx1);
 
-        let market2 = make_market_data(Some(52.0), Some(50.0));
-        let action = trader.on_tick(&market2);
+        let indicators2 = make_indicators(Some(52.0), Some(50.0));
+        let ctx2 = make_context_with_indicators(
+            &order_book,
+            &candles,
+            &indicators2,
+            &trades,
+            &market,
+            &events,
+            &fundamentals,
+        );
+        let action = trader.on_tick(&ctx2);
 
         assert!(action.orders.is_empty());
     }

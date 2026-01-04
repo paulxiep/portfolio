@@ -14,7 +14,7 @@
 //! The strategy is fully declarative via [`BollingerReversionConfig`].
 
 use crate::state::AgentState;
-use crate::{Agent, AgentAction, MarketData};
+use crate::{Agent, AgentAction, StrategyContext};
 use quant::BollingerBands;
 use types::{AgentId, Cash, IndicatorType, Order, OrderSide, Price, Quantity, Trade};
 
@@ -100,10 +100,9 @@ impl BollingerReversion {
     }
 
     /// Determine the reference price for orders.
-    fn get_reference_price(&self, market: &MarketData) -> Price {
-        market
-            .mid_price()
-            .or(market.last_price)
+    fn get_reference_price(&self, ctx: &StrategyContext<'_>) -> Price {
+        ctx.mid_price(&self.config.symbol)
+            .or_else(|| ctx.last_price(&self.config.symbol))
             .unwrap_or(self.config.initial_price)
     }
 
@@ -118,8 +117,8 @@ impl BollingerReversion {
     }
 
     /// Generate a buy order.
-    fn generate_buy_order(&self, market: &MarketData) -> Order {
-        let price = self.get_reference_price(market);
+    fn generate_buy_order(&self, ctx: &StrategyContext<'_>) -> Order {
+        let price = self.get_reference_price(ctx);
         // For mean reversion, we want to buy at or below the lower band
         // Use a limit slightly above current price to improve fill
         let order_price = Price::from_float(price.to_float() * 1.001);
@@ -133,8 +132,8 @@ impl BollingerReversion {
     }
 
     /// Generate a sell order.
-    fn generate_sell_order(&self, market: &MarketData) -> Order {
-        let price = self.get_reference_price(market);
+    fn generate_sell_order(&self, ctx: &StrategyContext<'_>) -> Order {
+        let price = self.get_reference_price(ctx);
         // For mean reversion, we want to sell at or above the upper band
         // Use a limit slightly below current price to improve fill
         let order_price = Price::from_float(price.to_float() * 0.999);
@@ -153,9 +152,12 @@ impl Agent for BollingerReversion {
         self.id
     }
 
-    fn on_tick(&mut self, market: &MarketData) -> AgentAction {
+    fn on_tick(&mut self, ctx: &StrategyContext<'_>) -> AgentAction {
         // Calculate full Bollinger Bands output from candles
-        let bb_output = match self.bollinger.calculate_full(&market.candles) {
+        let bb_output = match self
+            .bollinger
+            .calculate_full(ctx.candles(&self.config.symbol))
+        {
             Some(output) => output,
             None => return AgentAction::none(), // Not enough data
         };
@@ -166,13 +168,13 @@ impl Agent for BollingerReversion {
         let percent_b = bb_output.percent_b;
 
         if percent_b <= self.config.lower_threshold && self.can_buy() {
-            let order = self.generate_buy_order(market);
+            let order = self.generate_buy_order(ctx);
             self.state.record_order();
             return AgentAction::single(order);
         }
 
         if percent_b >= self.config.upper_threshold && self.can_sell() {
-            let order = self.generate_sell_order(market);
+            let order = self.generate_sell_order(ctx);
             self.state.record_order();
             return AgentAction::single(order);
         }
@@ -204,7 +206,11 @@ impl Agent for BollingerReversion {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use types::{BookSnapshot, Candle};
+    use crate::context::StrategyContext;
+    use quant::IndicatorSnapshot;
+    use sim_core::{OrderBook, SingleSymbolMarket};
+    use std::collections::HashMap;
+    use types::{Candle, Order, Symbol};
 
     /// Generate candles with high volatility that will push price beyond bands.
     fn make_volatile_candles(spike_up: bool, count: usize) -> Vec<Candle> {
@@ -239,53 +245,101 @@ mod tests {
         candles
     }
 
-    fn make_market_data(candles: Vec<Candle>) -> MarketData {
-        let last_price = candles.last().map(|c| c.close);
-
-        MarketData {
-            tick: 100,
-            timestamp: 1000,
-            book_snapshot: BookSnapshot {
-                symbol: "ACME".to_string(),
-                bids: vec![types::BookLevel {
-                    price: Price::from_float(99.0),
-                    quantity: Quantity(100),
-                    order_count: 1,
-                }],
-                asks: vec![types::BookLevel {
-                    price: Price::from_float(101.0),
-                    quantity: Quantity(100),
-                    order_count: 1,
-                }],
-                timestamp: 1000,
-                tick: 100,
-            },
-            recent_trades: vec![],
-            last_price,
+    fn make_context_with_candles<'a>(
+        _order_book: &'a OrderBook,
+        candles: &'a HashMap<Symbol, Vec<Candle>>,
+        indicators: &'a IndicatorSnapshot,
+        trades: &'a HashMap<Symbol, Vec<Trade>>,
+        market: &'a SingleSymbolMarket<'a>,
+        events: &'a [news::NewsEvent],
+        fundamentals: &'a news::SymbolFundamentals,
+    ) -> StrategyContext<'a> {
+        StrategyContext::new(
+            100,
+            1000,
+            market,
             candles,
-            indicators: None,
-        }
+            indicators,
+            trades,
+            events,
+            fundamentals,
+        )
+    }
+
+    fn create_order_book(symbol: &str, bid_price: f64, ask_price: f64) -> OrderBook {
+        let mut book = OrderBook::new(symbol.to_string());
+        let bid = Order::limit(
+            AgentId(999),
+            symbol,
+            OrderSide::Buy,
+            Price::from_float(bid_price),
+            Quantity(100),
+        );
+        let ask = Order::limit(
+            AgentId(999),
+            symbol,
+            OrderSide::Sell,
+            Price::from_float(ask_price),
+            Quantity(100),
+        );
+        book.add_order(bid).unwrap();
+        book.add_order(ask).unwrap();
+        book
     }
 
     #[test]
     fn test_bollinger_needs_enough_data() {
         let mut trader = BollingerReversion::with_defaults(AgentId(1));
-        // Only 10 candles, need 20 minimum
-        let candles = make_volatile_candles(true, 10);
-        let market = make_market_data(candles);
+        let order_book = create_order_book("ACME", 99.0, 101.0);
+        let market = SingleSymbolMarket::new(&order_book);
+        let indicators = IndicatorSnapshot::default();
+        let trades: HashMap<Symbol, Vec<Trade>> = HashMap::new();
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
 
-        let action = trader.on_tick(&market);
+        // Only 10 candles, need 20 minimum
+        let candle_vec = make_volatile_candles(true, 10);
+        let mut candles: HashMap<Symbol, Vec<Candle>> = HashMap::new();
+        candles.insert("ACME".into(), candle_vec);
+
+        let ctx = make_context_with_candles(
+            &order_book,
+            &candles,
+            &indicators,
+            &trades,
+            &market,
+            &events,
+            &fundamentals,
+        );
+        let action = trader.on_tick(&ctx);
         assert!(action.orders.is_empty());
     }
 
     #[test]
     fn test_bollinger_buys_on_lower_band() {
         let mut trader = BollingerReversion::with_defaults(AgentId(1));
-        // Price spikes down beyond lower band
-        let candles = make_volatile_candles(false, 25);
-        let market = make_market_data(candles);
+        let order_book = create_order_book("ACME", 99.0, 101.0);
+        let market = SingleSymbolMarket::new(&order_book);
+        let indicators = IndicatorSnapshot::default();
+        let trades: HashMap<Symbol, Vec<Trade>> = HashMap::new();
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
 
-        let action = trader.on_tick(&market);
+        // Price spikes down beyond lower band
+        let candle_vec = make_volatile_candles(false, 25);
+        let mut candles: HashMap<Symbol, Vec<Candle>> = HashMap::new();
+        candles.insert("ACME".into(), candle_vec);
+
+        let ctx = make_context_with_candles(
+            &order_book,
+            &candles,
+            &indicators,
+            &trades,
+            &market,
+            &events,
+            &fundamentals,
+        );
+        let action = trader.on_tick(&ctx);
         assert_eq!(action.orders.len(), 1);
         assert_eq!(action.orders[0].side, OrderSide::Buy);
     }
@@ -293,11 +347,28 @@ mod tests {
     #[test]
     fn test_bollinger_sells_on_upper_band() {
         let mut trader = BollingerReversion::with_defaults(AgentId(1));
-        // Price spikes up beyond upper band
-        let candles = make_volatile_candles(true, 25);
-        let market = make_market_data(candles);
+        let order_book = create_order_book("ACME", 99.0, 101.0);
+        let market = SingleSymbolMarket::new(&order_book);
+        let indicators = IndicatorSnapshot::default();
+        let trades: HashMap<Symbol, Vec<Trade>> = HashMap::new();
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
 
-        let action = trader.on_tick(&market);
+        // Price spikes up beyond upper band
+        let candle_vec = make_volatile_candles(true, 25);
+        let mut candles: HashMap<Symbol, Vec<Candle>> = HashMap::new();
+        candles.insert("ACME".into(), candle_vec);
+
+        let ctx = make_context_with_candles(
+            &order_book,
+            &candles,
+            &indicators,
+            &trades,
+            &market,
+            &events,
+            &fundamentals,
+        );
+        let action = trader.on_tick(&ctx);
         assert_eq!(action.orders.len(), 1);
         assert_eq!(action.orders[0].side, OrderSide::Sell);
     }

@@ -1,15 +1,15 @@
 //! Simulation configuration options.
 
-use types::Price;
+use types::{Price, Quantity, ShortSellingConfig, Symbol, SymbolConfig};
 
 /// Configuration for the simulation.
 #[derive(Debug, Clone)]
 pub struct SimulationConfig {
-    /// Symbol being traded in this simulation.
-    pub symbol: String,
+    /// Symbol configurations (supports multiple symbols).
+    pub symbol_configs: Vec<SymbolConfig>,
 
-    /// Initial/reference price for the market.
-    pub initial_price: Price,
+    /// Short-selling configuration (enabled, limits, rates).
+    pub short_selling: ShortSellingConfig,
 
     /// Number of book levels to include in snapshots.
     pub snapshot_depth: usize,
@@ -23,20 +23,33 @@ pub struct SimulationConfig {
     /// Maximum number of candles to keep in history.
     pub max_candles: usize,
 
+    /// Whether to validate orders against position limits.
+    /// When disabled, orders are processed without constraint checks.
+    pub enforce_position_limits: bool,
+
     /// Enable verbose logging.
     pub verbose: bool,
+
+    /// News event generation configuration (V2.4).
+    pub news: news::NewsGeneratorConfig,
+
+    /// Random seed for deterministic simulation.
+    pub seed: u64,
 }
 
 impl Default for SimulationConfig {
     fn default() -> Self {
         Self {
-            symbol: "SIM".to_string(),
-            initial_price: Price::from_float(100.0),
+            symbol_configs: vec![SymbolConfig::default()],
+            short_selling: ShortSellingConfig::disabled(),
             snapshot_depth: 10,
             max_recent_trades: 100,
             candle_interval: 10, // Candle every 10 ticks
             max_candles: 200,    // Keep 200 candles (~2000 ticks of history)
+            enforce_position_limits: true,
             verbose: false,
+            news: news::NewsGeneratorConfig::default(),
+            seed: 42,
         }
     }
 }
@@ -44,15 +57,89 @@ impl Default for SimulationConfig {
 impl SimulationConfig {
     /// Create a new configuration with the given symbol.
     pub fn new(symbol: impl Into<String>) -> Self {
-        Self {
+        let symbol_config = SymbolConfig {
             symbol: symbol.into(),
+            ..SymbolConfig::default()
+        };
+        Self {
+            symbol_configs: vec![symbol_config],
             ..Default::default()
         }
     }
 
-    /// Set the initial price.
+    /// Create a configuration with multiple symbols.
+    pub fn with_symbols(symbols: Vec<SymbolConfig>) -> Self {
+        Self {
+            symbol_configs: symbols,
+            ..Default::default()
+        }
+    }
+
+    /// Get all symbol names.
+    pub fn symbols(&self) -> Vec<Symbol> {
+        self.symbol_configs
+            .iter()
+            .map(|c| c.symbol.clone())
+            .collect()
+    }
+
+    /// Get the primary (first) symbol name.
+    pub fn symbol(&self) -> &str {
+        &self.symbol_configs[0].symbol
+    }
+
+    /// Get the primary symbol's initial/reference price.
+    pub fn initial_price(&self) -> Price {
+        self.symbol_configs[0].initial_price
+    }
+
+    /// Get symbol config by symbol name.
+    pub fn get_symbol_config(&self, symbol: &str) -> Option<&SymbolConfig> {
+        self.symbol_configs.iter().find(|c| c.symbol == symbol)
+    }
+
+    /// Get all symbol configs.
+    pub fn get_symbol_configs(&self) -> &[SymbolConfig] {
+        &self.symbol_configs
+    }
+
+    /// Set a single symbol configuration (replaces all).
+    pub fn with_symbol_config(mut self, config: SymbolConfig) -> Self {
+        self.symbol_configs = vec![config];
+        self
+    }
+
+    /// Add a symbol configuration.
+    pub fn add_symbol_config(mut self, config: SymbolConfig) -> Self {
+        self.symbol_configs.push(config);
+        self
+    }
+
+    /// Set the initial price for the primary symbol.
     pub fn with_initial_price(mut self, price: Price) -> Self {
-        self.initial_price = price;
+        if !self.symbol_configs.is_empty() {
+            self.symbol_configs[0].initial_price = price;
+        }
+        self
+    }
+
+    /// Set shares outstanding for the primary symbol.
+    pub fn with_shares_outstanding(mut self, shares: Quantity) -> Self {
+        if !self.symbol_configs.is_empty() {
+            self.symbol_configs[0].shares_outstanding = shares;
+        }
+        self
+    }
+
+    /// Set short-selling configuration.
+    pub fn with_short_selling(mut self, config: ShortSellingConfig) -> Self {
+        self.short_selling = config;
+        self
+    }
+
+    /// Enable short selling with default settings.
+    pub fn with_short_selling_enabled(mut self) -> Self {
+        self.short_selling = ShortSellingConfig::enabled_default();
         self
     }
 
@@ -80,9 +167,33 @@ impl SimulationConfig {
         self
     }
 
+    /// Enable or disable position limit enforcement.
+    pub fn with_position_limits(mut self, enforce: bool) -> Self {
+        self.enforce_position_limits = enforce;
+        self
+    }
+
     /// Enable verbose mode.
     pub fn with_verbose(mut self, verbose: bool) -> Self {
         self.verbose = verbose;
+        self
+    }
+
+    /// Set news event generation configuration (V2.4).
+    pub fn with_news_config(mut self, news: news::NewsGeneratorConfig) -> Self {
+        self.news = news;
+        self
+    }
+
+    /// Disable news event generation.
+    pub fn with_news_disabled(mut self) -> Self {
+        self.news = news::NewsGeneratorConfig::disabled();
+        self
+    }
+
+    /// Set random seed for deterministic simulation.
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = seed;
         self
     }
 }

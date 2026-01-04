@@ -1,5 +1,345 @@
 # Development Log
 
+## 2026-01-04: V2.4 - Fundamentals, Events & TUI Controls
+
+### Summary
+Complete news/events system with Gordon Growth Model fair value, sector-based event generation, TUI start/stop control, and event distribution fixes.
+
+### Completed
+
+#### News & Events System (`news/`)
+- ✅ `FundamentalEvent` enum: `EarningsSurprise`, `GuidanceChange`, `RateDecision`, `SectorNews`
+- ✅ `NewsEvent`: Time-bounded event with sentiment, magnitude, decay
+- ✅ `NewsGenerator`: Configurable event generation with min intervals
+- ✅ `NewsGeneratorConfig`: Per-event-type frequency and magnitude settings
+
+#### Fundamentals Model (`news/fundamentals.rs`)
+- ✅ `Fundamentals`: Per-symbol EPS, growth estimate, payout ratio
+- ✅ `MacroEnvironment`: Risk-free rate (4%), equity risk premium (5%)
+- ✅ `SymbolFundamentals`: Container with `fair_value(&symbol)` method
+- ✅ Gordon Growth Model: `fair_value = D1 / (r - g)` with P/E fallback
+
+#### Sector Support (`types/`)
+- ✅ `Sector` enum: 10 sectors (Tech, Energy, Finance, Healthcare, Consumer, Industrials, Materials, Utilities, RealEstate, Communications)
+- ✅ `SymbolConfig.sector` field for sector assignment
+- ✅ `SectorModel`: Maps symbols to sectors for sector-wide events
+
+#### TUI Start/Stop Control
+- ✅ `SimCommand` enum: `Start`, `Pause`, `Toggle`, `Quit`
+- ✅ Bidirectional channels: `SimUpdate` (Sim→TUI), `SimCommand` (TUI→Sim)
+- ✅ TUI starts paused, Space key toggles running state
+- ✅ Header shows PAUSED (red) / RUNNING (yellow) / FINISHED (green)
+- ✅ Footer shows Space key hint
+
+#### Event Distribution Fix
+- ✅ **Bug**: Fixed seed caused same symbols to always get same event outcomes
+- ✅ **Fix**: Generate event value (surprise/growth) BEFORE selecting symbol
+- ✅ **Result**: Events now distributed fairly across all symbols
+
+#### Guidance Range Fix
+- ✅ **Bug**: Growth range (-2% to +12%) could exceed required return (9%)
+- ✅ **Fix**: Capped growth_range max at 7% to prevent Gordon Growth Model breakdown
+- ✅ **Result**: Fair values stay bounded, no runaway $400+ prices
+
+### Technical Notes
+
+**Market Behavior (Mean-Reverting):**
+- Tick-level simulation is realistic for liquid equity markets
+- Prices anchor to fair value (~$52.50 from Gordon Growth Model)
+- Momentum strategies have low activity (RSI rarely hits 30/70 extremes)
+- This matches real HFT environments where momentum has negative alpha
+
+**Fair Value Calculation:**
+```
+EPS = initial_price / 20  (P/E of 20)
+D1 = EPS × payout_ratio × (1 + growth) = $5 × 0.40 × 1.05 = $2.10
+r = risk_free + equity_premium = 4% + 5% = 9%
+g = growth_estimate = 5%
+fair_value = $2.10 / (0.09 - 0.05) = $52.50
+```
+
+**Event Frequencies (Default):**
+| Event | Probability | Min Interval | Duration |
+|-------|-------------|--------------|----------|
+| Earnings | 0.2% | 100 ticks | 50 ticks |
+| Guidance | 0.1% | 200 ticks | 30 ticks |
+| Rate Decision | 0.05% | 500 ticks | 100 ticks |
+| Sector News | 0.3% | 50 ticks | 40 ticks |
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `crates/news/src/events.rs` | `FundamentalEvent`, `NewsEvent` |
+| `crates/news/src/fundamentals.rs` | Gordon Growth Model, `SymbolFundamentals` |
+| `crates/news/src/generator.rs` | Event generation, correlation fix |
+| `crates/news/src/config.rs` | Event frequencies, guidance range cap |
+| `crates/news/src/sectors.rs` | `SectorModel` for sector lookup |
+| `crates/types/src/config.rs` | `Sector` enum, `SymbolConfig.sector` |
+| `crates/tui/src/lib.rs` | `SimCommand` enum |
+| `crates/tui/src/app.rs` | Start/stop control, status display |
+| `crates/simulation/src/runner.rs` | Event processing, fundamentals integration |
+| `src/main.rs` | Command channel, paused start |
+| `docs/executive_summary.md` | Business overview |
+| `docs/technical_summary.md` | Technical architecture |
+
+### Exit Criteria
+```
+cargo fmt --check      # ✅ No formatting issues
+cargo clippy           # ✅ No warnings  
+cargo test --workspace # ✅ All 213 tests pass
+```
+
+---
+
+## 2026-01-04: V2.3 - Multi-Symbol Infrastructure
+
+### Summary
+Complete multi-symbol foundation: `StrategyContext` for agents, `MarketView` trait, multi-symbol TUI with symbol tabs/overlay, configurable symbol list, multi-symbol simulation runner, and agent distribution across symbols.
+
+### Completed
+
+#### Part 1: Core Infrastructure (`sim-core/`, `agents/`)
+
+##### MarketView Trait (`sim-core/src/market.rs`)
+- ✅ `MarketView` trait: Read-only interface for market state
+  - `symbols()`: List of available symbols
+  - `has_symbol()`: Check symbol existence
+  - `mid_price()`, `best_bid()`, `best_ask()`, `last_price()`: Price queries
+  - `snapshot()`: Full order book snapshot
+  - `total_bid_volume()`, `total_ask_volume()`: Liquidity queries
+- ✅ `SingleSymbolMarket<'a>`: Adapter wrapping `&OrderBook` to implement `MarketView`
+- ✅ `Market` struct: Multi-symbol container with `HashMap<Symbol, OrderBook>`
+
+##### StrategyContext (`agents/src/context.rs`)
+- ✅ `StrategyContext<'a>`: Unified context replacing `MarketData`
+  - References instead of clones: `&'a dyn MarketView`, `&'a HashMap<Symbol, Vec<Candle>>`, etc.
+  - Single-symbol convenience: `primary_symbol()`, `mid_price()`, `last_price()`
+  - Multi-symbol access: `market()` for full `MarketView` interface
+
+##### Agent Trait Migration
+- ✅ `Agent::on_tick()` signature changed: `&MarketData` → `&StrategyContext<'_>`
+- ✅ All 7 strategies migrated to `StrategyContext` API
+- ✅ Removed deprecated `MarketData` struct (no external consumers)
+
+#### Part 2: Multi-Symbol TUI (`tui/`)
+
+##### SimUpdate (`tui/src/widgets/update.rs`)
+- ✅ Per-symbol data: `price_history`, `bids`, `asks`, `last_price` as `HashMap<Symbol, _>`
+- ✅ `selected_symbol: usize` - Current tab index
+- ✅ Helper methods: `current_symbol()`, `current_price_history()`, `current_bids()`, etc.
+
+##### TuiApp (`tui/src/app.rs`)
+- ✅ Symbol navigation: `Tab`/`→`/`←`/`1-9` keys
+- ✅ `O` key: Toggle price overlay mode (all symbols on one chart)
+- ✅ `draw_symbol_tabs()` for tab bar rendering
+- ✅ Fixed: Sync `self.state.selected_symbol` with `TuiApp.selected_symbol` on updates
+
+##### PriceChart (`tui/src/widgets/price_chart.rs`)
+- ✅ `PriceChart::multi()` constructor for overlay mode
+- ✅ Different colors per symbol in overlay view
+
+#### Part 3: Multi-Symbol Config (`src/config.rs`)
+
+##### SymbolSpec Struct
+- ✅ `SymbolSpec { symbol: String, initial_price: Price }`
+- ✅ `SimConfig.symbols: Vec<SymbolSpec>` for multi-symbol configuration
+- ✅ Accessor methods: `get_symbols()`, `primary_symbol()`, `symbol_count()`
+
+#### Part 4: Multi-Symbol Simulation (`simulation/`)
+
+##### SimulationConfig (`simulation/src/config.rs`)
+- ✅ `symbol_configs: Vec<SymbolConfig>` replaces single `symbol_config`
+
+##### Simulation Runner (`simulation/src/runner.rs`)
+- ✅ `market: Market` replaces single `book: OrderBook`
+- ✅ Per-symbol HashMaps: `candles`, `current_candles`, `recent_trades`, `total_shares_held`
+- ✅ `process_order()` routes to correct book via `market.get_book_mut(&order.symbol)`
+
+#### Part 5: Agent Distribution (`src/main.rs`)
+
+##### Distribution Strategy
+- ✅ **Market Makers**: Distributed across symbols (N / num_symbols each, remainder random)
+- ✅ **Noise Traders**: Distributed across symbols (same logic)
+- ✅ **Quant Strategies**: Randomly assigned to symbols (equal probability)
+- ✅ **Random Fill Agents**: Randomly assigned to symbols
+
+##### Noise Trader Balance Fix
+- ✅ `nt_initial_position`: 50 → 0 (start flat, no long imbalance)
+- ✅ `nt_initial_cash`: $95,000 → $100,000 (equals quant_initial_cash)
+- ✅ Cash adjustment formula for different symbol prices:
+  ```
+  adjusted_cash = quant_initial_cash - (nt_initial_position × symbol_price)
+  ```
+
+##### Agent Counts (3 symbols example)
+With `num_market_makers: 100`, `num_noise_traders: 400`:
+- Each symbol gets ~33 MMs, ~133 NTs (total unchanged)
+- Quant strategies randomly distributed across symbols
+
+### Technical Notes
+
+**TUI Layout:**
+```
+┌──[1:Food] [2:Energy] [3:Hotels]──────────────────────────┐
+│ Price Chart (selected symbol, or overlay with O key)     │
+├────────────────────────┬─────────────────────────────────┤
+│ Book Depth             │ Stats (selected symbol)         │
+├────────────────────────┴─────────────────────────────────┤
+│ Agent P&L (portfolio)          │ Risk (portfolio-level)  │
+└──────────────────────────────────────────────────────────┘
+```
+
+**Price Drop Issue (Resolved):**
+- **Cause**: Initial long imbalance from MMs (500 shares each) + old NTs (50 shares each)
+- **Fix**: NTs start flat (0 position), agents distributed across symbols equally
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `crates/sim-core/src/market.rs` | `MarketView` trait, `SingleSymbolMarket`, `Market` |
+| `crates/agents/src/context.rs` | `StrategyContext<'a>` struct |
+| `crates/agents/src/traits.rs` | `Agent::on_tick(&StrategyContext)`, removed MarketData |
+| `crates/simulation/src/config.rs` | `symbol_configs: Vec<SymbolConfig>` |
+| `crates/simulation/src/runner.rs` | Multi-symbol: Market, per-symbol HashMaps |
+| `crates/tui/src/app.rs` | Symbol tabs, navigation, selected_symbol sync fix |
+| `crates/tui/src/widgets/update.rs` | Multi-symbol SimUpdate and AgentInfo |
+| `crates/tui/src/widgets/price_chart.rs` | Multi-symbol overlay support |
+| `src/config.rs` | SymbolSpec, multi-symbol config, nt_initial_position=0 |
+| `src/main.rs` | Agent distribution across symbols, spawn_agent with symbol param |
+
+### Exit Criteria
+```
+cargo fmt --check      # ✅ No formatting issues
+cargo clippy           # ✅ No warnings
+cargo test --workspace # ✅ All 193 tests pass
+```
+
+---
+
+## 2026-01-04: V2.2 - Slippage & Partial Fills
+
+### Completed
+
+#### Fill Type (V2.2)
+- ✅ `FillId` newtype for unique fill identifiers
+- ✅ `Fill` struct: Represents atomic execution at a single price level
+  - Distinct from `Trade` (aggregated view)
+  - Tracks `aggressor_id`, `resting_id`, `aggressor_side`
+  - Includes `reference_price` for slippage calculation
+  - `slippage()` and `slippage_bps()` methods
+
+#### Slippage & Market Impact (V2.2)
+- ✅ `SlippageConfig`: Configures impact model
+  - `enabled`: Master toggle for slippage tracking
+  - `impact_threshold_bps`: Minimum order size before impact applies
+  - `linear_impact_bps`: Impact coefficient
+  - `use_sqrt_model`: Use square-root impact (more realistic)
+- ✅ `SlippageMetrics`: Aggregates fill metrics
+  - VWAP calculation across multiple fills
+  - `levels_crossed`, `best_fill_price`, `worst_fill_price`
+  - `slippage_buy()`, `slippage_sell()`, `slippage_bps(side)`
+- ✅ `SlippageCalculator` (`slippage.rs`): Pre-trade impact estimation
+  - `available_liquidity()`: Total volume on opposite side
+  - `liquidity_ratio_bps()`: Order size as fraction of liquidity
+  - `is_large_order()`: Above impact threshold check
+  - `estimate_impact_bps()`: Linear or sqrt impact model
+  - `estimate_execution_price()`: Expected VWAP
+  - `analyze_impact()`: Full pre-trade analysis
+- ✅ `ImpactEstimate`: Pre-trade analysis result struct
+
+#### Matching Engine Updates
+- ✅ `MatchResult` now includes:
+  - `fills: Vec<Fill>`: Per-level execution details
+  - `slippage_metrics: SlippageMetrics`: Aggregated metrics
+  - `vwap()`: Volume-weighted average price
+  - `levels_crossed()`: Number of price levels hit
+  - `has_fills()`: Check for fill existence
+- ✅ `match_order_with_reference()`: Match with explicit reference price
+- ✅ Fills generated alongside trades for each level crossed
+- ✅ Reference price defaults to mid price at order submission
+
+#### OrderBook Enhancements
+- ✅ `total_bid_volume()`: Sum of all bid quantities
+- ✅ `total_ask_volume()`: Sum of all ask quantities
+- ✅ `bid_depth_to_price(min_price)`: Liquidity above threshold
+- ✅ `ask_depth_to_price(max_price)`: Liquidity below threshold
+
+### Technical Notes
+
+**Impact Model Formula:**
+- Linear: `impact_bps = coefficient * (order_size / liquidity) * 100`
+- Sqrt: `impact_bps = coefficient * sqrt(order_size / liquidity) * 100`
+
+**Why separate Fill from Trade:**
+- Fills are atomic executions at exactly one price
+- Trades aggregate multiple fills for reporting
+- Fills enable precise slippage measurement per level
+- Supports future features like transaction cost analysis (TCA)
+
+**Slippage Sign Convention:**
+- Positive slippage = worse execution (paid more / received less)
+- Buy: slippage = fill_price - reference_price
+- Sell: slippage = reference_price - fill_price
+
+---
+
+## 2026-01-04: V2.1 - Position Limits & Short-Selling Infrastructure
+
+### Completed
+
+#### Position Limits & Short-Selling (V2.1)
+- ✅ `SymbolConfig`: Tracks `shares_outstanding` per symbol
+- ✅ `ShortSellingConfig`: Controls short selling rules
+  - `enabled`: Master toggle for short selling
+  - `max_short_per_agent`: Per-agent short position limit (default 500)
+  - `locate_required`: Whether borrow locate is required before shorting
+- ✅ `BorrowLedger` (`borrow_ledger.rs`): Tracks share borrowing
+  - Manages available borrow pool (default 10% of shares outstanding)
+  - Tracks individual agent borrows with tick timestamps
+  - `borrow()`, `return_shares()`, `can_borrow()` API
+- ✅ `PositionValidator` (`position_limits.rs`): Pre-trade risk checks
+  - Cash sufficiency validation for buys
+  - Shares outstanding limit (aggregate long positions)
+  - Short limit enforcement with exemption flag for market makers
+  - Borrow availability checks for short sales
+- ✅ `RiskViolation` enum: `InsufficientCash`, `InsufficientShares`, `ShortSellingDisabled`, `ShortLimitExceeded`, `NoBorrowAvailable`
+
+#### Agent Improvements
+- ✅ **Market Maker Exemption**: `is_market_maker()` trait method
+  - Market makers exempt from `max_short_per_agent` limit
+  - Allows them to provide liquidity without position constraints
+- ✅ **Market Maker Initial Position**: `initial_position` config (default 500)
+  - MMs start with inventory to provide two-sided quotes
+- ✅ **Noise Trader Position Constraints**:
+  - Can only sell shares they own (no short selling)
+  - `initial_position` config (default 50) for balanced buy/sell
+  - `initial_cash` reduced to $95,000 (total value = $100,000 with shares)
+
+#### Configuration Updates
+- ✅ Scaled to 1000 Tier 1 agents (100 MM, 400 noise, 50 each quant type)
+- ✅ Added `nt_initial_position` to `SimulationConfig` (default 50)
+- ✅ Short limit set to 500 per agent (down from 10,000)
+- ✅ `tick_delay_ms` set to 2ms for larger agent counts
+
+#### Project Plan Restructure
+- ✅ V2 renamed to "Events & Market Realism" (V2.1-V2.4)
+- ✅ V3 renamed to "Scaling & Persistence" (V3.1-V3.3)
+- ✅ Updated phase reference map for each version
+
+### Technical Notes
+
+**Why noise traders can't short sell:**
+- Noise traders represent retail-like random participants
+- Short selling requires sophistication (margin, borrow locate, etc.)
+- Prevents unrealistic one-sided order flow at simulation start
+
+**Why market makers are exempt from short limits:**
+- MMs must provide liquidity on both sides of the book
+- Position limits would prevent them from fulfilling their role
+- Real MMs have special exemptions and higher limits
+
+---
+
 ## 2026-01-03: V1.3 - Phase 7-8 Strategies, Tier Configuration & TUI Scrolling
 
 ### Completed

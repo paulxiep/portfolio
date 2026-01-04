@@ -6,6 +6,7 @@ members = [
     "crates/agents",
     "crates/simulation",
     "crates/tui",
+    "crates/news",
 ]
 resolver = "2"
 
@@ -29,6 +30,7 @@ quant = { path = "crates/quant" }
 agents = { path = "crates/agents" }
 simulation = { path = "crates/simulation" }
 tui = { path = "crates/tui" }
+news = { path = "crates/news" }
 
 # TUI dependencies
 ratatui = "0.29"

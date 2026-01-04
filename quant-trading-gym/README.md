@@ -4,6 +4,13 @@
 
 Quant Trading Gym is a high-performance quantitative trading simulation platform built primarily in Rust. It is designed to support large-scale simulations with over 100,000 agents using a tiered architecture. The system integrates Reinforcement Learning (RL) training capabilities, modular quantitative strategies, risk management, and a microservices architecture.
 
+In this project, I try to push the boundaries of AI-assisted development.
+
+- [Executive Summary](docs/executive_summary.md)
+- [Technical Summary](docs/technical_summary.md)
+- `q` to quit, `spacebar` to toggle simulation.
+- **VWAP Executor**: Currently configured as a buyer accumulating 1000 shares. This is an *execution algorithm*, not a *strategy*. Future iterations will consider what the current agents should become.
+
 ## Getting Started
 
 - `cargo build --release`
@@ -20,14 +27,12 @@ The project is built vertically in iterative stages, ensuring a runnable simulat
 |---------|-------|------|
 | **V0** (completed) | **MVP Simulation** | Single-threaded simulation with TUI visualization showing agents trading. |
 | **V1** (completed) | **Quant Strategy Agents** | Add indicators (SMA, RSI), risk metrics (Sharpe, Drawdown), and real strategies. |
-| **V2** | **Agent Scaling** | Implement tiered architecture (Smart, Reactive, Background) for 100k+ agent scale. |
-| **V3** | **Persistence & Events** | Add SQLite storage for trade history and news event generation. |
+| **V2** (completed) | **Market Realism & Events** | Implement tiered architecture (Smart, Reactive, Background) for 100k+ agent scale. |
+| **V3** | **Persistence & Agent Scaling** | Add SQLite storage for trade history and news event generation. |
 | **V4** | **RL or Game Track** | **RL:** Gym env, PyO3 bindings, training. <br> **Game:** Services, API, Web Frontend. |
 | **V5** | **Full Integration** | RL agents as opponents in the multiplayer game. |
 
-**The current -1000 position has been noted and will be fixed in V2**
-
-![v1](qtgv1.jpg)
+![v1](qtgv2.jpg)
 
 ## Key Features
 

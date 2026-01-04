@@ -10,10 +10,10 @@
 //!
 //! # Configuration
 //! The strategy is fully declarative via [`MomentumConfig`]. Indicators are
-//! requested through the `MarketData` snapshot, not computed internally.
+//! requested through the `StrategyContext` snapshot, not computed internally.
 
 use crate::state::AgentState;
-use crate::{Agent, AgentAction, MarketData};
+use crate::{Agent, AgentAction, StrategyContext};
 use types::{AgentId, Cash, IndicatorType, Order, OrderSide, Price, Quantity, Trade};
 
 /// Configuration for a Momentum (RSI) trader.
@@ -88,10 +88,9 @@ impl MomentumTrader {
     }
 
     /// Determine the reference price for orders.
-    fn get_reference_price(&self, market: &MarketData) -> Price {
-        market
-            .mid_price()
-            .or(market.last_price)
+    fn get_reference_price(&self, ctx: &StrategyContext<'_>) -> Price {
+        ctx.mid_price(&self.config.symbol)
+            .or(ctx.last_price(&self.config.symbol))
             .unwrap_or(self.config.initial_price)
     }
 
@@ -106,8 +105,8 @@ impl MomentumTrader {
     }
 
     /// Generate a buy order at the current reference price.
-    fn generate_buy_order(&self, market: &MarketData) -> Order {
-        let price = self.get_reference_price(market);
+    fn generate_buy_order(&self, ctx: &StrategyContext<'_>) -> Order {
+        let price = self.get_reference_price(ctx);
         // Slightly below mid to increase fill probability
         let order_price = Price::from_float(price.to_float() * 0.999);
         Order::limit(
@@ -120,8 +119,8 @@ impl MomentumTrader {
     }
 
     /// Generate a sell order at the current reference price.
-    fn generate_sell_order(&self, market: &MarketData) -> Order {
-        let price = self.get_reference_price(market);
+    fn generate_sell_order(&self, ctx: &StrategyContext<'_>) -> Order {
+        let price = self.get_reference_price(ctx);
         // Slightly above mid to increase fill probability
         let order_price = Price::from_float(price.to_float() * 1.001);
         Order::limit(
@@ -139,23 +138,26 @@ impl Agent for MomentumTrader {
         self.id
     }
 
-    fn on_tick(&mut self, market: &MarketData) -> AgentAction {
+    fn on_tick(&mut self, ctx: &StrategyContext<'_>) -> AgentAction {
         // Get RSI from pre-computed indicators
-        let rsi = match market.get_indicator(IndicatorType::Rsi(self.config.rsi_period)) {
+        let rsi = match ctx.get_indicator(
+            &self.config.symbol,
+            IndicatorType::Rsi(self.config.rsi_period),
+        ) {
             Some(rsi) => rsi,
             None => return AgentAction::none(), // Not enough data yet
         };
 
         // RSI < oversold_threshold: buy signal
         if rsi < self.config.oversold_threshold && self.can_buy() {
-            let order = self.generate_buy_order(market);
+            let order = self.generate_buy_order(ctx);
             self.state.record_order();
             return AgentAction::single(order);
         }
 
         // RSI > overbought_threshold: sell signal
         if rsi > self.config.overbought_threshold && self.can_sell() {
-            let order = self.generate_sell_order(market);
+            let order = self.generate_sell_order(ctx);
             self.state.record_order();
             return AgentAction::single(order);
         }
@@ -187,51 +189,73 @@ impl Agent for MomentumTrader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::StrategyContext;
+    use quant::IndicatorSnapshot;
+    use sim_core::SingleSymbolMarket;
     use std::collections::HashMap;
-    use types::BookSnapshot;
+    use types::{Candle, Order, OrderId, Symbol};
 
-    fn make_market_data(rsi: Option<f64>) -> MarketData {
-        use quant::IndicatorSnapshot;
+    fn setup_test_context(
+        rsi: Option<f64>,
+    ) -> (
+        sim_core::OrderBook,
+        HashMap<Symbol, Vec<Candle>>,
+        IndicatorSnapshot,
+        HashMap<Symbol, Vec<Trade>>,
+    ) {
+        // Create order book with bids and asks
+        let mut book = sim_core::OrderBook::new("ACME");
+        let mut bid = Order::limit(
+            AgentId(99),
+            "ACME",
+            OrderSide::Buy,
+            Price::from_float(99.0),
+            Quantity(100),
+        );
+        bid.id = OrderId(1);
+        let mut ask = Order::limit(
+            AgentId(99),
+            "ACME",
+            OrderSide::Sell,
+            Price::from_float(101.0),
+            Quantity(100),
+        );
+        ask.id = OrderId(2);
+        book.add_order(bid).unwrap();
+        book.add_order(ask).unwrap();
 
-        let indicators = rsi.map(|r| {
-            let mut snap = IndicatorSnapshot::new(100);
-            let mut indicators = HashMap::new();
-            indicators.insert(IndicatorType::Rsi(14), r);
-            snap.insert("ACME".to_string(), indicators);
-            snap
-        });
+        let candles = HashMap::new();
+        let recent_trades = HashMap::new();
 
-        MarketData {
-            tick: 100,
-            timestamp: 1000,
-            book_snapshot: BookSnapshot {
-                symbol: "ACME".to_string(),
-                bids: vec![types::BookLevel {
-                    price: Price::from_float(99.0),
-                    quantity: Quantity(100),
-                    order_count: 1,
-                }],
-                asks: vec![types::BookLevel {
-                    price: Price::from_float(101.0),
-                    quantity: Quantity(100),
-                    order_count: 1,
-                }],
-                timestamp: 1000,
-                tick: 100,
-            },
-            recent_trades: vec![],
-            last_price: Some(Price::from_float(100.0)),
-            candles: vec![],
-            indicators,
+        let mut indicators = IndicatorSnapshot::new(100);
+        if let Some(rsi_value) = rsi {
+            let mut symbol_indicators = HashMap::new();
+            symbol_indicators.insert(IndicatorType::Rsi(14), rsi_value);
+            indicators.insert("ACME".to_string(), symbol_indicators);
         }
+
+        (book, candles, indicators, recent_trades)
     }
 
     #[test]
     fn test_momentum_buys_on_oversold() {
         let mut trader = MomentumTrader::with_defaults(AgentId(1));
-        let market = make_market_data(Some(25.0)); // Oversold
+        let (book, candles, indicators, recent_trades) = setup_test_context(Some(25.0)); // Oversold
+        let market = SingleSymbolMarket::new(&book);
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
+        let ctx = StrategyContext::new(
+            100,
+            1000,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
+        );
 
-        let action = trader.on_tick(&market);
+        let action = trader.on_tick(&ctx);
         assert_eq!(action.orders.len(), 1);
         assert_eq!(action.orders[0].side, OrderSide::Buy);
     }
@@ -239,9 +263,22 @@ mod tests {
     #[test]
     fn test_momentum_sells_on_overbought() {
         let mut trader = MomentumTrader::with_defaults(AgentId(1));
-        let market = make_market_data(Some(75.0)); // Overbought
+        let (book, candles, indicators, recent_trades) = setup_test_context(Some(75.0)); // Overbought
+        let market = SingleSymbolMarket::new(&book);
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
+        let ctx = StrategyContext::new(
+            100,
+            1000,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
+        );
 
-        let action = trader.on_tick(&market);
+        let action = trader.on_tick(&ctx);
         assert_eq!(action.orders.len(), 1);
         assert_eq!(action.orders[0].side, OrderSide::Sell);
     }
@@ -249,18 +286,44 @@ mod tests {
     #[test]
     fn test_momentum_no_action_neutral() {
         let mut trader = MomentumTrader::with_defaults(AgentId(1));
-        let market = make_market_data(Some(50.0)); // Neutral
+        let (book, candles, indicators, recent_trades) = setup_test_context(Some(50.0)); // Neutral
+        let market = SingleSymbolMarket::new(&book);
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
+        let ctx = StrategyContext::new(
+            100,
+            1000,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
+        );
 
-        let action = trader.on_tick(&market);
+        let action = trader.on_tick(&ctx);
         assert!(action.orders.is_empty());
     }
 
     #[test]
     fn test_momentum_no_action_without_indicator() {
         let mut trader = MomentumTrader::with_defaults(AgentId(1));
-        let market = make_market_data(None);
+        let (book, candles, indicators, recent_trades) = setup_test_context(None);
+        let market = SingleSymbolMarket::new(&book);
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
+        let ctx = StrategyContext::new(
+            100,
+            1000,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
+        );
 
-        let action = trader.on_tick(&market);
+        let action = trader.on_tick(&ctx);
         assert!(action.orders.is_empty());
     }
 }

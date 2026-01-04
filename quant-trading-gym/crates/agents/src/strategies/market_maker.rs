@@ -5,12 +5,18 @@
 //! the "zombie simulation" problem where no trades occur.
 //!
 //! # Strategy
-//! - Maintains bid/ask orders around the current mid price
+//! - Anchors quotes to fair value when fundamentals are available
+//! - Falls back to mid price or initial price otherwise  
 //! - Adjusts quotes based on inventory (skew away from large positions)
 //! - Cancels stale orders when prices move significantly
+//!
+//! # V2.4 Fair Value Integration
+//! When fundamentals are configured, quotes anchor to the Gordon Growth Model
+//! fair value rather than market mid price. This creates price discovery
+//! pressure toward intrinsic value.
 
 use crate::state::AgentState;
-use crate::{Agent, AgentAction, MarketData};
+use crate::{Agent, AgentAction, StrategyContext};
 use types::{AgentId, Cash, Order, OrderSide, Price, Quantity, Trade};
 
 /// Configuration for a MarketMaker agent.
@@ -26,6 +32,9 @@ pub struct MarketMakerConfig {
     pub initial_price: Price,
     /// Starting cash balance.
     pub initial_cash: Cash,
+    /// Initial share position (from the float).
+    /// MarketMakers start with inventory to provide liquidity.
+    pub initial_position: i64,
     /// Maximum inventory before skewing quotes (in shares).
     pub max_inventory: i64,
     /// Inventory skew factor (how much to adjust price per unit of inventory).
@@ -42,6 +51,7 @@ impl Default for MarketMakerConfig {
             quote_size: 100,
             initial_price: Price::from_float(100.0),
             initial_cash: Cash::from_float(1_000_000.0),
+            initial_position: 500, // Start with inventory from the float
             max_inventory: 1000,
             inventory_skew: 0.0001, // Adjust price 0.01% per share of inventory
             refresh_interval: 5,
@@ -71,10 +81,14 @@ impl MarketMaker {
     /// Create a new MarketMaker with the given configuration.
     pub fn new(id: AgentId, config: MarketMakerConfig) -> Self {
         let initial_cash = config.initial_cash;
+        let initial_position = config.initial_position;
+        let mut state = AgentState::new(initial_cash);
+        // MarketMakers start with inventory from the float
+        state.set_position(initial_position);
         Self {
             id,
             config,
-            state: AgentState::new(initial_cash),
+            state,
             last_quote_tick: 0,
             total_volume: 0,
         }
@@ -96,11 +110,17 @@ impl MarketMaker {
     }
 
     /// Determine the reference price for quoting.
-    fn get_reference_price(&self, market: &MarketData) -> Price {
-        // Priority: mid price > last trade > initial price
-        market
-            .mid_price()
-            .or(market.last_price)
+    ///
+    /// Priority:
+    /// 1. Fair value from fundamentals (anchors to intrinsic value)
+    /// 2. Mid price from order book
+    /// 3. Last trade price
+    /// 4. Initial price (fallback)
+    fn get_reference_price(&self, ctx: &StrategyContext<'_>) -> Price {
+        // Prefer fair value if available - this anchors quotes to fundamentals
+        ctx.fair_value(&self.config.symbol)
+            .or_else(|| ctx.mid_price(&self.config.symbol))
+            .or_else(|| ctx.last_price(&self.config.symbol))
             .unwrap_or(self.config.initial_price)
     }
 
@@ -164,17 +184,17 @@ impl Agent for MarketMaker {
         self.id
     }
 
-    fn on_tick(&mut self, market: &MarketData) -> AgentAction {
+    fn on_tick(&mut self, ctx: &StrategyContext<'_>) -> AgentAction {
         // Only refresh quotes periodically
-        if !self.should_refresh(market.tick) {
+        if !self.should_refresh(ctx.tick) {
             return AgentAction::none();
         }
 
-        let reference_price = self.get_reference_price(market);
+        let reference_price = self.get_reference_price(ctx);
         let orders = self.generate_quotes(reference_price);
 
         self.state.record_orders(orders.len() as u64);
-        self.last_quote_tick = market.tick;
+        self.last_quote_tick = ctx.tick;
 
         AgentAction::multiple(orders)
     }
@@ -193,6 +213,10 @@ impl Agent for MarketMaker {
         "MarketMaker"
     }
 
+    fn is_market_maker(&self) -> bool {
+        true
+    }
+
     fn position(&self) -> i64 {
         self.state.position()
     }
@@ -205,56 +229,79 @@ impl Agent for MarketMaker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use types::BookSnapshot;
+    use quant::IndicatorSnapshot;
+    use sim_core::SingleSymbolMarket;
+    use std::collections::HashMap;
+    use types::OrderId;
 
-    fn mock_market_data(mid_price: Option<Price>, tick: u64) -> MarketData {
-        let book = if let Some(mid) = mid_price {
-            let bid = Price::from_float(mid.to_float() - 0.5);
-            let ask = Price::from_float(mid.to_float() + 0.5);
-            BookSnapshot {
-                symbol: "ACME".to_string(),
-                bids: vec![types::BookLevel {
-                    price: bid,
-                    quantity: Quantity(100),
-                    order_count: 1,
-                }],
-                asks: vec![types::BookLevel {
-                    price: ask,
-                    quantity: Quantity(100),
-                    order_count: 1,
-                }],
-                tick,
-                ..Default::default()
-            }
-        } else {
-            BookSnapshot::default()
-        };
-
-        MarketData {
-            tick,
-            timestamp: 0,
-            book_snapshot: book,
-            recent_trades: vec![],
-            last_price: mid_price,
-            candles: vec![],
-            indicators: None,
+    fn mock_context(
+        mid_price: Option<Price>,
+        tick: u64,
+    ) -> (
+        sim_core::OrderBook,
+        HashMap<types::Symbol, Vec<types::Candle>>,
+        IndicatorSnapshot,
+        HashMap<types::Symbol, Vec<Trade>>,
+    ) {
+        let mut book = sim_core::OrderBook::new("ACME");
+        if let Some(mid) = mid_price {
+            let mut bid = Order::limit(
+                AgentId(99),
+                "ACME",
+                OrderSide::Buy,
+                Price::from_float(mid.to_float() - 0.5),
+                Quantity(100),
+            );
+            bid.id = OrderId(1);
+            let mut ask = Order::limit(
+                AgentId(99),
+                "ACME",
+                OrderSide::Sell,
+                Price::from_float(mid.to_float() + 0.5),
+                Quantity(100),
+            );
+            ask.id = OrderId(2);
+            book.add_order(bid).unwrap();
+            book.add_order(ask).unwrap();
         }
+        let candles = HashMap::new();
+        let indicators = IndicatorSnapshot::new(tick);
+        let recent_trades = HashMap::new();
+        (book, candles, indicators, recent_trades)
     }
 
     #[test]
     fn test_market_maker_creation() {
         let mm = MarketMaker::with_defaults(AgentId(1));
         assert_eq!(mm.id(), AgentId(1));
-        assert_eq!(mm.position(), 0);
+        assert_eq!(mm.position(), 500); // Default initial_position
         assert_eq!(mm.cash(), Cash::from_float(1_000_000.0));
     }
 
     #[test]
     fn test_market_maker_generates_two_sided_quotes() {
-        let mut mm = MarketMaker::with_defaults(AgentId(1));
+        let config = MarketMakerConfig {
+            initial_position: 0, // Start neutral for this test
+            ..Default::default()
+        };
+        let mut mm = MarketMaker::new(AgentId(1), config);
 
-        let market = mock_market_data(Some(Price::from_float(100.0)), 0);
-        let action = mm.on_tick(&market);
+        let (book, candles, indicators, recent_trades) =
+            mock_context(Some(Price::from_float(100.0)), 0);
+        let market = SingleSymbolMarket::new(&book);
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
+        let ctx = StrategyContext::new(
+            0,
+            0,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
+        );
+        let action = mm.on_tick(&ctx);
 
         assert_eq!(action.orders.len(), 2);
 
@@ -280,20 +327,58 @@ mod tests {
             ..Default::default()
         };
         let mut mm = MarketMaker::new(AgentId(1), config);
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
 
         // Tick 0: should place orders
-        let market = mock_market_data(Some(Price::from_float(100.0)), 0);
-        let action = mm.on_tick(&market);
+        let (book, candles, indicators, recent_trades) =
+            mock_context(Some(Price::from_float(100.0)), 0);
+        let market = SingleSymbolMarket::new(&book);
+        let ctx = StrategyContext::new(
+            0,
+            0,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
+        );
+        let action = mm.on_tick(&ctx);
         assert_eq!(action.orders.len(), 2);
 
         // Tick 5: should NOT place orders
-        let market = mock_market_data(Some(Price::from_float(100.0)), 5);
-        let action = mm.on_tick(&market);
+        let (book, candles, indicators, recent_trades) =
+            mock_context(Some(Price::from_float(100.0)), 5);
+        let market = SingleSymbolMarket::new(&book);
+        let ctx = StrategyContext::new(
+            5,
+            0,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
+        );
+        let action = mm.on_tick(&ctx);
         assert!(action.orders.is_empty());
 
         // Tick 10: should place orders again
-        let market = mock_market_data(Some(Price::from_float(100.0)), 10);
-        let action = mm.on_tick(&market);
+        let (book, candles, indicators, recent_trades) =
+            mock_context(Some(Price::from_float(100.0)), 10);
+        let market = SingleSymbolMarket::new(&book);
+        let ctx = StrategyContext::new(
+            10,
+            0,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
+        );
+        let action = mm.on_tick(&ctx);
         assert_eq!(action.orders.len(), 2);
     }
 
@@ -318,7 +403,11 @@ mod tests {
 
     #[test]
     fn test_on_fill_updates_state() {
-        let mut mm = MarketMaker::with_defaults(AgentId(1));
+        let config = MarketMakerConfig {
+            initial_position: 0, // Start at 0 for this test
+            ..Default::default()
+        };
+        let mut mm = MarketMaker::new(AgentId(1), config);
 
         // Simulate a buy fill
         let trade = Trade {

@@ -9,4 +9,5 @@ description = "Agent traits and strategies for the quant-trading-gym simulation"
 types.workspace = true
 sim-core.workspace = true
 quant.workspace = true
+news.workspace = true
 rand.workspace = true

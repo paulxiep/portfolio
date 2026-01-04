@@ -2588,6 +2588,233 @@ impl Simulation {
 
 ---
 
+## Containerization & Deployment (V4-Game+)
+
+### Overview
+
+For environment-agnostic deployment, all services are containerized with Docker and orchestrated via Docker Compose (dev/staging) or Kubernetes (production).
+
+### Container Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         Docker Compose / K8s                            │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐   │
+│  │   nginx     │  │    data     │  │    game     │  │   storage   │   │
+│  │   :80/443   │  │   :8001     │  │   :8002     │  │   :8003     │   │
+│  │  (reverse   │  │             │  │  + WS :8082 │  │             │   │
+│  │   proxy)    │  │             │  │             │  │             │   │
+│  └──────┬──────┘  └─────────────┘  └─────────────┘  └─────────────┘   │
+│         │                                                               │
+│  ┌──────┴──────┐  ┌─────────────┐  ┌─────────────┐                     │
+│  │  frontend   │  │   chatbot   │  │ simulation  │                     │
+│  │   :3000     │  │   :8004     │  │  (no port)  │                     │
+│  │  (React)    │  │             │  │  internal   │                     │
+│  └─────────────┘  └─────────────┘  └─────────────┘                     │
+│                                                                         │
+│  ┌─────────────┐  ┌─────────────┐                                      │
+│  │  postgres   │  │    redis    │  (optional: session store, cache)    │
+│  │   :5432     │  │   :6379     │                                      │
+│  └─────────────┘  └─────────────┘                                      │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Dockerfile Strategy
+
+**Multi-stage builds** for minimal image size:
+
+```dockerfile
+# Rust services (data, game, storage, chatbot, simulation)
+FROM rust:1.75-slim AS builder
+WORKDIR /app
+COPY . .
+RUN cargo build --release --bin <service>
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/target/release/<service> /usr/local/bin/
+CMD ["<service>"]
+```
+
+```dockerfile
+# Frontend (React)
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY frontend/package*.json ./
+RUN npm ci
+COPY frontend/ .
+RUN npm run build
+
+FROM nginx:alpine
+COPY --from=builder /app/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/nginx.conf
+```
+
+### Docker Compose (Development)
+
+```yaml
+# docker-compose.yml
+version: '3.8'
+services:
+  simulation:
+    build:
+      context: .
+      dockerfile: docker/simulation.Dockerfile
+    environment:
+      - RUST_LOG=info
+    volumes:
+      - sim-data:/data
+    
+  data:
+    build:
+      context: .
+      dockerfile: docker/data.Dockerfile
+    ports:
+      - "8001:8001"
+    depends_on:
+      - simulation
+    environment:
+      - SIMULATION_BRIDGE_ADDR=simulation:9000
+      
+  game:
+    build:
+      context: .
+      dockerfile: docker/game.Dockerfile
+    ports:
+      - "8002:8002"
+      - "8082:8082"  # WebSocket
+    depends_on:
+      - simulation
+      - data
+      
+  storage:
+    build:
+      context: .
+      dockerfile: docker/storage.Dockerfile
+    ports:
+      - "8003:8003"
+    volumes:
+      - db-data:/data
+      
+  chatbot:
+    build:
+      context: .
+      dockerfile: docker/chatbot.Dockerfile
+    ports:
+      - "8004:8004"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      - game
+
+volumes:
+  sim-data:
+  db-data:
+```
+
+### Environment Configuration
+
+```bash
+# .env.example
+RUST_LOG=info
+DATABASE_URL=sqlite:///data/trading.db
+SIMULATION_SEED=42
+OPENAI_API_KEY=sk-...
+
+# Production overrides
+RUST_LOG=warn
+ENABLE_METRICS=true
+METRICS_ENDPOINT=http://prometheus:9090
+```
+
+### Health Checks
+
+All services expose `/health` endpoint (see Part 10: Services):
+- Used by Docker `HEALTHCHECK`
+- Used by Kubernetes liveness/readiness probes
+- Returns service status, uptime, and dependency health
+
+### Kubernetes (Production)
+
+For production deployment, Helm charts or Kustomize manifests:
+
+```yaml
+# k8s/deployment-game.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: game-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: game
+  template:
+    spec:
+      containers:
+      - name: game
+        image: quant-trading-gym/game:latest
+        ports:
+        - containerPort: 8002
+        - containerPort: 8082
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8002
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+```
+
+### CI/CD Integration
+
+```yaml
+# .github/workflows/docker.yml
+name: Build and Push
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/${{ github.repository }}:${{ github.sha }}
+```
+
+### Deployment Phases
+
+| Phase | Deployment | Use Case |
+|-------|------------|----------|
+| V0-V3 | Local binary | Development, testing |
+| V4-Game | Docker Compose | Local multi-service, demo |
+| Production | Kubernetes | Scalable, cloud deployment |
+
+---
+
 # Part 17: Phase Details
 
 ## Phase 1: Types

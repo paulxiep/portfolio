@@ -1,16 +1,33 @@
 //! Simulation runner implementing the tick-based event loop.
 //!
 //! The simulation holds the order book, agents, and coordinates the tick loop.
+//!
+//! # Position Limits (V2.1)
+//!
+//! When `enforce_position_limits` is enabled in config, orders are validated
+//! against:
+//! - Cash sufficiency for buys
+//! - Shares outstanding limits for long positions
+//! - Short-selling constraints and borrow availability
+//!
+//! Rejected orders are logged but do not cause errors.
+//!
+//! # Multi-Symbol Support (V2.3)
+//!
+//! The simulation supports multiple symbols via `Market` (HashMap<Symbol, OrderBook>).
+//! Each symbol has independent candles, trades, and indicators.
 
 use std::collections::HashMap;
 
-use agents::{Agent, AgentAction, MarketData};
+use agents::{Agent, AgentAction, BorrowLedger, PositionValidator, StrategyContext};
 use quant::{
     AgentRiskSnapshot, AgentRiskTracker, IndicatorCache, IndicatorEngine, IndicatorSnapshot,
 };
 use rand::seq::SliceRandom;
-use sim_core::{MatchingEngine, OrderBook};
-use types::{AgentId, Candle, Order, OrderId, Price, Quantity, Tick, Timestamp, Trade};
+use sim_core::{Market, MatchingEngine, OrderBook};
+use types::{
+    AgentId, Candle, Order, OrderId, Price, Quantity, RiskViolation, Symbol, Tick, Timestamp, Trade,
+};
 
 use crate::config::SimulationConfig;
 
@@ -31,6 +48,9 @@ pub struct SimulationStats {
 
     /// Total orders that were added to book (resting).
     pub resting_orders: u64,
+
+    /// Total orders rejected due to position limit violations (V2.1).
+    pub rejected_orders: u64,
 }
 
 /// The main simulation runner.
@@ -38,15 +58,17 @@ pub struct SimulationStats {
 /// Coordinates the tick-based event loop:
 /// 1. Build market data snapshot
 /// 2. Call each agent's `on_tick` to get their orders
-/// 3. Process orders through the matching engine
-/// 4. Notify agents of fills
-/// 5. Advance tick counter
+/// 3. Validate orders against position limits (V2.1)
+/// 4. Process valid orders through the matching engine
+/// 5. Update borrow ledger on short trades (V2.1)
+/// 6. Notify agents of fills
+/// 7. Advance tick counter
 pub struct Simulation {
     /// Configuration for this simulation.
     config: SimulationConfig,
 
-    /// The order book.
-    book: OrderBook,
+    /// Multi-symbol market container (V2.3).
+    market: Market,
 
     /// The matching engine.
     engine: MatchingEngine,
@@ -60,8 +82,8 @@ pub struct Simulation {
     /// Current timestamp.
     timestamp: Timestamp,
 
-    /// Recent trades for market data.
-    recent_trades: Vec<Trade>,
+    /// Recent trades per symbol (V2.3).
+    recent_trades: HashMap<Symbol, Vec<Trade>>,
 
     /// Counter for generating unique order IDs.
     next_order_id: u64,
@@ -69,13 +91,14 @@ pub struct Simulation {
     /// Simulation statistics.
     stats: SimulationStats,
 
-    /// Historical candles for indicator calculations.
-    candles: Vec<Candle>,
+    /// Historical candles per symbol (V2.3).
+    candles: HashMap<Symbol, Vec<Candle>>,
 
-    /// Current candle being built (OHLCV within candle interval).
-    current_candle: Option<CandleBuilder>,
+    /// Current candle being built per symbol (V2.3).
+    current_candles: HashMap<Symbol, CandleBuilder>,
 
     /// Indicator engine for computing technical indicators.
+    /// Note: In multi-symbol, we compute indicators per-symbol using the same engine.
     indicator_engine: IndicatorEngine,
 
     /// Indicator cache for current tick (reserved for future per-tick caching).
@@ -84,6 +107,26 @@ pub struct Simulation {
 
     /// Per-agent risk tracking.
     risk_tracker: AgentRiskTracker,
+
+    /// Position validator for order validation (V2.1).
+    /// Note: Currently uses primary symbol config. Future: per-symbol validators.
+    position_validator: PositionValidator,
+
+    /// Borrow ledger for short-selling tracking (V2.1).
+    borrow_ledger: BorrowLedger,
+
+    /// Cache of total shares held per symbol (sum of all long positions) for validation.
+    /// Updated after each trade.
+    total_shares_held: HashMap<Symbol, Quantity>,
+
+    /// News event generator (V2.4).
+    news_generator: news::NewsGenerator,
+
+    /// Currently active news events (V2.4).
+    active_events: Vec<news::NewsEvent>,
+
+    /// Symbol fundamentals for fair value calculation (V2.4).
+    fundamentals: news::SymbolFundamentals,
 }
 
 /// Helper for building candles incrementally.
@@ -139,22 +182,77 @@ impl CandleBuilder {
 impl Simulation {
     /// Create a new simulation with the given configuration.
     pub fn new(config: SimulationConfig) -> Self {
-        let book = OrderBook::new(&config.symbol);
+        // Initialize multi-symbol market
+        let mut market = Market::new();
+        let mut borrow_ledger = BorrowLedger::new();
+        let mut total_shares_held = HashMap::new();
+        let mut candles = HashMap::new();
+        let mut recent_trades = HashMap::new();
+
+        // Initialize fundamentals for each symbol (V2.4)
+        let mut fundamentals = news::SymbolFundamentals::new(news::MacroEnvironment::default());
+        let mut sector_model = news::SectorModel::new();
+        let symbols: Vec<_> = config
+            .get_symbol_configs()
+            .iter()
+            .map(|c| c.symbol.clone())
+            .collect();
+
+        // Initialize each symbol
+        for symbol_config in config.get_symbol_configs() {
+            market.add_symbol(&symbol_config.symbol);
+            borrow_ledger.init_symbol(&symbol_config.symbol, symbol_config.borrow_pool_size());
+            total_shares_held.insert(symbol_config.symbol.clone(), Quantity::ZERO);
+            candles.insert(symbol_config.symbol.clone(), Vec::new());
+            recent_trades.insert(symbol_config.symbol.clone(), Vec::new());
+
+            // Initialize default fundamentals based on initial price (V2.4)
+            // EPS derived as price / 20 (P/E of 20), 5% growth, 40% payout
+            let eps = Price::from_float(symbol_config.initial_price.to_float() / 20.0);
+            fundamentals.insert(
+                &symbol_config.symbol,
+                news::Fundamentals::new(eps, 0.05, 0.40),
+            );
+
+            // Add symbol to sector model (V2.4)
+            sector_model.add(&symbol_config.symbol, symbol_config.sector);
+        }
+
+        // Initialize news generator (V2.4)
+        let news_generator =
+            news::NewsGenerator::new(config.news.clone(), symbols, sector_model, config.seed);
+
+        // Initialize position validator with primary symbol config
+        // TODO: In future, support per-symbol position limits
+        let primary_config = config
+            .get_symbol_configs()
+            .first()
+            .cloned()
+            .unwrap_or_default();
+        let position_validator =
+            PositionValidator::new(primary_config, config.short_selling.clone());
+
         Self {
-            config,
-            book,
+            market,
             engine: MatchingEngine::new(),
             agents: Vec::new(),
             tick: 0,
             timestamp: 0,
-            recent_trades: Vec::new(),
+            recent_trades,
             next_order_id: 1,
             stats: SimulationStats::default(),
-            candles: Vec::new(),
-            current_candle: None,
+            candles,
+            current_candles: HashMap::new(),
             indicator_engine: IndicatorEngine::with_common_indicators(),
             indicator_cache: IndicatorCache::new(),
             risk_tracker: AgentRiskTracker::with_defaults(),
+            position_validator,
+            borrow_ledger,
+            total_shares_held,
+            news_generator,
+            active_events: Vec::new(),
+            fundamentals,
+            config,
         }
     }
 
@@ -183,14 +281,60 @@ impl Simulation {
         &self.stats
     }
 
-    /// Get a reference to the order book.
+    /// Get a reference to the primary (first) symbol's order book.
+    /// For multi-symbol access, use `market()` and `get_book()`.
     pub fn book(&self) -> &OrderBook {
-        &self.book
+        let symbol = self.config.symbol();
+        self.market
+            .get_book(&symbol.to_string())
+            .expect("Primary symbol book should exist")
+    }
+
+    /// Get a reference to a specific symbol's order book.
+    pub fn get_book(&self, symbol: &Symbol) -> Option<&OrderBook> {
+        self.market.get_book(symbol)
+    }
+
+    /// Get a reference to the multi-symbol market (V2.3).
+    pub fn market(&self) -> &Market {
+        &self.market
     }
 
     /// Get the number of agents.
     pub fn agent_count(&self) -> usize {
         self.agents.len()
+    }
+
+    /// Get a reference to the borrow ledger (V2.1).
+    pub fn borrow_ledger(&self) -> &BorrowLedger {
+        &self.borrow_ledger
+    }
+
+    /// Get a reference to the position validator (V2.1).
+    pub fn position_validator(&self) -> &PositionValidator {
+        &self.position_validator
+    }
+
+    /// Get a reference to the simulation configuration.
+    pub fn config(&self) -> &SimulationConfig {
+        &self.config
+    }
+
+    /// Get the total shares currently held for the primary symbol.
+    pub fn total_shares_held(&self) -> Quantity {
+        let symbol = self.config.symbol().to_string();
+        self.total_shares_held
+            .get(&symbol)
+            .copied()
+            .unwrap_or(Quantity::ZERO)
+    }
+
+    /// Get total shares held for a specific symbol.
+    pub fn total_shares_held_for(&self, symbol: &Symbol) -> Quantity {
+        self.total_shares_held
+            .get(symbol)
+            .copied()
+            .unwrap_or(Quantity::ZERO)
     }
 
     /// Get agent summaries (name, position, cash) for display.
@@ -212,13 +356,47 @@ impl Simulation {
         self.risk_tracker.compute_metrics(agent_id)
     }
 
-    /// Get recent trades.
+    /// Get recent trades for the primary symbol.
     pub fn recent_trades(&self) -> &[Trade] {
+        let symbol = self.config.symbol().to_string();
+        self.recent_trades
+            .get(&symbol)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Get recent trades for a specific symbol.
+    pub fn recent_trades_for(&self, symbol: &Symbol) -> &[Trade] {
+        self.recent_trades
+            .get(symbol)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Get all recent trades across all symbols.
+    pub fn all_recent_trades(&self) -> &HashMap<Symbol, Vec<Trade>> {
         &self.recent_trades
     }
 
-    /// Get historical candles.
+    /// Get historical candles for the primary symbol.
     pub fn candles(&self) -> &[Candle] {
+        let symbol = self.config.symbol().to_string();
+        self.candles
+            .get(&symbol)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Get historical candles for a specific symbol.
+    pub fn candles_for(&self, symbol: &Symbol) -> &[Candle] {
+        self.candles
+            .get(symbol)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Get all candles across all symbols.
+    pub fn all_candles(&self) -> &HashMap<Symbol, Vec<Candle>> {
         &self.candles
     }
 
@@ -239,74 +417,178 @@ impl Simulation {
         id
     }
 
-    /// Build indicator snapshot for current tick.
-    fn build_indicator_snapshot(&mut self) -> Option<IndicatorSnapshot> {
-        if self.candles.is_empty() {
-            return None;
-        }
-
+    /// Build indicator snapshot for current tick (all symbols).
+    fn build_indicator_snapshot(&mut self) -> IndicatorSnapshot {
         let mut snapshot = IndicatorSnapshot::new(self.tick);
-        let symbol = self.config.symbol.clone();
 
-        // Compute all registered indicators
-        let values = self.indicator_engine.compute_all(&self.candles);
-        if !values.is_empty() {
-            snapshot.insert(symbol, values);
+        // Compute indicators for each symbol
+        for (symbol, symbol_candles) in &self.candles {
+            if !symbol_candles.is_empty() {
+                let values = self.indicator_engine.compute_all(symbol_candles);
+                if !values.is_empty() {
+                    snapshot.insert(symbol.clone(), values);
+                }
+            }
         }
 
-        Some(snapshot)
+        snapshot
     }
 
-    /// Build market data snapshot for agents.
-    fn build_market_data(&mut self) -> MarketData {
-        // Build indicator snapshot
-        let indicators = self.build_indicator_snapshot();
-
-        MarketData {
-            tick: self.tick,
-            timestamp: self.timestamp,
-            book_snapshot: self.book.snapshot(
-                self.timestamp,
-                self.tick,
-                self.config.snapshot_depth,
-            ),
-            recent_trades: self.recent_trades.clone(),
-            last_price: self.book.last_price(),
-            candles: self.candles.clone(),
-            indicators,
-        }
+    /// Build candles map for StrategyContext (just return reference).
+    fn build_candles_map(&self) -> HashMap<Symbol, Vec<Candle>> {
+        self.candles.clone()
     }
 
-    /// Update candle with trade data.
+    /// Build trades map for StrategyContext (just return reference).
+    fn build_trades_map(&self) -> HashMap<Symbol, Vec<Trade>> {
+        self.recent_trades.clone()
+    }
+
+    /// Update candle with trade data for the trade's symbol.
     fn update_candles(&mut self, trades: &[Trade]) {
         for trade in trades {
+            let symbol = &trade.symbol;
+
             // Initialize candle builder if needed
-            if self.current_candle.is_none() {
-                self.current_candle = Some(CandleBuilder::new(
-                    &self.config.symbol,
-                    trade.price,
-                    self.tick,
-                ));
+            if !self.current_candles.contains_key(symbol) {
+                self.current_candles.insert(
+                    symbol.clone(),
+                    CandleBuilder::new(symbol, trade.price, self.tick),
+                );
             }
 
-            // Update current candle
-            if let Some(ref mut builder) = self.current_candle {
+            // Update current candle for this symbol
+            if let Some(builder) = self.current_candles.get_mut(symbol) {
                 builder.update(trade);
             }
         }
 
-        // Check if we should finalize the candle (every candle_interval ticks)
-        if self.tick > 0
-            && self.tick.is_multiple_of(self.config.candle_interval)
-            && let Some(builder) = self.current_candle.take()
-        {
-            let candle = builder.finalize(self.tick, self.timestamp);
-            self.candles.push(candle);
+        // Check if we should finalize candles (every candle_interval ticks)
+        if self.tick > 0 && self.tick.is_multiple_of(self.config.candle_interval) {
+            // Finalize all current candles
+            let builders: Vec<(Symbol, CandleBuilder)> = self.current_candles.drain().collect();
+            for (symbol, builder) in builders {
+                let candle = builder.finalize(self.tick, self.timestamp);
+                let symbol_candles = self.candles.entry(symbol).or_default();
+                symbol_candles.push(candle);
 
-            // Limit candle history
-            if self.candles.len() > self.config.max_candles {
-                self.candles.remove(0);
+                // Limit candle history per symbol
+                if symbol_candles.len() > self.config.max_candles {
+                    symbol_candles.remove(0);
+                }
             }
+        }
+    }
+
+    /// Validate an order against position limits (V2.1).
+    ///
+    /// Returns `Ok(())` if the order passes validation, or `Err(RiskViolation)` if rejected.
+    fn validate_order(
+        &self,
+        order: &Order,
+        agent_position: i64,
+        agent_cash: types::Cash,
+        is_market_maker: bool,
+    ) -> Result<(), RiskViolation> {
+        if !self.config.enforce_position_limits {
+            return Ok(());
+        }
+
+        let symbol = self.config.symbol().to_string();
+        let total_held = self
+            .total_shares_held
+            .get(&symbol)
+            .copied()
+            .unwrap_or(Quantity::ZERO);
+
+        self.position_validator.validate_order(
+            order,
+            agent_position,
+            agent_cash,
+            &self.borrow_ledger,
+            total_held,
+            is_market_maker, // MMs exempt from short limit
+        )
+    }
+
+    /// Update borrow ledger after a trade (V2.1).
+    ///
+    /// When a short sale occurs, the seller borrows shares.
+    /// When covering a short, the buyer returns borrowed shares.
+    fn update_borrow_ledger(
+        &mut self,
+        trade: &Trade,
+        seller_position_before: i64,
+        buyer_position_before: i64,
+    ) {
+        // Check if seller is going short (position becoming more negative)
+        let seller_position_after = seller_position_before - trade.quantity.raw() as i64;
+        if seller_position_after < 0 && seller_position_before >= seller_position_after {
+            // Calculate additional borrow needed
+            let was_short = seller_position_before.min(0).unsigned_abs();
+            let now_short = seller_position_after.unsigned_abs();
+            let additional_borrow = now_short.saturating_sub(was_short);
+
+            if additional_borrow > 0 {
+                // Attempt to borrow (should succeed as we validated earlier)
+                let _ = self.borrow_ledger.borrow(
+                    trade.seller_id,
+                    &trade.symbol,
+                    Quantity(additional_borrow),
+                    self.tick,
+                );
+            }
+        }
+
+        // Check if buyer is covering a short (position becoming less negative)
+        let buyer_position_after = buyer_position_before + trade.quantity.raw() as i64;
+        if buyer_position_before < 0 && buyer_position_after > buyer_position_before {
+            // Calculate shares to return
+            let was_short = buyer_position_before.unsigned_abs();
+            let now_short = buyer_position_after.min(0).unsigned_abs();
+            let to_return = was_short.saturating_sub(now_short);
+
+            if to_return > 0 {
+                self.borrow_ledger.return_shares(
+                    trade.buyer_id,
+                    &trade.symbol,
+                    Quantity(to_return),
+                );
+            }
+        }
+    }
+
+    /// Update total shares held after a trade (per-symbol).
+    fn update_total_shares_held(
+        &mut self,
+        trade: &Trade,
+        seller_position_before: i64,
+        buyer_position_before: i64,
+    ) {
+        // Calculate change in aggregate long positions
+        let seller_position_after = seller_position_before - trade.quantity.raw() as i64;
+        let buyer_position_after = buyer_position_before + trade.quantity.raw() as i64;
+
+        // Seller's long position change (only count positive positions)
+        let seller_long_before = seller_position_before.max(0) as u64;
+        let seller_long_after = seller_position_after.max(0) as u64;
+
+        // Buyer's long position change
+        let buyer_long_before = buyer_position_before.max(0) as u64;
+        let buyer_long_after = buyer_position_after.max(0) as u64;
+
+        // Net change
+        let delta = (buyer_long_after + seller_long_after) as i64
+            - (buyer_long_before + seller_long_before) as i64;
+
+        let symbol_shares = self
+            .total_shares_held
+            .entry(trade.symbol.clone())
+            .or_insert(Quantity::ZERO);
+        if delta > 0 {
+            *symbol_shares += Quantity(delta as u64);
+        } else {
+            *symbol_shares = symbol_shares.saturating_sub(Quantity((-delta) as u64));
         }
     }
 
@@ -320,10 +602,17 @@ impl Simulation {
 
         self.stats.total_orders += 1;
 
+        // Get the order book for this symbol
+        let Some(book) = self.market.get_book_mut(&order.symbol) else {
+            // Unknown symbol - reject order silently
+            self.stats.rejected_orders += 1;
+            return (Vec::new(), false);
+        };
+
         // Try to match the order
         let result = self
             .engine
-            .match_order(&mut self.book, &mut order, self.timestamp, self.tick);
+            .match_order(book, &mut order, self.timestamp, self.tick);
 
         let mut is_resting = false;
 
@@ -331,7 +620,10 @@ impl Simulation {
         if !result.remaining_quantity.is_zero() && order.limit_price().is_some() {
             // Update order's remaining quantity before adding to book
             order.remaining_quantity = result.remaining_quantity;
-            if self.book.add_order(order).is_ok() {
+            // Re-borrow book (needed after match_order consumed mutable borrow)
+            if let Some(book) = self.market.get_book_mut(&order.symbol)
+                && book.add_order(order).is_ok()
+            {
                 is_resting = true;
                 self.stats.resting_orders += 1;
             }
@@ -351,8 +643,28 @@ impl Simulation {
     pub fn step(&mut self) -> Vec<Trade> {
         let mut tick_trades = Vec::new();
 
-        // Build market data snapshot
-        let market_data = self.build_market_data();
+        // Phase 0 (V2.4): Generate and process news events
+        // This happens BEFORE building the context so events are available to agents
+        self.process_news_events();
+
+        // Phase 1: Build all owned data for StrategyContext.
+        // These must live for the duration of agent ticks.
+        let candles_map = self.build_candles_map();
+        let trades_map = self.build_trades_map();
+        let indicators = self.build_indicator_snapshot();
+
+        // Build StrategyContext with references to owned data (V2.3: uses Market directly)
+        // V2.4: Now includes events and fundamentals
+        let ctx = StrategyContext::new(
+            self.tick,
+            self.timestamp,
+            &self.market,
+            &candles_map,
+            &indicators,
+            &trades_map,
+            &self.active_events,
+            &self.fundamentals,
+        );
 
         // Shuffle agent processing order to eliminate ID-based priority bias.
         // Without this, lower-indexed agents would always get their orders
@@ -360,59 +672,126 @@ impl Simulation {
         let mut indices: Vec<usize> = (0..self.agents.len()).collect();
         indices.shuffle(&mut rand::rng());
 
-        // Collect all agent actions in randomized order (to avoid borrow issues)
-        let actions: Vec<(AgentId, AgentAction)> = indices
+        // Phase 2: Collect all agent actions with their current state for validation.
+        // We need to snapshot position/cash before processing to validate orders.
+        let actions_with_state: Vec<(AgentId, AgentAction, i64, types::Cash, bool)> = indices
             .iter()
             .map(|&i| {
                 let agent = &mut self.agents[i];
-                let action = agent.on_tick(&market_data);
-                (agent.id(), action)
+                let action = agent.on_tick(&ctx);
+                let position = agent.position();
+                let cash = agent.cash();
+                let is_mm = agent.is_market_maker();
+                (agent.id(), action, position, cash, is_mm)
             })
             .collect();
 
-        // Process all orders
-        let mut fill_notifications: Vec<(AgentId, Trade)> = Vec::new();
+        // Phase 3: ctx is now dropped (goes out of scope) - releases borrow on book
+        // Process all orders with validation
+        let mut fill_notifications: Vec<(AgentId, Trade, i64)> = Vec::new(); // Include position before trade
 
-        for (_agent_id, action) in actions {
+        for (agent_id, action, agent_position, agent_cash, is_market_maker) in actions_with_state {
+            let mut current_position = agent_position;
+
             for order in action.orders {
+                // Validate order against position limits (V2.1)
+                if let Err(violation) =
+                    self.validate_order(&order, current_position, agent_cash, is_market_maker)
+                {
+                    self.stats.rejected_orders += 1;
+                    if self.config.verbose {
+                        eprintln!(
+                            "Order rejected for {}: {} (order: {} {} @ {:?})",
+                            agent_id,
+                            violation,
+                            order.side,
+                            order.quantity,
+                            order.limit_price()
+                        );
+                    }
+                    continue; // Skip this order
+                }
+
                 let (trades, _is_resting) = self.process_order(order);
 
                 // Record trades and prepare fill notifications
                 for trade in trades {
                     self.stats.total_trades += 1;
 
-                    // Notify both parties
-                    fill_notifications.push((trade.buyer_id, trade.clone()));
-                    fill_notifications.push((trade.seller_id, trade.clone()));
+                    // Track position before trade for borrow ledger updates
+                    let buyer_pos_before = if trade.buyer_id == agent_id {
+                        current_position
+                    } else {
+                        // Need to look up other agent's position
+                        self.agents
+                            .iter()
+                            .find(|a| a.id() == trade.buyer_id)
+                            .map(|a| a.position())
+                            .unwrap_or(0)
+                    };
+
+                    let seller_pos_before = if trade.seller_id == agent_id {
+                        current_position
+                    } else {
+                        self.agents
+                            .iter()
+                            .find(|a| a.id() == trade.seller_id)
+                            .map(|a| a.position())
+                            .unwrap_or(0)
+                    };
+
+                    // Update borrow ledger (V2.1)
+                    self.update_borrow_ledger(&trade, seller_pos_before, buyer_pos_before);
+
+                    // Update total shares held
+                    self.update_total_shares_held(&trade, seller_pos_before, buyer_pos_before);
+
+                    // Notify both parties with position before trade
+                    fill_notifications.push((trade.buyer_id, trade.clone(), buyer_pos_before));
+                    fill_notifications.push((trade.seller_id, trade.clone(), seller_pos_before));
+
+                    // Update tracking of current position for this agent's remaining orders
+                    if trade.buyer_id == agent_id {
+                        current_position += trade.quantity.raw() as i64;
+                    }
+                    if trade.seller_id == agent_id {
+                        current_position -= trade.quantity.raw() as i64;
+                    }
 
                     tick_trades.push(trade);
                 }
             }
         }
 
-        // Add trades to recent trades (newest first)
+        // Add trades to recent trades per symbol (newest first)
         for trade in tick_trades.iter().rev() {
-            self.recent_trades.insert(0, trade.clone());
+            let symbol_trades = self.recent_trades.entry(trade.symbol.clone()).or_default();
+            symbol_trades.insert(0, trade.clone());
         }
 
-        // Trim recent trades to max
-        if self.recent_trades.len() > self.config.max_recent_trades {
-            self.recent_trades.truncate(self.config.max_recent_trades);
+        // Trim recent trades per symbol to max
+        for symbol_trades in self.recent_trades.values_mut() {
+            if symbol_trades.len() > self.config.max_recent_trades {
+                symbol_trades.truncate(self.config.max_recent_trades);
+            }
         }
 
         // Update candles with trade data
         self.update_candles(&tick_trades);
 
         // Notify agents of fills
-        for (agent_id, trade) in fill_notifications {
+        for (agent_id, trade, _pos_before) in fill_notifications {
             if let Some(agent) = self.agents.iter_mut().find(|a| a.id() == agent_id) {
                 agent.on_fill(&trade);
             }
         }
 
         // Update risk tracking with current equity values
-        // Use last price or initial price for mark-to-market
-        let mark_price = self.book.last_price().unwrap_or(self.config.initial_price);
+        // Use last price from primary symbol or initial price for mark-to-market
+        let mark_price = self
+            .book()
+            .last_price()
+            .unwrap_or(self.config.initial_price());
         for agent in &self.agents {
             let equity = agent.equity(mark_price).to_float();
             self.risk_tracker.record_equity(agent.id(), equity);
@@ -441,11 +820,104 @@ impl Simulation {
 
         all_trades
     }
+
+    // =========================================================================
+    // News & Fundamentals (V2.4)
+    // =========================================================================
+
+    /// Process news events for the current tick.
+    ///
+    /// This method:
+    /// 1. Generates new events from the news generator
+    /// 2. Applies permanent fundamental changes (earnings, guidance, rate decisions)
+    /// 3. Prunes expired events from the active list
+    fn process_news_events(&mut self) {
+        // Generate new events
+        let new_events = self.news_generator.tick(self.tick);
+
+        // Apply permanent fundamental changes before adding to active list
+        for event in &new_events {
+            if event.is_permanent() {
+                self.apply_fundamental_event(event);
+            }
+        }
+
+        // Add new events to active list
+        self.active_events.extend(new_events);
+
+        // Prune expired events
+        self.active_events.retain(|e| e.is_active(self.tick));
+    }
+
+    /// Apply a permanent fundamental event.
+    fn apply_fundamental_event(&mut self, event: &news::NewsEvent) {
+        match &event.event {
+            news::FundamentalEvent::EarningsSurprise {
+                symbol,
+                surprise_pct,
+            } => {
+                if let Some(fundamentals) = self.fundamentals.get_mut(symbol) {
+                    fundamentals.apply_earnings_surprise(*surprise_pct);
+                    if self.config.verbose {
+                        eprintln!(
+                            "[Tick {}] Earnings surprise for {}: {:.1}% → EPS now ${:.2}",
+                            self.tick,
+                            symbol,
+                            surprise_pct * 100.0,
+                            fundamentals.eps.to_float()
+                        );
+                    }
+                }
+            }
+            news::FundamentalEvent::GuidanceChange { symbol, new_growth } => {
+                if let Some(fundamentals) = self.fundamentals.get_mut(symbol) {
+                    fundamentals.apply_guidance_change(*new_growth);
+                    if self.config.verbose {
+                        eprintln!(
+                            "[Tick {}] Guidance change for {}: growth now {:.1}%",
+                            self.tick,
+                            symbol,
+                            new_growth * 100.0
+                        );
+                    }
+                }
+            }
+            news::FundamentalEvent::RateDecision { new_rate } => {
+                self.fundamentals.macro_env.apply_rate_decision(*new_rate);
+                if self.config.verbose {
+                    eprintln!(
+                        "[Tick {}] Rate decision: risk-free rate now {:.2}%",
+                        self.tick,
+                        new_rate * 100.0
+                    );
+                }
+            }
+            news::FundamentalEvent::SectorNews { .. } => {
+                // Sector news is temporary sentiment, not a permanent fundamental change
+            }
+        }
+    }
+
+    /// Get the currently active news events.
+    pub fn active_events(&self) -> &[news::NewsEvent] {
+        &self.active_events
+    }
+
+    /// Get the symbol fundamentals.
+    pub fn fundamentals(&self) -> &news::SymbolFundamentals {
+        &self.fundamentals
+    }
+
+    /// Get fair value for a symbol.
+    pub fn fair_value(&self, symbol: &types::Symbol) -> Option<Price> {
+        self.fundamentals.fair_value(symbol)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agents::StrategyContext;
     use types::{Order, OrderSide, Price, Quantity};
 
     /// A simple test agent that does nothing.
@@ -458,7 +930,7 @@ mod tests {
             self.id
         }
 
-        fn on_tick(&mut self, _market: &MarketData) -> AgentAction {
+        fn on_tick(&mut self, _ctx: &StrategyContext<'_>) -> AgentAction {
             AgentAction::none()
         }
 
@@ -487,7 +959,7 @@ mod tests {
             self.id
         }
 
-        fn on_tick(&mut self, _market: &MarketData) -> AgentAction {
+        fn on_tick(&mut self, _ctx: &StrategyContext<'_>) -> AgentAction {
             if let Some(order) = self.order.take() {
                 AgentAction::single(order)
             } else {
@@ -530,7 +1002,7 @@ mod tests {
 
     #[test]
     fn test_orders_match() {
-        let config = SimulationConfig::new("TEST");
+        let config = SimulationConfig::new("TEST").with_position_limits(false); // Disable for V0 test
         let mut sim = Simulation::new(config);
 
         // Agent 1 places a sell order
@@ -566,8 +1038,8 @@ mod tests {
     }
 
     #[test]
-    fn test_market_data_updated() {
-        let config = SimulationConfig::new("TEST");
+    fn test_book_state_after_order() {
+        let config = SimulationConfig::new("TEST").with_position_limits(false); // Disable for V0 test
         let mut sim = Simulation::new(config);
 
         // Add an agent that places a limit order
@@ -583,15 +1055,17 @@ mod tests {
         // Tick 0: order placed
         sim.step();
 
-        // Market data should now show the ask
-        let market = sim.build_market_data();
-        assert_eq!(market.best_ask(), Some(Price::from_float(105.0)));
-        assert_eq!(market.best_bid(), None);
+        // Book should now show the ask
+        let book = sim.book();
+        assert_eq!(book.best_ask_price(), Some(Price::from_float(105.0)));
+        assert_eq!(book.best_bid_price(), None);
     }
 
     #[test]
     fn test_recent_trades_tracked() {
-        let config = SimulationConfig::new("TEST").with_max_recent_trades(5);
+        let config = SimulationConfig::new("TEST")
+            .with_max_recent_trades(5)
+            .with_position_limits(false); // Disable for V0 test
         let mut sim = Simulation::new(config);
 
         // Pre-populate book with sell orders
@@ -628,7 +1102,8 @@ mod tests {
 
     #[test]
     fn test_order_ids_unique() {
-        let mut sim = Simulation::with_defaults();
+        let config = SimulationConfig::new("SIM").with_position_limits(false); // Disable for V0 test
+        let mut sim = Simulation::new(config);
 
         let order1 = Order::market(AgentId(1), "SIM", OrderSide::Buy, Quantity(10));
         let order2 = Order::market(AgentId(1), "SIM", OrderSide::Buy, Quantity(10));

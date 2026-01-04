@@ -2,15 +2,27 @@
 //!
 //! This crate provides:
 //! - The `Agent` trait that all trading agents must implement
-//! - `MarketData` context passed to agents each tick
+//! - `StrategyContext` - unified context passed to agents each tick (V2.3)
 //! - `AgentAction` for returning agent decisions
 //! - `AgentState` for common state tracking (position, cash, metrics)
+//! - `BorrowLedger` for tracking short-selling borrows (V2.1)
+//! - `PositionValidator` for order validation against position limits (V2.1)
 //! - Concrete strategy implementations (`strategies` module)
 //!
-//! # Architecture
-//! Agents receive a `MarketData` snapshot each tick and return an `AgentAction`
-//! containing any orders they wish to submit. The simulation handles order
-//! routing, matching, and notifying agents of fills.
+//! # Architecture (V2.3)
+//!
+//! Agents receive a `StrategyContext` each tick, providing:
+//! - Multi-symbol market access via `MarketView` trait
+//! - Per-symbol candles and indicators
+//! - Per-symbol recent trades
+//!
+//! The simulation handles order routing, matching, and notifying agents of fills.
+//!
+//! # Position Limits (V2.1)
+//!
+//! The `PositionValidator` enforces realistic constraints:
+//! - **Long positions**: Limited by cash available and shares_outstanding
+//! - **Short positions**: Require borrows from `BorrowLedger`, limited by max_short_per_agent
 //!
 //! # Available Strategies
 //!
@@ -29,30 +41,38 @@
 //!
 //! # Example
 //! ```ignore
-//! use agents::{Agent, AgentAction, MarketData};
+//! use agents::{Agent, AgentAction, StrategyContext};
 //! use types::AgentId;
 //!
 //! struct MyAgent {
 //!     id: AgentId,
+//!     symbol: String,
 //! }
 //!
 //! impl Agent for MyAgent {
 //!     fn id(&self) -> AgentId { self.id }
 //!
-//!     fn on_tick(&mut self, market: &MarketData) -> AgentAction {
+//!     fn on_tick(&mut self, ctx: &StrategyContext<'_>) -> AgentAction {
+//!         let mid = ctx.mid_price(&self.symbol);
 //!         AgentAction::none()
 //!     }
 //! }
 //! ```
 
+mod borrow_ledger;
+mod context;
+mod position_limits;
 mod state;
 pub mod strategies;
 mod traits;
 
+pub use borrow_ledger::{BorrowLedger, BorrowPosition};
+pub use context::StrategyContext;
+pub use position_limits::PositionValidator;
 pub use state::AgentState;
 pub use strategies::{
     BollingerReversion, BollingerReversionConfig, MacdCrossover, MacdCrossoverConfig, MarketMaker,
     MarketMakerConfig, MomentumConfig, MomentumTrader, NoiseTrader, NoiseTraderConfig,
     TrendFollower, TrendFollowerConfig, VwapExecutor, VwapExecutorConfig,
 };
-pub use traits::{Agent, AgentAction, MarketData};
+pub use traits::{Agent, AgentAction};

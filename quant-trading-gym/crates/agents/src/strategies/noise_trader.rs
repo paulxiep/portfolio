@@ -1,15 +1,22 @@
 //! Noise Trader - generates random market activity.
 //!
-//! A simple agent that places random orders near the current mid price.
+//! A simple agent that places random orders near the current price.
 //! This provides liquidity and price discovery by generating trades.
 //!
 //! # Zombie Risk Prevention
-//! NoiseTrader orders use the current mid price as reference. If there's no
-//! mid price (empty book), it uses the last trade price. If neither exists,
-//! it falls back to a configured initial price.
+//! NoiseTrader orders use a reference price hierarchy:
+//! 1. Fair value from fundamentals (if available)
+//! 2. Mid price from order book
+//! 3. Last trade price
+//! 4. Configured initial price
+//!
+//! # V2.4 Fair Value Integration
+//! When fundamentals are configured, noise trades anchor around the
+//! Gordon Growth Model fair value. This creates price discovery pressure
+//! toward intrinsic value while still generating market noise.
 
 use crate::state::AgentState;
-use crate::{Agent, AgentAction, MarketData};
+use crate::{Agent, AgentAction, StrategyContext};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use types::{AgentId, Cash, Order, OrderSide, Price, Quantity, Trade};
@@ -31,6 +38,8 @@ pub struct NoiseTraderConfig {
     pub initial_price: Price,
     /// Starting cash balance.
     pub initial_cash: Cash,
+    /// Starting position in shares (allows some traders to start as sellers).
+    pub initial_position: i64,
 }
 
 impl Default for NoiseTraderConfig {
@@ -43,6 +52,7 @@ impl Default for NoiseTraderConfig {
             max_quantity: 100,
             initial_price: Price::from_float(100.0),
             initial_cash: Cash::from_float(100_000.0),
+            initial_position: 50, // Start with some shares to allow selling
         }
     }
 }
@@ -66,10 +76,13 @@ impl NoiseTrader {
     /// Create a new NoiseTrader with the given configuration.
     pub fn new(id: AgentId, config: NoiseTraderConfig) -> Self {
         let initial_cash = config.initial_cash;
+        let initial_position = config.initial_position;
+        let mut state = AgentState::new(initial_cash);
+        state.set_position(initial_position);
         Self {
             id,
             config,
-            state: AgentState::new(initial_cash),
+            state,
             rng: StdRng::from_os_rng(),
         }
     }
@@ -77,10 +90,13 @@ impl NoiseTrader {
     /// Create a new NoiseTrader with a specific seed (for reproducible testing).
     pub fn with_seed(id: AgentId, config: NoiseTraderConfig, seed: u64) -> Self {
         let initial_cash = config.initial_cash;
+        let initial_position = config.initial_position;
+        let mut state = AgentState::new(initial_cash);
+        state.set_position(initial_position);
         Self {
             id,
             config,
-            state: AgentState::new(initial_cash),
+            state,
             rng: StdRng::seed_from_u64(seed),
         }
     }
@@ -101,18 +117,30 @@ impl NoiseTrader {
     }
 
     /// Determine the reference price for order generation.
-    fn get_reference_price(&self, market: &MarketData) -> Price {
-        // Priority: mid price > last trade > initial price
-        market
-            .mid_price()
-            .or(market.last_price)
+    ///
+    /// Priority:
+    /// 1. Fair value from fundamentals (anchors trades to intrinsic value)
+    /// 2. Mid price from order book  
+    /// 3. Last trade price
+    /// 4. Initial price (fallback)
+    fn get_reference_price(&self, ctx: &StrategyContext<'_>) -> Price {
+        // Prefer fair value if available - this anchors noise around fundamentals
+        ctx.fair_value(&self.config.symbol)
+            .or_else(|| ctx.mid_price(&self.config.symbol))
+            .or_else(|| ctx.last_price(&self.config.symbol))
             .unwrap_or(self.config.initial_price)
     }
 
     /// Generate a random order around the reference price.
-    fn generate_order(&mut self, reference_price: Price) -> Order {
-        // Random side
-        let side = if self.rng.random_bool(0.5) {
+    /// Noise traders can only sell shares they own (no short selling).
+    fn generate_order(&mut self, reference_price: Price) -> Option<Order> {
+        let position = self.state.position();
+
+        // Determine side: can only sell if we have shares
+        let side = if position <= 0 {
+            // No shares to sell, must buy
+            OrderSide::Buy
+        } else if self.rng.random_bool(0.5) {
             OrderSide::Buy
         } else {
             OrderSide::Sell
@@ -124,13 +152,26 @@ impl NoiseTrader {
         let price_float = reference_price.to_float() * (1.0 + deviation);
         let price = Price::from_float(price_float.max(0.01)); // Ensure positive
 
-        // Random quantity
-        let quantity = Quantity(
-            self.rng
-                .random_range(self.config.min_quantity..=self.config.max_quantity),
-        );
+        // Random quantity, but for sells cap at current position
+        let max_qty = if side == OrderSide::Sell {
+            (position as u64).min(self.config.max_quantity)
+        } else {
+            self.config.max_quantity
+        };
 
-        Order::limit(self.id, &self.config.symbol, side, price, quantity)
+        if max_qty < self.config.min_quantity {
+            return None; // Not enough to trade
+        }
+
+        let quantity = Quantity(self.rng.random_range(self.config.min_quantity..=max_qty));
+
+        Some(Order::limit(
+            self.id,
+            &self.config.symbol,
+            side,
+            price,
+            quantity,
+        ))
     }
 }
 
@@ -139,17 +180,20 @@ impl Agent for NoiseTrader {
         self.id
     }
 
-    fn on_tick(&mut self, market: &MarketData) -> AgentAction {
+    fn on_tick(&mut self, ctx: &StrategyContext<'_>) -> AgentAction {
         // Randomly decide whether to place an order
         if !self.rng.random_bool(self.config.order_probability) {
             return AgentAction::none();
         }
 
-        let reference_price = self.get_reference_price(market);
-        let order = self.generate_order(reference_price);
+        let reference_price = self.get_reference_price(ctx);
 
-        self.state.record_order();
-        AgentAction::single(order)
+        if let Some(order) = self.generate_order(reference_price) {
+            self.state.record_order();
+            AgentAction::single(order)
+        } else {
+            AgentAction::none()
+        }
     }
 
     fn on_fill(&mut self, trade: &Trade) {
@@ -178,61 +222,91 @@ impl Agent for NoiseTrader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use types::BookSnapshot;
+    use quant::IndicatorSnapshot;
+    use sim_core::SingleSymbolMarket;
+    use std::collections::HashMap;
+    use types::OrderId;
 
-    fn mock_market_data(mid_price: Option<Price>) -> MarketData {
-        let book = if let Some(mid) = mid_price {
-            let bid = Price::from_float(mid.to_float() - 0.5);
-            let ask = Price::from_float(mid.to_float() + 0.5);
-            BookSnapshot {
-                symbol: "ACME".to_string(),
-                bids: vec![types::BookLevel {
-                    price: bid,
-                    quantity: Quantity(100),
-                    order_count: 1,
-                }],
-                asks: vec![types::BookLevel {
-                    price: ask,
-                    quantity: Quantity(100),
-                    order_count: 1,
-                }],
-                ..Default::default()
-            }
-        } else {
-            BookSnapshot::default()
-        };
-
-        MarketData {
-            tick: 1,
-            timestamp: 0,
-            book_snapshot: book,
-            recent_trades: vec![],
-            last_price: mid_price,
-            candles: vec![],
-            indicators: None,
+    fn mock_context_with_price(
+        mid_price: Option<Price>,
+    ) -> (
+        sim_core::OrderBook,
+        HashMap<types::Symbol, Vec<types::Candle>>,
+        IndicatorSnapshot,
+        HashMap<types::Symbol, Vec<Trade>>,
+    ) {
+        let mut book = sim_core::OrderBook::new("ACME");
+        if let Some(mid) = mid_price {
+            let mut bid = Order::limit(
+                AgentId(99),
+                "ACME",
+                OrderSide::Buy,
+                Price::from_float(mid.to_float() - 0.5),
+                Quantity(100),
+            );
+            bid.id = OrderId(1);
+            let mut ask = Order::limit(
+                AgentId(99),
+                "ACME",
+                OrderSide::Sell,
+                Price::from_float(mid.to_float() + 0.5),
+                Quantity(100),
+            );
+            ask.id = OrderId(2);
+            book.add_order(bid).unwrap();
+            book.add_order(ask).unwrap();
         }
+        let candles = HashMap::new();
+        let indicators = IndicatorSnapshot::new(1);
+        let recent_trades = HashMap::new();
+        (book, candles, indicators, recent_trades)
     }
 
     #[test]
     fn test_noise_trader_creation() {
         let trader = NoiseTrader::with_defaults(AgentId(1));
         assert_eq!(trader.id(), AgentId(1));
-        assert_eq!(trader.position(), 0);
+        assert_eq!(trader.position(), 50); // Default initial_position
         assert_eq!(trader.cash(), Cash::from_float(100_000.0));
     }
 
     #[test]
     fn test_reference_price_priority() {
         let trader = NoiseTrader::with_defaults(AgentId(1));
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
 
         // Empty market: use initial price
-        let market = mock_market_data(None);
-        let ref_price = trader.get_reference_price(&market);
+        let (book, candles, indicators, recent_trades) = mock_context_with_price(None);
+        let market = SingleSymbolMarket::new(&book);
+        let ctx = StrategyContext::new(
+            1,
+            0,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
+        );
+        let ref_price = trader.get_reference_price(&ctx);
         assert_eq!(ref_price, Price::from_float(100.0));
 
         // With mid price: use mid price
-        let market = mock_market_data(Some(Price::from_float(150.0)));
-        let ref_price = trader.get_reference_price(&market);
+        let (book, candles, indicators, recent_trades) =
+            mock_context_with_price(Some(Price::from_float(150.0)));
+        let market = SingleSymbolMarket::new(&book);
+        let ctx = StrategyContext::new(
+            1,
+            0,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
+        );
+        let ref_price = trader.get_reference_price(&ctx);
         assert_eq!(ref_price, Price::from_float(150.0));
     }
 
@@ -256,7 +330,7 @@ mod tests {
 
         trader.on_fill(&trade);
 
-        assert_eq!(trader.position(), 10);
+        assert_eq!(trader.position(), 60); // 50 initial + 10 bought
         // Cash decreased by 10 * 100 = 1000
         assert_eq!(trader.cash(), Cash::from_float(99_000.0));
     }
@@ -281,7 +355,7 @@ mod tests {
 
         trader.on_fill(&trade);
 
-        assert_eq!(trader.position(), -10);
+        assert_eq!(trader.position(), 40); // 50 initial - 10 sold
         // Cash increased by 10 * 100 = 1000
         assert_eq!(trader.cash(), Cash::from_float(101_000.0));
     }
