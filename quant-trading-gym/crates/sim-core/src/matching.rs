@@ -1,17 +1,25 @@
 //! Matching engine implementing price-time priority.
 //!
 //! The matching engine processes incoming orders against the order book,
-//! executing trades at the best available prices.
+//! executing trades at the best available prices. V2.2 adds Fill tracking
+//! for per-level execution details and slippage measurement.
 
-use types::{Order, OrderSide, OrderStatus, OrderType, Quantity, Tick, Timestamp, Trade, TradeId};
+use types::{
+    Fill, FillId, Order, OrderSide, OrderStatus, OrderType, Price, Quantity, SlippageMetrics, Tick,
+    Timestamp, Trade, TradeId,
+};
 
 use crate::order_book::OrderBook;
 
 /// Result of attempting to match an order.
 #[derive(Debug, Clone, Default)]
 pub struct MatchResult {
-    /// Trades that occurred during matching.
+    /// Trades that occurred during matching (aggregated view).
     pub trades: Vec<Trade>,
+    /// Individual fills at each price level (V2.2).
+    pub fills: Vec<Fill>,
+    /// Slippage metrics aggregated across all fills (V2.2).
+    pub slippage_metrics: SlippageMetrics,
     /// Updated status of the incoming order.
     pub status: OrderStatus,
     /// Remaining quantity of the incoming order (if any).
@@ -24,10 +32,35 @@ impl MatchResult {
         !self.trades.is_empty()
     }
 
+    /// Check if any fills occurred.
+    pub fn has_fills(&self) -> bool {
+        !self.fills.is_empty()
+    }
+
     /// Total quantity filled.
     pub fn filled_quantity(&self) -> Quantity {
         self.trades.iter().map(|t| t.quantity).sum()
     }
+
+    /// Number of price levels crossed.
+    pub fn levels_crossed(&self) -> usize {
+        self.fills.len()
+    }
+
+    /// Volume-weighted average price of all fills.
+    pub fn vwap(&self) -> Option<Price> {
+        self.slippage_metrics.vwap()
+    }
+}
+
+/// Context for match execution, bundling common parameters.
+///
+/// Used internally to reduce argument count in matching functions.
+struct MatchContext<'a> {
+    symbol: &'a str,
+    timestamp: Timestamp,
+    tick: Tick,
+    reference_price: Option<Price>,
 }
 
 /// Matching engine for executing orders against an order book.
@@ -40,6 +73,8 @@ impl MatchResult {
 pub struct MatchingEngine {
     /// Counter for generating unique trade IDs.
     next_trade_id: u64,
+    /// Counter for generating unique fill IDs (V2.2).
+    next_fill_id: u64,
 }
 
 impl Default for MatchingEngine {
@@ -51,7 +86,10 @@ impl Default for MatchingEngine {
 impl MatchingEngine {
     /// Create a new matching engine.
     pub fn new() -> Self {
-        Self { next_trade_id: 1 }
+        Self {
+            next_trade_id: 1,
+            next_fill_id: 1,
+        }
     }
 
     /// Generate the next trade ID.
@@ -61,12 +99,21 @@ impl MatchingEngine {
         id
     }
 
+    /// Generate the next fill ID (V2.2).
+    fn next_fill_id(&mut self) -> FillId {
+        let id = FillId(self.next_fill_id);
+        self.next_fill_id += 1;
+        id
+    }
+
     /// Process an incoming order against the order book.
     ///
     /// This method will:
     /// 1. Try to match the order against existing orders
     /// 2. Execute trades for any matches found
-    /// 3. Return remaining quantity if not fully filled
+    /// 3. Generate fills for each execution at a price level
+    /// 4. Track slippage metrics
+    /// 5. Return remaining quantity if not fully filled
     ///
     /// Note: This does NOT add unfilled limit orders to the book.
     /// The caller must add any remaining quantity if desired.
@@ -77,21 +124,45 @@ impl MatchingEngine {
         timestamp: Timestamp,
         tick: Tick,
     ) -> MatchResult {
+        self.match_order_with_reference(book, order, timestamp, tick, book.mid_price())
+    }
+
+    /// Process an incoming order with an explicit reference price for slippage calculation.
+    ///
+    /// The reference price is used to measure execution quality. Typically this is
+    /// the mid price at the time the order was submitted.
+    pub fn match_order_with_reference(
+        &mut self,
+        book: &mut OrderBook,
+        order: &mut Order,
+        timestamp: Timestamp,
+        tick: Tick,
+        reference_price: Option<Price>,
+    ) -> MatchResult {
         let mut result = MatchResult {
             trades: Vec::new(),
+            fills: Vec::new(),
+            slippage_metrics: SlippageMetrics::new(reference_price),
             status: OrderStatus::Pending,
             remaining_quantity: order.remaining_quantity,
         };
 
         let symbol = book.symbol().to_string();
 
+        let ctx = MatchContext {
+            symbol: &symbol,
+            timestamp,
+            tick,
+            reference_price,
+        };
+
         // Determine which side of the book to match against
         match order.side {
             OrderSide::Buy => {
-                self.match_buy_order(book, order, &mut result, &symbol, timestamp, tick);
+                self.match_buy_order(book, order, &mut result, &ctx);
             }
             OrderSide::Sell => {
-                self.match_sell_order(book, order, &mut result, &symbol, timestamp, tick);
+                self.match_sell_order(book, order, &mut result, &ctx);
             }
         }
 
@@ -111,14 +182,13 @@ impl MatchingEngine {
     }
 
     /// Match a buy order against asks (sell orders).
+    #[allow(clippy::too_many_arguments)]
     fn match_buy_order(
         &mut self,
         book: &mut OrderBook,
         order: &mut Order,
         result: &mut MatchResult,
-        symbol: &str,
-        timestamp: Timestamp,
-        tick: Tick,
+        ctx: &MatchContext<'_>,
     ) {
         let limit_price = match order.order_type {
             OrderType::Limit { price } => Some(price),
@@ -148,21 +218,43 @@ impl MatchingEngine {
 
             let trade_quantity = result.remaining_quantity.min(resting_qty);
 
-            // Create the trade
+            // Create the trade (aggregated view)
             let trade = Trade {
                 id: self.next_trade_id(),
-                symbol: symbol.to_string(),
+                symbol: ctx.symbol.to_string(),
                 buyer_id: order.agent_id,
                 seller_id: resting_agent_id,
                 buyer_order_id: order.id,
                 seller_order_id: resting_order_id,
                 price: ask_price, // Trade at resting order's price
                 quantity: trade_quantity,
-                timestamp,
-                tick,
+                timestamp: ctx.timestamp,
+                tick: ctx.tick,
             };
 
+            // Create the fill (V2.2 - per-level execution detail)
+            let fill = Fill {
+                id: self.next_fill_id(),
+                symbol: ctx.symbol.to_string(),
+                order_id: order.id,
+                aggressor_id: order.agent_id,
+                resting_id: resting_agent_id,
+                resting_order_id,
+                aggressor_side: OrderSide::Buy,
+                price: ask_price,
+                quantity: trade_quantity,
+                reference_price: ctx.reference_price,
+                timestamp: ctx.timestamp,
+                tick: ctx.tick,
+            };
+
+            // Track slippage metrics
+            result
+                .slippage_metrics
+                .record_fill(ask_price, trade_quantity);
+
             result.trades.push(trade);
+            result.fills.push(fill);
             result.remaining_quantity -= trade_quantity;
 
             // Update the book (fills and potentially removes the order)
@@ -172,14 +264,13 @@ impl MatchingEngine {
     }
 
     /// Match a sell order against bids (buy orders).
+    #[allow(clippy::too_many_arguments)]
     fn match_sell_order(
         &mut self,
         book: &mut OrderBook,
         order: &mut Order,
         result: &mut MatchResult,
-        symbol: &str,
-        timestamp: Timestamp,
-        tick: Tick,
+        ctx: &MatchContext<'_>,
     ) {
         let limit_price = match order.order_type {
             OrderType::Limit { price } => Some(price),
@@ -208,20 +299,43 @@ impl MatchingEngine {
 
             let trade_quantity = result.remaining_quantity.min(resting_qty);
 
+            // Create the trade (aggregated view)
             let trade = Trade {
                 id: self.next_trade_id(),
-                symbol: symbol.to_string(),
+                symbol: ctx.symbol.to_string(),
                 buyer_id: resting_agent_id,
                 seller_id: order.agent_id,
                 buyer_order_id: resting_order_id,
                 seller_order_id: order.id,
                 price: bid_price,
                 quantity: trade_quantity,
-                timestamp,
-                tick,
+                timestamp: ctx.timestamp,
+                tick: ctx.tick,
             };
 
+            // Create the fill (V2.2 - per-level execution detail)
+            let fill = Fill {
+                id: self.next_fill_id(),
+                symbol: ctx.symbol.to_string(),
+                order_id: order.id,
+                aggressor_id: order.agent_id,
+                resting_id: resting_agent_id,
+                resting_order_id,
+                aggressor_side: OrderSide::Sell,
+                price: bid_price,
+                quantity: trade_quantity,
+                reference_price: ctx.reference_price,
+                timestamp: ctx.timestamp,
+                tick: ctx.tick,
+            };
+
+            // Track slippage metrics
+            result
+                .slippage_metrics
+                .record_fill(bid_price, trade_quantity);
+
             result.trades.push(trade);
+            result.fills.push(fill);
             result.remaining_quantity -= trade_quantity;
 
             // Update the book
@@ -552,5 +666,166 @@ mod tests {
 
         assert_eq!(result.trades[0].id, TradeId(1));
         assert_eq!(result.trades[1].id, TradeId(2));
+    }
+
+    // V2.2 Fill Tests
+    #[test]
+    fn test_fills_created_with_trades() {
+        let mut book = OrderBook::new("TEST");
+        let mut engine = MatchingEngine::new();
+
+        // Add sell orders at different price levels
+        book.add_order(make_limit_order(1, 1, OrderSide::Sell, 100.0, 30))
+            .unwrap();
+        book.add_order(make_limit_order(2, 2, OrderSide::Sell, 101.0, 30))
+            .unwrap();
+
+        // Buy order that crosses two levels
+        let mut buy_order = make_limit_order(3, 3, OrderSide::Buy, 101.0, 50);
+        let result = engine.match_order(&mut book, &mut buy_order, 1000, 1);
+
+        // Should have 2 trades and 2 fills
+        assert_eq!(result.trades.len(), 2);
+        assert_eq!(result.fills.len(), 2);
+        assert!(result.has_fills());
+
+        // Verify first fill
+        assert_eq!(result.fills[0].price, Price::from_float(100.0));
+        assert_eq!(result.fills[0].quantity, Quantity(30));
+        assert_eq!(result.fills[0].aggressor_side, OrderSide::Buy);
+        assert_eq!(result.fills[0].aggressor_id, AgentId(3));
+        assert_eq!(result.fills[0].resting_id, AgentId(1));
+
+        // Verify second fill
+        assert_eq!(result.fills[1].price, Price::from_float(101.0));
+        assert_eq!(result.fills[1].quantity, Quantity(20));
+    }
+
+    #[test]
+    fn test_fill_ids_increment() {
+        let mut book = OrderBook::new("TEST");
+        let mut engine = MatchingEngine::new();
+
+        book.add_order(make_limit_order(1, 1, OrderSide::Sell, 100.0, 50))
+            .unwrap();
+        book.add_order(make_limit_order(2, 2, OrderSide::Sell, 101.0, 50))
+            .unwrap();
+
+        let mut buy_order = make_limit_order(3, 3, OrderSide::Buy, 101.0, 80);
+        let result = engine.match_order(&mut book, &mut buy_order, 1000, 1);
+
+        assert_eq!(result.fills[0].id, FillId(1));
+        assert_eq!(result.fills[1].id, FillId(2));
+    }
+
+    #[test]
+    fn test_slippage_metrics_in_result() {
+        let mut book = OrderBook::new("TEST");
+        let mut engine = MatchingEngine::new();
+
+        // Set up book with mid price = $100
+        book.add_order(make_limit_order(1, 1, OrderSide::Sell, 101.0, 50))
+            .unwrap();
+        book.add_order(make_limit_order(2, 2, OrderSide::Sell, 102.0, 50))
+            .unwrap();
+        book.add_order(make_limit_order(3, 3, OrderSide::Buy, 99.0, 50))
+            .unwrap();
+
+        // Buy 70 shares - should fill 50 at $101 and 20 at $102
+        let mut buy_order = make_limit_order(4, 4, OrderSide::Buy, 103.0, 70);
+        let result = engine.match_order(&mut book, &mut buy_order, 1000, 1);
+
+        // Check slippage metrics
+        let vwap = result.slippage_metrics.vwap().unwrap();
+        // VWAP = (50*101 + 20*102) / 70 = (5050 + 2040) / 70 = 101.2857...
+        assert!((vwap.to_float() - 101.2857).abs() < 0.01);
+
+        assert_eq!(result.slippage_metrics.levels_crossed, 2);
+        assert_eq!(
+            result.slippage_metrics.best_fill_price,
+            Some(Price::from_float(101.0))
+        );
+        assert_eq!(
+            result.slippage_metrics.worst_fill_price,
+            Some(Price::from_float(102.0))
+        );
+    }
+
+    #[test]
+    fn test_vwap_method_on_result() {
+        let mut book = OrderBook::new("TEST");
+        let mut engine = MatchingEngine::new();
+
+        book.add_order(make_limit_order(1, 1, OrderSide::Sell, 100.0, 100))
+            .unwrap();
+
+        let mut buy_order = make_limit_order(2, 2, OrderSide::Buy, 100.0, 50);
+        let result = engine.match_order(&mut book, &mut buy_order, 1000, 1);
+
+        // Single fill, VWAP should equal fill price
+        let vwap = result.vwap().unwrap();
+        assert_eq!(vwap, Price::from_float(100.0));
+    }
+
+    #[test]
+    fn test_levels_crossed_method() {
+        let mut book = OrderBook::new("TEST");
+        let mut engine = MatchingEngine::new();
+
+        book.add_order(make_limit_order(1, 1, OrderSide::Sell, 100.0, 30))
+            .unwrap();
+        book.add_order(make_limit_order(2, 2, OrderSide::Sell, 101.0, 30))
+            .unwrap();
+        book.add_order(make_limit_order(3, 3, OrderSide::Sell, 102.0, 30))
+            .unwrap();
+
+        let mut buy_order = make_limit_order(4, 4, OrderSide::Buy, 102.0, 80);
+        let result = engine.match_order(&mut book, &mut buy_order, 1000, 1);
+
+        assert_eq!(result.levels_crossed(), 3);
+    }
+
+    #[test]
+    fn test_fill_reference_price() {
+        let mut book = OrderBook::new("TEST");
+        let mut engine = MatchingEngine::new();
+
+        book.add_order(make_limit_order(1, 1, OrderSide::Sell, 101.0, 50))
+            .unwrap();
+        book.add_order(make_limit_order(2, 2, OrderSide::Buy, 99.0, 50))
+            .unwrap();
+
+        // Mid price is $100
+        let mid = book.mid_price();
+        assert_eq!(mid, Some(Price::from_float(100.0)));
+
+        let mut buy_order = make_limit_order(3, 3, OrderSide::Buy, 101.0, 30);
+        let result = engine.match_order(&mut book, &mut buy_order, 1000, 1);
+
+        // Fill should have mid price as reference
+        assert_eq!(
+            result.fills[0].reference_price,
+            Some(Price::from_float(100.0))
+        );
+    }
+
+    #[test]
+    fn test_sell_order_fills() {
+        let mut book = OrderBook::new("TEST");
+        let mut engine = MatchingEngine::new();
+
+        book.add_order(make_limit_order(1, 1, OrderSide::Buy, 100.0, 30))
+            .unwrap();
+        book.add_order(make_limit_order(2, 2, OrderSide::Buy, 99.0, 30))
+            .unwrap();
+
+        // Market sell order
+        let mut sell_order = make_market_order(3, 3, OrderSide::Sell, 50);
+        let result = engine.match_order(&mut book, &mut sell_order, 1000, 1);
+
+        assert_eq!(result.fills.len(), 2);
+        assert_eq!(result.fills[0].aggressor_side, OrderSide::Sell);
+        assert_eq!(result.fills[0].price, Price::from_float(100.0)); // Best bid first
+        assert_eq!(result.fills[1].price, Price::from_float(99.0));
     }
 }

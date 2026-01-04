@@ -367,6 +367,39 @@ impl OrderBook {
             .sum()
     }
 
+    /// Get total volume of all bid orders (V2.2).
+    pub fn total_bid_volume(&self) -> Quantity {
+        self.bids.values().map(|l| l.total_quantity).sum()
+    }
+
+    /// Get total volume of all ask orders (V2.2).
+    pub fn total_ask_volume(&self) -> Quantity {
+        self.asks.values().map(|l| l.total_quantity).sum()
+    }
+
+    /// Get total bid depth up to a given price (V2.2).
+    ///
+    /// Returns total volume of bids at or above the given price.
+    pub fn bid_depth_to_price(&self, min_price: Price) -> Quantity {
+        self.bids
+            .iter()
+            .rev()
+            .take_while(|(price, _)| **price >= min_price)
+            .map(|(_, l)| l.total_quantity)
+            .sum()
+    }
+
+    /// Get total ask depth up to a given price (V2.2).
+    ///
+    /// Returns total volume of asks at or below the given price.
+    pub fn ask_depth_to_price(&self, max_price: Price) -> Quantity {
+        self.asks
+            .iter()
+            .take_while(|(price, _)| **price <= max_price)
+            .map(|(_, l)| l.total_quantity)
+            .sum()
+    }
+
     /// Check if the book has any orders.
     pub fn is_empty(&self) -> bool {
         self.bids.is_empty() && self.asks.is_empty()

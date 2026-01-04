@@ -1,5 +1,72 @@
 # Development Log
 
+## 2026-01-04: V2.2 - Slippage & Partial Fills
+
+### Completed
+
+#### Fill Type (V2.2)
+- ✅ `FillId` newtype for unique fill identifiers
+- ✅ `Fill` struct: Represents atomic execution at a single price level
+  - Distinct from `Trade` (aggregated view)
+  - Tracks `aggressor_id`, `resting_id`, `aggressor_side`
+  - Includes `reference_price` for slippage calculation
+  - `slippage()` and `slippage_bps()` methods
+
+#### Slippage & Market Impact (V2.2)
+- ✅ `SlippageConfig`: Configures impact model
+  - `enabled`: Master toggle for slippage tracking
+  - `impact_threshold_bps`: Minimum order size before impact applies
+  - `linear_impact_bps`: Impact coefficient
+  - `use_sqrt_model`: Use square-root impact (more realistic)
+- ✅ `SlippageMetrics`: Aggregates fill metrics
+  - VWAP calculation across multiple fills
+  - `levels_crossed`, `best_fill_price`, `worst_fill_price`
+  - `slippage_buy()`, `slippage_sell()`, `slippage_bps(side)`
+- ✅ `SlippageCalculator` (`slippage.rs`): Pre-trade impact estimation
+  - `available_liquidity()`: Total volume on opposite side
+  - `liquidity_ratio_bps()`: Order size as fraction of liquidity
+  - `is_large_order()`: Above impact threshold check
+  - `estimate_impact_bps()`: Linear or sqrt impact model
+  - `estimate_execution_price()`: Expected VWAP
+  - `analyze_impact()`: Full pre-trade analysis
+- ✅ `ImpactEstimate`: Pre-trade analysis result struct
+
+#### Matching Engine Updates
+- ✅ `MatchResult` now includes:
+  - `fills: Vec<Fill>`: Per-level execution details
+  - `slippage_metrics: SlippageMetrics`: Aggregated metrics
+  - `vwap()`: Volume-weighted average price
+  - `levels_crossed()`: Number of price levels hit
+  - `has_fills()`: Check for fill existence
+- ✅ `match_order_with_reference()`: Match with explicit reference price
+- ✅ Fills generated alongside trades for each level crossed
+- ✅ Reference price defaults to mid price at order submission
+
+#### OrderBook Enhancements
+- ✅ `total_bid_volume()`: Sum of all bid quantities
+- ✅ `total_ask_volume()`: Sum of all ask quantities
+- ✅ `bid_depth_to_price(min_price)`: Liquidity above threshold
+- ✅ `ask_depth_to_price(max_price)`: Liquidity below threshold
+
+### Technical Notes
+
+**Impact Model Formula:**
+- Linear: `impact_bps = coefficient * (order_size / liquidity) * 100`
+- Sqrt: `impact_bps = coefficient * sqrt(order_size / liquidity) * 100`
+
+**Why separate Fill from Trade:**
+- Fills are atomic executions at exactly one price
+- Trades aggregate multiple fills for reporting
+- Fills enable precise slippage measurement per level
+- Supports future features like transaction cost analysis (TCA)
+
+**Slippage Sign Convention:**
+- Positive slippage = worse execution (paid more / received less)
+- Buy: slippage = fill_price - reference_price
+- Sell: slippage = reference_price - fill_price
+
+---
+
 ## 2026-01-04: V2.1 - Position Limits & Short-Selling Infrastructure
 
 ### Completed

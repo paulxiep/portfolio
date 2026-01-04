@@ -237,7 +237,7 @@ V0 (Steel Thread)
 
 **Add:** Realistic market constraints, fundamental value system, multi-symbol trading
 
-### V2.1: Position Limits & Short-Selling (~2 days) ✓ DONE
+### V2.1: Position Limits & Short-Selling (~2 days)
 - `SymbolConfig` with `shares_outstanding` (natural long limit)
 - `ShortSellingConfig` with borrow pool derived from float
 - `BorrowLedger` for tracking borrowed shares
@@ -308,6 +308,7 @@ V3 adds efficient event subscriptions for scale.
 - Portfolio snapshots
 - **Game snapshots for save/resume** (`GameSnapshot`, `AgentSnapshot`)
 - **Trade log** (append-only, for post-game analysis)
+- **API consideration:** Change `on_fill(Trade)` → `on_fill(Fill)` to expose per-order slippage metrics to agents (V2.2 infrastructure ready, deferred here to avoid early API churn)
 
 ### V3.5: Hooks System (~2 days)
 - `SimulationHook` trait
