@@ -34,14 +34,16 @@ In this project, I try to push the boundaries of AI-assisted development.
 
 The project is built vertically in iterative stages, ensuring a runnable simulation at each step.
 
-**[Development log](development_log.md)**
+- **[Development log](development_log.md)**
+- **[Project plan vertical](project_plan_vertical.md)**
+- **[Project plan full](project_plan.md)**
 
 | Version | Focus | Goal |
 |---------|-------|------|
 | **V0** (completed) | **MVP Simulation** | Single-threaded simulation with TUI visualization showing agents trading. |
 | **V1** (completed) | **Quant Strategy Agents** | Add indicators (SMA, RSI), risk metrics (Sharpe, Drawdown), and real strategies. |
-| **V2** (completed) | **Market Realism & Events** | Implement tiered architecture (Smart, Reactive, Background) for 100k+ agent scale. |
-| **V3** | **Persistence & Agent Scaling** | Add SQLite storage for trade history and news event generation. |
+| **V2** (completed) | **Market Realism & Events** | Implement multi-symbol and random events. |
+| **V3** | **Persistence & Agent Scaling** | SQLite for trade history and tiered architecture for 100k+ agent scale. |
 | **V4** | **RL or Game Track** | **RL:** Gym env, PyO3 bindings, training. <br> **Game:** Services, API, Web Frontend. |
 | **V5** | **Full Integration** | RL agents as opponents in the multiplayer game. |
 
