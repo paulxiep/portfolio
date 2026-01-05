@@ -278,31 +278,44 @@ V3 adds efficient event subscriptions for scale.
 
 ---
 
-## V3: Scaling & Persistence (+3 weeks)
+## V3: Scaling & Persistence (+4 weeks)
 
-**Add:** Tiered agent architecture for 100k+ scale, storage layer
+**Add:** Multi-symbol agent state, tiered agent architecture for 100k+ scale, storage layer
 
-### V3.1: Tier 2 Reactive Agents (~4 days)
+### V3.1: Multi-Symbol AgentState (~3 days)
+- Refactor `AgentState` from single `position: i64` to `positions: HashMap<Symbol, PositionEntry>`
+- Add `PositionEntry { quantity: i64, avg_cost: f64 }` for per-symbol tracking with weighted average cost
+- Clean API: `on_buy(symbol, qty, value)`, `on_sell(symbol, qty, value)`, `position_for(symbol)`
+- Extend `Agent` trait: `positions()`, `watched_symbols()`, `equity(&prices_map)`, `equity_for(symbol, price)`
+- `position()` returns aggregate sum across all symbols (convenience, not backward-compat)
+- Update simulation runner to build `HashMap<Symbol, Price>` for mark-to-market valuation
+- Update all Tier 1 strategies to use symbol-aware state methods
+- **Foundation for:** Tier 2 wake conditions, PairsTrading, SectorRotator
+
+### V3.2: Tier 2 Reactive Agents (~4 days)
 - `ReactiveAgent` struct (lightweight, event-driven)
 - Wake conditions: price threshold, interval, event subscription
-- `WakeConditionIndex` for O(log n) lookups
+- `WakeConditionIndex` for O(log n) lookups using `watched_symbols()`
 - **Event subscription:** Tier 2 agents wake only on relevant `FundamentalEvent`
-- **Parametric condition updates** — modify wake conditions at runtime
+- **Parametric condition updates** — modify wake conditions at runtime via `ConditionUpdate` buffer
+- `LightweightContext` with triggered symbol, price, and wake reason
+- `ReactivePortfolio` enum: `SingleSymbol(i64, Price)` (~150 bytes) or `Full(HashMap)` (~1KB)
+- Enum dispatch for strategies: `ThresholdBuyer`, `ThresholdSeller`, `NewsReactor`, `MomentumFollower`
 
-### V3.2: Tier 3 Background Pool (~4 days)
+### V3.3: Tier 3 Background Pool (~4 days)
 - Statistical order generation (no individual agents)
 - `BackgroundAgentPool` struct
 - Configurable distributions (size, price, direction)
 - **Sentiment-driven:** Pool bias shifts with active `FundamentalEvent`s
 - Per-sector sentiment tracking
 
-### V3.3: Performance Tuning (~3 days)
+### V3.4: Performance Tuning (~3 days)
 - Benchmark 100k agents
 - Profile and optimize hot paths
 - Memory budget validation
 - Two-phase tick architecture (read phase parallel, write phase sequential)
 
-### V3.4: SQLite Storage (~4 days)
+### V3.5: SQLite Storage (~4 days)
 - Trade history persistence
 - Candle aggregation (1m, 5m, 1h)
 - Portfolio snapshots
@@ -310,22 +323,23 @@ V3 adds efficient event subscriptions for scale.
 - **Trade log** (append-only, for post-game analysis)
 - **API consideration:** Change `on_fill(Trade)` → `on_fill(Fill)` to expose per-order slippage metrics to agents (V2.2 infrastructure ready, deferred here to avoid early API churn)
 
-### V3.5: Hooks System (~2 days)
+### V3.6: Hooks System (~2 days)
 - `SimulationHook` trait
 - Metrics hook, persistence hook
 - TUI becomes a hook (optional observer)
 
 **Borrow-Checking Pitfalls to Address:**
-1. **Parallel agent execution:** Two-phase tick (immutable read → sequential write)
-2. **WakeConditionIndex updates:** Collect `ConditionUpdate` during tick, apply after
-3. **Background pool accounting:** Append-only fill recording
+1. **Multi-symbol state updates (V3.1):** Use interior mutability or collect updates, apply sequentially
+2. **Parallel agent execution (V3.4):** Two-phase tick (immutable read → sequential write)
+3. **WakeConditionIndex updates (V3.2):** Collect `ConditionUpdate` during tick, apply after
+4. **Background pool accounting (V3.3):** Append-only fill recording
 
 **Maps to Original:** Phase 6 (Agent Scaling) + Phase 10 (Storage) + Phase 12 (Scale Testing)
 
 **Optional additions at V3:** 
-- `NewsReactiveTrader` (Tier 2 strategy that wakes on `FundamentalEvent`s from V2.4)
-- `PairsTrading` (multi-symbol agent exploiting cointegration, requires V2.3 multi-symbol + `quant/stats.rs`)
-- `SectorRotator` (shifts allocation based on sector sentiment from V2.4 events)
+- `NewsReactiveTrader` (Tier 2 strategy that wakes on `FundamentalEvent`s, requires V3.2)
+- `PairsTrading` (multi-symbol Tier 1 agent exploiting cointegration, requires V3.1 + `quant/stats.rs`)
+- `SectorRotator` (shifts allocation based on sector sentiment, requires V3.1 + V3.2)
 
 **Strategy Refinements to Consider at V3:**
 - **VWAP Executor**: Currently configured as a buyer accumulating 1000 shares. This is an *execution algorithm*, not a *strategy*. In real markets, VWAP execution is used to fill large orders while minimizing impact. Options:
@@ -342,15 +356,20 @@ Multi-symbol agents (e.g., `PairsTrading`, `SectorRotator`) differ from single-s
 - Position limits apply per-symbol; portfolio-level risk is the agent's responsibility
 - For V3 Tier 2: wake on ANY watched symbol's condition, receive single trigger symbol
 
-**Agent Trait Extensions for V3:**
+**Agent Trait Extensions (V3.1):**
 ```rust
 trait Agent {
-    // Existing (V0)
-    fn position(&self) -> i64;  // Keep for backward compat (sum of positions)
-    
-    // New for multi-symbol (V3)
-    fn positions(&self) -> HashMap<Symbol, i64> { HashMap::new() }
-    fn watched_symbols(&self) -> Vec<Symbol> { vec![] }  // For Tier 2 wake conditions
+    fn position(&self) -> i64;  // Aggregate sum across all symbols
+    fn position_for(&self, symbol: &str) -> i64;  // Per-symbol position
+    fn positions(&self) -> &HashMap<Symbol, PositionEntry>;
+    fn watched_symbols(&self) -> &[Symbol] { &[] }  // For Tier 2 wake conditions (V3.2)
+    fn equity(&self, prices: &HashMap<Symbol, Price>) -> Cash;  // Mark-to-market
+    fn equity_for(&self, symbol: &str, price: Price) -> Cash;  // Single-symbol equity
+}
+
+struct PositionEntry {
+    quantity: i64,
+    avg_cost: f64,  // Weighted average cost basis
 }
 ```
 
@@ -578,7 +597,7 @@ pub struct Market {
 
 No artificial `max_long` — you can buy as many shares as exist and you can afford.
 
-### Reactive Agent Parametric Conditions (V2)
+### Reactive Agent Parametric Conditions (V3.2)
 
 Agents can update their wake conditions at runtime without being recreated:
 
@@ -599,15 +618,16 @@ pub struct ConditionUpdate {
 
 | Version | Pitfall | Solution |
 |---------|---------|----------|
-| V2 | Parallel agent execution | Two-phase tick: read (parallel) → write (sequential) |
-| V2 | WakeConditionIndex updates during tick | Deferred `ConditionUpdate` buffer |
-| V2 | Background pool accounting | Append-only fill recording |
-| V3 | SimulationHook borrows | Sequential hook invocation |
-| V3 | Snapshot during active tick | Snapshots only at tick boundaries |
+| V3.1 | Multi-symbol state mutation | Return owned `PositionEntry`, update sequentially after tick |
+| V3.2 | WakeConditionIndex updates during tick | Deferred `ConditionUpdate` buffer |
+| V3.3 | Background pool accounting | Append-only fill recording |
+| V3.4 | Parallel agent execution | Two-phase tick: read (parallel) → write (sequential) |
+| V3.6 | SimulationHook borrows | Sequential hook invocation |
+| V3.5 | Snapshot during active tick | Snapshots only at tick boundaries |
 | V4-RL | PyO3 GIL blocking | `py.allow_threads()` for Rust computation |
 | V4-Game | Async/sync boundary | Channel-based `SimulationBridge` |
 
-### Two-Phase Tick Architecture (V2)
+### Two-Phase Tick Architecture (V3.4)
 
 ```rust
 impl TieredOrchestrator {
@@ -627,25 +647,13 @@ impl TieredOrchestrator {
 
 ## Iteration Timeline Summary
 
-| Version | Focus | Status | Tests |
-|---------|-------|--------|-------|
-| V0 | MVP Simulation | ✅ Complete | — |
-| V1 | Quant Strategy Agents | ✅ Complete | — |
-| V2.1 | Position Limits & Short-Selling | ✅ Complete | — |
-| V2.2 | Slippage & Partial Fills | ✅ Complete | — |
-| V2.3 | Multi-Symbol Infrastructure | ✅ Complete | — |
-| V2.4 | Fundamentals & Events | ✅ Complete | 213 |
-| V3 | Scaling & Persistence | 🔲 Planned | — |
-| V4 | RL Track OR Game Track | 🔲 Planned | — |
-
-**Current State (V2.4):**
-- 7 agent strategies (MarketMaker, NoiseTrader, Momentum, TrendFollower, MACD, Bollinger, VWAP)
-- 4 symbols across 4 sectors
-- News events with Gordon Growth Model fair value
-- TUI with start/pause control, symbol tabs, price overlay
-- Mean-reverting tick-level market (realistic for HFT)
-
-**Next Decision:** V3 (Scaling) or jump to V4 (RL/Game)?
+| Version | Focus | Status |
+|---------|-------|--------|
+| V0 | MVP Simulation | ✅ Complete |
+| V1 | Quant Strategy Agents | ✅ Complete |
+| V2 | Multi-Symbol & Events | ✅ Complete |
+| V3 | Scaling & Persistence | 🔲 Planned |
+| V4 | RL Track OR Game Track | 🔲 Planned |
 
 ---
 
@@ -695,9 +703,10 @@ agents/             agents/             agents/             agents/
   lib.rs              lib.rs              lib.rs              lib.rs
   traits.rs           traits.rs           traits.rs           traits.rs
                                           context.rs          context.rs
-                                          state.rs            state.rs
+                                          state.rs            state.rs (V3.1: multi-symbol)
                                           position_limits.rs  position_limits.rs
                                           borrow_ledger.rs    borrow_ledger.rs
+                                                              tiers.rs (V3.2: WakeCondition, etc.)
   strategies/         strategies/         strategies/         strategies/
     mod.rs              mod.rs              mod.rs              mod.rs
     noise_trader.rs     noise_trader.rs     noise_trader.rs     noise_trader.rs
@@ -707,11 +716,12 @@ agents/             agents/             agents/             agents/
                         macd_crossover.rs   macd_crossover.rs   macd_crossover.rs
                         bollinger.rs        bollinger.rs        bollinger.rs
                         vwap_executor.rs    vwap_executor.rs    vwap_executor.rs
-                                                              tier2/
+                                                              tier2/ (V3.2)
                                                                 mod.rs
                                                                 agent.rs
                                                                 wake_index.rs
-                                                              tier3/
+                                                                strategies.rs
+                                                              tier3/ (V3.3)
                                                                 mod.rs
                                                                 pool.rs
 
@@ -719,7 +729,8 @@ simulation/         simulation/         simulation/         simulation/
   lib.rs              lib.rs              lib.rs              lib.rs
   runner.rs           runner.rs           runner.rs           runner.rs
                                           config.rs           config.rs
-                                                              hooks.rs
+                                                              orchestrator.rs (V3.2: TieredOrchestrator)
+                                                              hooks.rs (V3.6)
 
 tui/                tui/                tui/                tui/ (becomes hook)
   lib.rs              lib.rs              lib.rs              lib.rs
@@ -752,7 +763,11 @@ src/                src/                src/                src/
 **Key Migration Points:**
 - **V0→V1:** Added `quant/` crate with indicators, risk metrics
 - **V1→V2:** Added `news/` crate, `context.rs` moved to agents, multi-symbol `market.rs`, slippage, position limits
-- **V2→V3:** Add `tier2/`, `tier3/`, `storage/`, implement `SimulationHook` trait
+- **V2→V3.1:** Refactor `AgentState` to multi-symbol `positions: HashMap<Symbol, PositionEntry>`
+- **V3.1→V3.2:** Add `tier2/`, `tiers.rs`, `orchestrator.rs`, `WakeConditionIndex`
+- **V3.2→V3.3:** Add `tier3/` with `BackgroundAgentPool`
+- **V3.3→V3.5:** Add `storage/` crate
+- **V3.5→V3.6:** Implement `SimulationHook` trait, TUI becomes hook
 
 ---
 
@@ -783,15 +798,16 @@ Explicitly deferred to keep V0-V2 lean:
 | **MACD Crossover** | V1 | ✅ | MACD/signal line crossover |
 | **Bollinger Reversion** | V1 | ✅ | Mean reversion at bands |
 | **VWAP Executor** | V1 | ✅ | Execution algo (accumulates shares); see V3 notes |
-| **Pairs Trading** | V3 | 🔲 | Requires multi-symbol cointegration |
-| **Factor Long-Short** | V3 | 🔲 | Requires `quant/factors.rs` (value, momentum, quality) |
-| **News Reactive** | V3 | 🔲 | Requires Tier 2 wake system |
-| **Sector Rotator** | V3 | 🔲 | Requires sector sentiment tracking |
+| **Pairs Trading** | V3.1+ | 🔲 | Requires multi-symbol `AgentState` (V3.1) + cointegration |
+| **Factor Long-Short** | V3.1+ | 🔲 | Requires `quant/factors.rs` (value, momentum, quality) |
+| **ThresholdBuyer/Seller** | V3.2 | 🔲 | Tier 2 reactive strategy |
+| **News Reactive** | V3.2 | 🔲 | Tier 2 wake on `FundamentalEvent` |
+| **Sector Rotator** | V3.2 | 🔲 | Tier 2 multi-symbol, sector sentiment |
 | **RL Agent** | V4 | 🔲 | Requires gym + ONNX |
 
 **Notes:**
 - Momentum/TrendFollower have low activity — realistic for tick-level mean-reverting markets
-- VWAP is an execution algorithm, not a strategy; consider restructuring in V3
+- VWAP is an execution algorithm, not a strategy; consider restructuring in V3.4
 
 ---
 
@@ -863,4 +879,9 @@ cargo new crates/tui --lib
 | `simulation` | `lib.rs`, `runner.rs`, `config.rs` | Tick loop, event processing, agent orchestration |
 | `tui` | `lib.rs`, `app.rs`, `widgets/` | Terminal UI with price chart, book depth, agent table, risk panel |
 
-**V3 Migration:** Strategies stay flat (no tier1/ folder). Tier 2/3 get separate modules when implemented.
+**V3.x Migration Notes:**
+- **V3.1:** Refactor `state.rs` for multi-symbol positions; update trait in `traits.rs`
+- **V3.2:** Add `tiers.rs`, `tier2/` module with `agent.rs`, `wake_index.rs`, `strategies.rs`; add `orchestrator.rs` to simulation
+- **V3.3:** Add `tier3/` module with `pool.rs`
+- **V3.5:** Add `storage/` crate
+- **V3.6:** Add `hooks.rs` to simulation; refactor TUI to implement `SimulationHook`

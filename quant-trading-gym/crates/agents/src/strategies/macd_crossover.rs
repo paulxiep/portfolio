@@ -91,8 +91,8 @@ impl MacdCrossover {
         let macd = Macd::new(config.fast_period, config.slow_period, config.signal_period);
         Self {
             id,
-            config,
-            state: AgentState::new(initial_cash),
+            config: config.clone(),
+            state: AgentState::new(initial_cash, &[&config.symbol]),
             prev_state: MacdState::Unknown,
             macd,
         }
@@ -121,12 +121,12 @@ impl MacdCrossover {
 
     /// Check if we can take more long positions.
     fn can_buy(&self) -> bool {
-        self.state.position() < self.config.max_position
+        self.state.position_for(&self.config.symbol) < self.config.max_position
     }
 
     /// Check if we can take more short positions.
     fn can_sell(&self) -> bool {
-        self.state.position() > -self.config.max_position
+        self.state.position_for(&self.config.symbol) > -self.config.max_position
     }
 
     /// Generate a buy order.
@@ -208,9 +208,11 @@ impl Agent for MacdCrossover {
 
     fn on_fill(&mut self, trade: &Trade) {
         if trade.buyer_id == self.id {
-            self.state.on_buy(trade.quantity.raw(), trade.value());
+            self.state
+                .on_buy(&trade.symbol, trade.quantity.raw(), trade.value());
         } else if trade.seller_id == self.id {
-            self.state.on_sell(trade.quantity.raw(), trade.value());
+            self.state
+                .on_sell(&trade.symbol, trade.quantity.raw(), trade.value());
         }
     }
 

@@ -18,6 +18,8 @@ pub struct AgentTable {
     agents: Vec<AgentInfo>,
     /// Scroll offset for the agent list.
     scroll_offset: usize,
+    /// Symbol to display position for (None = aggregate).
+    symbol: Option<String>,
 }
 
 impl AgentTable {
@@ -42,12 +44,19 @@ impl AgentTable {
         Self {
             agents: sorted,
             scroll_offset: 0,
+            symbol: None,
         }
     }
 
     /// Set scroll offset.
     pub fn scroll_offset(mut self, offset: usize) -> Self {
         self.scroll_offset = offset;
+        self
+    }
+
+    /// Set symbol to display position for.
+    pub fn symbol(mut self, symbol: impl Into<String>) -> Self {
+        self.symbol = Some(symbol.into());
         self
     }
 }
@@ -71,8 +80,11 @@ impl Widget for AgentTable {
             .skip(scroll_offset)
             .take(visible_rows)
             .map(|agent| {
-                // Use net_position for display (sum across all symbols)
-                let position = agent.net_position();
+                // Use per-symbol position if symbol specified, otherwise aggregate
+                let position = match &self.symbol {
+                    Some(sym) => agent.position(sym),
+                    None => agent.net_position(),
+                };
 
                 // Color position based on direction
                 let position_style = if position > 0 {

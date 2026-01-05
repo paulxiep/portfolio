@@ -69,7 +69,7 @@ mod traits;
 pub use borrow_ledger::{BorrowLedger, BorrowPosition};
 pub use context::StrategyContext;
 pub use position_limits::PositionValidator;
-pub use state::AgentState;
+pub use state::{AgentState, PositionEntry};
 pub use strategies::{
     BollingerReversion, BollingerReversionConfig, MacdCrossover, MacdCrossoverConfig, MarketMaker,
     MarketMakerConfig, MomentumConfig, MomentumTrader, NoiseTrader, NoiseTraderConfig,

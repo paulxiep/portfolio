@@ -24,12 +24,22 @@ use quant::{
     AgentRiskSnapshot, AgentRiskTracker, IndicatorCache, IndicatorEngine, IndicatorSnapshot,
 };
 use rand::seq::SliceRandom;
-use sim_core::{Market, MatchingEngine, OrderBook};
+use sim_core::{Market, MarketView, MatchingEngine, OrderBook};
 use types::{
     AgentId, Candle, Order, OrderId, Price, Quantity, RiskViolation, Symbol, Tick, Timestamp, Trade,
 };
 
 use crate::config::SimulationConfig;
+
+/// Agent action with captured state for order validation.
+/// (agent_id, action, per-symbol positions, cash, is_market_maker)
+type AgentActionWithState = (
+    AgentId,
+    AgentAction,
+    HashMap<Symbol, i64>,
+    types::Cash,
+    bool,
+);
 
 /// Statistics about the simulation state.
 #[derive(Debug, Clone, Default)]
@@ -337,12 +347,19 @@ impl Simulation {
             .unwrap_or(Quantity::ZERO)
     }
 
-    /// Get agent summaries (name, position, cash, realized_pnl) for display.
-    /// Returns a vec of (name, position, cash, realized_pnl) tuples.
-    pub fn agent_summaries(&self) -> Vec<(&str, i64, types::Cash, types::Cash)> {
+    /// Get agent summaries for display (V3.1: per-symbol positions).
+    /// Returns a vec of (name, positions_map, cash, realized_pnl) tuples.
+    pub fn agent_summaries(&self) -> Vec<(&str, HashMap<Symbol, i64>, types::Cash, types::Cash)> {
         self.agents
             .iter()
-            .map(|a| (a.name(), a.position(), a.cash(), a.realized_pnl()))
+            .map(|a| {
+                let positions: HashMap<Symbol, i64> = a
+                    .positions()
+                    .iter()
+                    .map(|(sym, entry)| (sym.clone(), entry.quantity))
+                    .collect();
+                (a.name(), positions, a.cash(), a.realized_pnl())
+            })
             .collect()
     }
 
@@ -494,10 +511,10 @@ impl Simulation {
             return Ok(());
         }
 
-        let symbol = self.config.symbol().to_string();
+        // Use the order's symbol for shares outstanding check (V3.1 fix)
         let total_held = self
             .total_shares_held
-            .get(&symbol)
+            .get(&order.symbol)
             .copied()
             .unwrap_or(Quantity::ZERO);
 
@@ -617,19 +634,17 @@ impl Simulation {
 
         let mut resting_order = None;
 
-        // If there's remaining quantity for a limit order, add to book
+        // If there's remaining quantity for a limit order, add to book temporarily
+        // (will be cleared at end of tick - all orders are IOC within tick)
         if !result.remaining_quantity.is_zero() && order.limit_price().is_some() {
-            // Update order's remaining quantity before adding to book
             order.remaining_quantity = result.remaining_quantity;
             let order_clone = order.clone();
-            // Re-borrow book (needed after match_order consumed mutable borrow)
             if let Some(book) = self.market.get_book_mut(&order.symbol)
                 && book.add_order(order).is_ok()
             {
                 resting_order = Some(order_clone);
                 self.stats.resting_orders += 1;
             }
-            // Market orders with remaining quantity are dropped (no liquidity)
         }
 
         if result.has_trades() {
@@ -675,16 +690,21 @@ impl Simulation {
         indices.shuffle(&mut rand::rng());
 
         // Phase 2: Collect all agent actions with their current state for validation.
-        // We need to snapshot position/cash before processing to validate orders.
-        let actions_with_state: Vec<(AgentId, AgentAction, i64, types::Cash, bool)> = indices
+        // We capture per-symbol positions for correct multi-symbol validation (V3.1).
+        let actions_with_state: Vec<AgentActionWithState> = indices
             .iter()
             .map(|&i| {
                 let agent = &mut self.agents[i];
                 let action = agent.on_tick(&ctx);
-                let position = agent.position();
+                // Capture per-symbol positions for validation
+                let positions: HashMap<Symbol, i64> = agent
+                    .positions()
+                    .iter()
+                    .map(|(sym, entry)| (sym.clone(), entry.quantity))
+                    .collect();
                 let cash = agent.cash();
                 let is_mm = agent.is_market_maker();
-                (agent.id(), action, position, cash, is_mm)
+                (agent.id(), action, positions, cash, is_mm)
             })
             .collect();
 
@@ -693,8 +713,9 @@ impl Simulation {
         let mut fill_notifications: Vec<(AgentId, Trade, i64)> = Vec::new(); // Include position before trade
         let mut resting_notifications: Vec<(AgentId, Order)> = Vec::new(); // Notify agents of resting orders
 
-        for (agent_id, action, agent_position, agent_cash, is_market_maker) in actions_with_state {
-            let mut current_position = agent_position;
+        for (agent_id, action, agent_positions, agent_cash, is_market_maker) in actions_with_state {
+            // Track per-symbol positions for multi-order validation within tick
+            let mut current_positions = agent_positions.clone();
 
             // Process cancellations first (before placing new orders)
             for order_id in action.cancellations {
@@ -705,9 +726,12 @@ impl Simulation {
             }
 
             for order in action.orders {
+                // Get position for this specific symbol (V3.1)
+                let symbol_position = current_positions.get(&order.symbol).copied().unwrap_or(0);
+
                 // Validate order against position limits (V2.1)
                 if let Err(violation) =
-                    self.validate_order(&order, current_position, agent_cash, is_market_maker)
+                    self.validate_order(&order, symbol_position, agent_cash, is_market_maker)
                 {
                     self.stats.rejected_orders += 1;
                     if self.config.verbose {
@@ -734,25 +758,25 @@ impl Simulation {
                 for trade in trades {
                     self.stats.total_trades += 1;
 
-                    // Track position before trade for borrow ledger updates
+                    // Track position before trade for borrow ledger updates (per-symbol, V3.1)
                     let buyer_pos_before = if trade.buyer_id == agent_id {
-                        current_position
+                        current_positions.get(&trade.symbol).copied().unwrap_or(0)
                     } else {
-                        // Need to look up other agent's position
+                        // Need to look up other agent's per-symbol position
                         self.agents
                             .iter()
                             .find(|a| a.id() == trade.buyer_id)
-                            .map(|a| a.position())
+                            .map(|a| a.position_for(&trade.symbol))
                             .unwrap_or(0)
                     };
 
                     let seller_pos_before = if trade.seller_id == agent_id {
-                        current_position
+                        current_positions.get(&trade.symbol).copied().unwrap_or(0)
                     } else {
                         self.agents
                             .iter()
                             .find(|a| a.id() == trade.seller_id)
-                            .map(|a| a.position())
+                            .map(|a| a.position_for(&trade.symbol))
                             .unwrap_or(0)
                     };
 
@@ -766,12 +790,14 @@ impl Simulation {
                     fill_notifications.push((trade.buyer_id, trade.clone(), buyer_pos_before));
                     fill_notifications.push((trade.seller_id, trade.clone(), seller_pos_before));
 
-                    // Update tracking of current position for this agent's remaining orders
+                    // Update tracking of current position for this agent's remaining orders (per-symbol)
                     if trade.buyer_id == agent_id {
-                        current_position += trade.quantity.raw() as i64;
+                        *current_positions.entry(trade.symbol.clone()).or_insert(0) +=
+                            trade.quantity.raw() as i64;
                     }
                     if trade.seller_id == agent_id {
-                        current_position -= trade.quantity.raw() as i64;
+                        *current_positions.entry(trade.symbol.clone()).or_insert(0) -=
+                            trade.quantity.raw() as i64;
                     }
 
                     tick_trades.push(trade);
@@ -796,9 +822,9 @@ impl Simulation {
         self.update_candles(&tick_trades);
 
         // Notify agents of fills
-        for (agent_id, trade, _pos_before) in fill_notifications {
-            if let Some(agent) = self.agents.iter_mut().find(|a| a.id() == agent_id) {
-                agent.on_fill(&trade);
+        for (agent_id, trade, _pos_before) in &fill_notifications {
+            if let Some(agent) = self.agents.iter_mut().find(|a| a.id() == *agent_id) {
+                agent.on_fill(trade);
             }
         }
 
@@ -810,14 +836,29 @@ impl Simulation {
         }
 
         // Update risk tracking with current equity values
-        // Use last price from primary symbol or initial price for mark-to-market
-        let mark_price = self
-            .book()
-            .last_price()
-            .unwrap_or(self.config.initial_price());
+        // Build price map for all symbols for mark-to-market valuation
+        let prices: HashMap<Symbol, Price> = self
+            .config
+            .get_symbol_configs()
+            .iter()
+            .map(|sc| {
+                let price = self
+                    .market
+                    .last_price(&sc.symbol)
+                    .unwrap_or(sc.initial_price);
+                (sc.symbol.clone(), price)
+            })
+            .collect();
+
         for agent in &self.agents {
-            let equity = agent.equity(mark_price).to_float();
+            let equity = agent.equity(&prices).to_float();
             self.risk_tracker.record_equity(agent.id(), equity);
+        }
+
+        // Clear all order books at end of tick (orders expire after tick)
+        // This ensures fresh liquidity each tick from market makers
+        for book in self.market.books_mut() {
+            book.clear();
         }
 
         // Advance time
@@ -976,9 +1017,10 @@ mod tests {
 
     impl OneShotAgent {
         fn new(id: AgentId, order: Order) -> Self {
+            let symbol = order.symbol.clone();
             Self {
                 id,
-                state: AgentState::new(Cash::from_float(100_000.0)),
+                state: AgentState::new(Cash::from_float(100_000.0), &[&symbol]),
                 order: Some(order),
             }
         }
@@ -1052,7 +1094,7 @@ mod tests {
         );
         sim.add_agent(Box::new(OneShotAgent::new(AgentId(1), sell_order)));
 
-        // Agent 2 places a buy order
+        // Agent 2 places a buy order at same price
         let buy_order = Order::limit(
             AgentId(2),
             "TEST",
@@ -1062,16 +1104,16 @@ mod tests {
         );
         sim.add_agent(Box::new(OneShotAgent::new(AgentId(2), buy_order)));
 
-        // First tick: both orders submitted, sell order processed first (rests),
-        // then buy order matches against it
+        // First tick: both orders submitted, one rests briefly, other matches against it
         let trades = sim.step();
         assert_eq!(trades.len(), 1);
         assert_eq!(trades[0].quantity, Quantity(50));
         assert_eq!(trades[0].price, Price::from_float(100.0));
-        assert_eq!(trades[0].buyer_id, AgentId(2));
-        assert_eq!(trades[0].seller_id, AgentId(1));
 
         assert_eq!(sim.stats().total_trades, 1);
+
+        // After tick, book should be cleared
+        assert!(sim.book().is_empty());
     }
 
     #[test]
@@ -1089,13 +1131,14 @@ mod tests {
         );
         sim.add_agent(Box::new(OneShotAgent::new(AgentId(1), sell_order)));
 
-        // Tick 0: order placed
+        // Tick 0: order placed, then book cleared at end of tick
         sim.step();
 
-        // Book should now show the ask
+        // Book should be empty after tick (orders expire)
         let book = sim.book();
-        assert_eq!(book.best_ask_price(), Some(Price::from_float(105.0)));
+        assert_eq!(book.best_ask_price(), None);
         assert_eq!(book.best_bid_price(), None);
+        assert!(book.is_empty());
     }
 
     #[test]

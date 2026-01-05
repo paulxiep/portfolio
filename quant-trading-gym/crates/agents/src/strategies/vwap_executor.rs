@@ -86,8 +86,8 @@ impl VwapExecutor {
         let remaining = config.target_quantity;
         Self {
             id,
-            config,
-            state: AgentState::new(initial_cash),
+            config: config.clone(),
+            state: AgentState::new(initial_cash, &[&config.symbol]),
             remaining_quantity: remaining,
             last_order_tick: 0,
             total_value: 0.0,
@@ -253,9 +253,9 @@ impl Agent for VwapExecutor {
         self.remaining_quantity = self.remaining_quantity.saturating_sub(filled_qty);
 
         if trade.buyer_id == self.id {
-            self.state.on_buy(filled_qty, trade.value());
+            self.state.on_buy(&trade.symbol, filled_qty, trade.value());
         } else if trade.seller_id == self.id {
-            self.state.on_sell(filled_qty, trade.value());
+            self.state.on_sell(&trade.symbol, filled_qty, trade.value());
         }
     }
 

@@ -178,7 +178,7 @@ impl Default for SimConfig {
             mm_initial_cash: Cash::from_float(1_000_000.0),
             mm_half_spread: 0.0025, // 0.25% half-spread = $0.25 on $100
             mm_quote_size: 50,
-            mm_refresh_interval: 10,
+            mm_refresh_interval: 1, // Quote every tick (required for IOC mode)
             mm_max_inventory: 200,
             mm_inventory_skew: 0.001,
 

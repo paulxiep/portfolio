@@ -1,5 +1,135 @@
 # Development Log
 
+## 2026-01-06: V3.1 Cleanup - IOC Orders & Debug Removal
+
+### Summary
+Implemented end-of-tick order expiration (IOC behavior), removed debug logging, and reverted simulation to start paused.
+
+### Completed
+
+#### Order Expiration (IOC Mode)
+- ✅ `OrderBook::clear()` method to remove all resting orders
+- ✅ All order books cleared at end of each `step()` tick
+- ✅ Orders rest during tick (allowing matching), expire after
+- ✅ Market makers now quote every tick (`refresh_interval: 1`)
+
+### Technical Notes
+
+**Why IOC (Immediate-Or-Cancel)?**
+- Prevents stale orders accumulating in book
+- Each tick starts fresh - cleaner mental model
+- Market makers provide liquidity by quoting every tick
+- Eliminates need for order TTL tracking
+
+**Market Maker Adjustment:**
+```rust
+// Before: quote every 10 ticks (orders persisted)
+mm_refresh_interval: 10
+
+// After: quote every tick (orders expire)
+mm_refresh_interval: 1
+```
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `crates/sim-core/src/order_book.rs` | Added `clear()` method |
+| `crates/simulation/src/runner.rs` | IOC: clear books at end of tick, removed debug |
+| `crates/agents/src/strategies/market_maker.rs` | Default `refresh_interval: 1` |
+| `src/config.rs` | Default `mm_refresh_interval: 1` |
+| `src/main.rs` | Reverted to `running = false` |
+
+### Exit Criteria
+```
+cargo fmt --check      # ✅ No formatting issues
+cargo clippy           # ✅ No warnings  
+cargo test --workspace # ✅ All 224 tests pass
+```
+
+---
+
+## 2026-01-05: V3.1 - Multi-Symbol AgentState
+
+### Summary
+Refactored `AgentState` from single-symbol position tracking to multi-symbol HashMap-based architecture. Clean API without backward compatibility cruft. Updated all strategies, simulation runner, and TUI to use per-symbol positions.
+
+### Completed
+
+#### AgentState Refactor (`agents/state.rs`)
+- ✅ `PositionEntry { quantity: i64, avg_cost: f64 }` for per-symbol tracking
+- ✅ `positions: HashMap<Symbol, PositionEntry>` replaces `position: i64`
+- ✅ New API: `on_buy(symbol, qty, value)`, `on_sell(symbol, qty, value)`
+- ✅ `position_for(symbol)` returns per-symbol position
+- ✅ `position()` returns aggregate sum (convenience, not backward compat)
+- ✅ Weighted average cost tracking for realized P&L calculation
+- ✅ `equity(&HashMap<Symbol, Price>)` for multi-symbol mark-to-market
+
+#### Agent Trait Extensions (`agents/traits.rs`)
+- ✅ `positions() -> &HashMap<Symbol, PositionEntry>`
+- ✅ `position_for(symbol) -> i64`
+- ✅ `watched_symbols() -> &[Symbol]` (foundation for V3.2 wake conditions)
+- ✅ `equity(&prices_map) -> Cash`
+- ✅ `equity_for(symbol, price) -> Cash`
+
+#### Strategy Updates (all 7 strategies)
+- ✅ `NoiseTrader`: Updated constructor and `on_fill`
+- ✅ `MarketMaker`: Updated constructor and `on_fill`
+- ✅ `Momentum`: Updated constructor and `on_fill`
+- ✅ `TrendFollower`: Updated constructor and `on_fill`
+- ✅ `MacdCrossover`: Updated constructor and `on_fill`
+- ✅ `BollingerReversion`: Updated constructor and `on_fill`
+- ✅ `VwapExecutor`: Updated constructor and `on_fill`
+
+#### Simulation Runner (`simulation/runner.rs`)
+- ✅ Build `HashMap<Symbol, Price>` from all symbol configs for mark-to-market
+- ✅ Use `MarketView::last_price(symbol)` with fallback to `initial_price`
+- ✅ Fixed test agents to use new `AgentState::new(cash, &[symbols])` API
+
+#### TUI Updates (`tui/`)
+- ✅ `AgentTable::symbol(sym)` method to filter position display
+- ✅ Position column shows per-symbol position for selected tab
+- ✅ Aggregate position shown when no symbol selected
+
+### Technical Notes
+
+**API Design Decision:**
+Removed backward compatibility in favor of clean API. User stated "this is portfolio, not production system" - no need for migration paths.
+
+**Pattern for Strategy Updates:**
+```rust
+// Constructor
+AgentState::new(initial_cash, &[&config.symbol])
+
+// on_fill
+self.state.on_buy(&trade.symbol, trade.quantity.raw(), trade.value());
+self.state.on_sell(&trade.symbol, trade.quantity.raw(), trade.value());
+```
+
+**Known Limitation:**
+Runner's `validate_order` still uses aggregate position for limit checks. Per-symbol position limits deferred to V3.2 when position validator is symbol-aware.
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `crates/agents/src/state.rs` | Complete refactor to multi-symbol |
+| `crates/agents/src/traits.rs` | New trait methods |
+| `crates/agents/src/lib.rs` | Export `PositionEntry` |
+| `crates/agents/src/strategies/*.rs` | All 7 strategies updated |
+| `crates/simulation/src/runner.rs` | Multi-symbol equity calculation |
+| `crates/simulation/tests/agent_strategies.rs` | Test fixtures updated |
+| `crates/tui/src/widgets/agent_table.rs` | Per-symbol position display |
+| `crates/tui/src/app.rs` | Pass selected symbol to agent table |
+| `project_plan_vertical.md` | V3.1 section updated |
+
+### Exit Criteria
+```
+cargo fmt --check      # ✅ No formatting issues
+cargo clippy           # ✅ No warnings  
+cargo test --workspace # ✅ All 224 tests pass
+```
+
+---
+
 ## 2026-01-04: V2.4 - Fundamentals, Events & TUI Controls
 
 ### Summary

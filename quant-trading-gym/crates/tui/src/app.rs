@@ -584,7 +584,11 @@ impl TuiApp {
     /// Draw the agent P&L table.
     fn draw_agent_table(&mut self, frame: &mut Frame, area: Rect) {
         let total = self.state.agents.len();
-        let table = AgentTable::new(&self.state.agents).scroll_offset(self.agent_scroll);
+        let selected_symbol = self.state.symbols.get(self.selected_symbol).cloned();
+        let mut table = AgentTable::new(&self.state.agents).scroll_offset(self.agent_scroll);
+        if let Some(sym) = selected_symbol {
+            table = table.symbol(sym);
+        }
         frame.render_widget(table, area);
 
         // Render scrollbar if there are items

@@ -54,35 +54,35 @@ fn build_update(
 ) -> SimUpdate {
     let stats = sim.stats();
     let symbols: Vec<Symbol> = sim.config().symbols();
-    let primary_symbol = sim.config().symbol().to_string();
-
-    // Get mark price from primary symbol for equity calculation
-    let mark_price = sim
-        .book()
-        .last_price()
-        .map(|p| p.to_float())
-        .unwrap_or(100.0);
 
     // Calculate digit width for agent numbering
     let agent_summaries = sim.agent_summaries();
     let num_agents = agent_summaries.len();
     let width = digit_width(num_agents);
 
-    // Build agent info from simulation (V2.3: per-symbol positions)
+    // Build agent info from simulation (V3.1: per-symbol positions)
     let agents: Vec<AgentInfo> = agent_summaries
         .iter()
         .enumerate()
-        .map(|(i, (name, position, cash, realized_pnl))| {
+        .map(|(i, (name, positions, cash, realized_pnl))| {
             let is_mm = name.contains("Market");
-            let equity = cash.to_float() + (*position as f64 * mark_price);
-
-            // Build positions HashMap (single symbol for now - agents are single-symbol)
-            let mut positions = HashMap::new();
-            positions.insert(primary_symbol.clone(), *position);
+            // Calculate equity from all positions
+            let position_value: f64 = positions
+                .iter()
+                .map(|(sym, qty)| {
+                    let price = sim
+                        .get_book(sym)
+                        .and_then(|b| b.last_price())
+                        .map(|p| p.to_float())
+                        .unwrap_or(100.0);
+                    *qty as f64 * price
+                })
+                .sum();
+            let equity = cash.to_float() + position_value;
 
             AgentInfo {
                 name: format!("{:0width$}-{}", i + 1, name, width = width),
-                positions,
+                positions: positions.clone(),
                 realized_pnl: *realized_pnl,
                 cash: *cash,
                 is_market_maker: is_mm,
@@ -475,7 +475,7 @@ fn run_simulation(tx: Sender<SimUpdate>, cmd_rx: Receiver<SimCommand>, config: S
     // Send initial state before starting (so TUI has something to display)
     let _ = tx.send(build_update(&sim, &price_history, false));
 
-    // Simulation control state
+    // Simulation control state - starts paused, press Space to run
     let mut running = false;
     let mut tick = 0u64;
     let total_ticks = config.total_ticks;

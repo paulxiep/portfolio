@@ -3,6 +3,13 @@
 //! This module defines the core `Agent` trait that all trading agents must implement,
 //! as well as the `StrategyContext` they receive each tick.
 //!
+//! # V3.1 Multi-Symbol Support
+//!
+//! Agents can now track positions across multiple symbols:
+//! - `positions()` returns a map of symbol → position entry
+//! - `watched_symbols()` declares symbols for Tier 2 wake conditions
+//! - Backward-compatible: `position()` returns aggregate across all symbols
+//!
 //! # V2.3 Changes
 //!
 //! The `on_tick` method receives `StrategyContext<'_>` which provides
@@ -13,8 +20,10 @@
 //! All agents must provide access to their `AgentState` via the `state()` method.
 //! This enables automatic tracking of position, cash, and realized P&L.
 
-use crate::state::AgentState;
-use types::{AgentId, Order, OrderId};
+use std::collections::HashMap;
+
+use crate::state::{AgentState, PositionEntry};
+use types::{AgentId, Order, OrderId, Symbol};
 
 use crate::StrategyContext;
 
@@ -152,10 +161,30 @@ pub trait Agent: Send {
     /// Required for all agents - enables automatic position/cash/P&L tracking.
     fn state(&self) -> &AgentState;
 
-    /// Get the agent's current position (shares held).
+    /// Get the agent's current aggregate position (shares held across all symbols).
     /// Positive = long, negative = short, zero = flat.
     fn position(&self) -> i64 {
         self.state().position()
+    }
+
+    /// Get position for a specific symbol.
+    fn position_for(&self, symbol: &str) -> i64 {
+        self.state().position_for(symbol)
+    }
+
+    /// Get all positions as a map of symbol → position entry.
+    ///
+    /// For single-symbol agents, this returns a map with one entry.
+    /// For multi-symbol agents, this returns all tracked positions.
+    fn positions(&self) -> &HashMap<Symbol, PositionEntry> {
+        self.state().positions()
+    }
+
+    /// Get symbols this agent watches for Tier 2 wake conditions.
+    ///
+    /// Used by `WakeConditionIndex` to register price/event subscriptions.
+    fn watched_symbols(&self) -> Vec<Symbol> {
+        self.state().symbols()
     }
 
     /// Get the agent's current cash balance.
@@ -168,16 +197,14 @@ pub trait Agent: Send {
         self.state().realized_pnl()
     }
 
-    /// Compute the agent's total equity at the given price.
-    /// Equity = cash + (position * price)
-    fn equity(&self, price: types::Price) -> types::Cash {
-        let position = self.position();
-        let position_value = if position >= 0 {
-            price * types::Quantity(position as u64)
-        } else {
-            -(price * types::Quantity((-position) as u64))
-        };
-        self.cash() + position_value
+    /// Compute the agent's total equity given prices for all symbols.
+    fn equity(&self, prices: &HashMap<Symbol, types::Price>) -> types::Cash {
+        self.state().equity(prices)
+    }
+
+    /// Compute the agent's equity for a single symbol (convenience).
+    fn equity_for(&self, symbol: &str, price: types::Price) -> types::Cash {
+        self.state().equity_for(symbol, price)
     }
 }
 
