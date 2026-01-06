@@ -219,16 +219,16 @@ impl ReactiveAgent {
     /// Generate initial wake conditions based on strategies.
     ///
     /// Called when agent is first registered with the simulation.
-    /// - ThresholdBuyer: PriceCross(Below) at buy_price
-    /// - ThresholdSeller: PriceCross(Above) at sell_price
-    /// - NewsReactor: NewsEvent subscription
-    /// - StopLoss/TakeProfit: Registered later via fill_wake_conditions()
+    /// Only registers ENTRY conditions (ThresholdBuyer, NewsReactor).
+    /// Exit conditions (ThresholdSeller, StopLoss, TakeProfit) are registered
+    /// later via fill_wake_conditions() when a position is opened.
     pub fn initial_wake_conditions(&self, _current_tick: Tick) -> Vec<WakeCondition> {
         let symbol = self.portfolio.primary_symbol().clone();
 
         self.strategies
             .iter()
             .filter_map(|strategy| match strategy {
+                // Entry condition: register at spawn
                 ReactiveStrategyType::ThresholdBuyer { buy_price, .. } => {
                     Some(WakeCondition::PriceCross {
                         symbol: symbol.clone(),
@@ -236,20 +236,14 @@ impl ReactiveAgent {
                         direction: CrossDirection::Below,
                     })
                 }
-                ReactiveStrategyType::ThresholdSeller { sell_price, .. } => {
-                    Some(WakeCondition::PriceCross {
-                        symbol: symbol.clone(),
-                        threshold: *sell_price,
-                        direction: CrossDirection::Above,
-                    })
-                }
+                // NewsReactor is both entry and exit, register at spawn
                 ReactiveStrategyType::NewsReactor { .. } => Some(WakeCondition::NewsEvent {
                     symbols: smallvec::smallvec![symbol.clone()],
                 }),
-                // StopLoss/TakeProfit are registered on fill via fill_wake_conditions()
-                ReactiveStrategyType::StopLoss { .. } | ReactiveStrategyType::TakeProfit { .. } => {
-                    None
-                }
+                // Exit conditions: registered on fill via fill_wake_conditions()
+                ReactiveStrategyType::ThresholdSeller { .. }
+                | ReactiveStrategyType::StopLoss { .. }
+                | ReactiveStrategyType::TakeProfit { .. } => None,
             })
             .collect()
     }
@@ -284,7 +278,74 @@ impl ReactiveAgent {
                         direction: CrossDirection::Above,
                     })
                 }
-                // Other strategies don't need fill-time conditions
+                ReactiveStrategyType::ThresholdSeller { sell_price, .. } => {
+                    // Fixed-price exit condition
+                    Some(WakeCondition::PriceCross {
+                        symbol: symbol.clone(),
+                        threshold: *sell_price,
+                        direction: CrossDirection::Above,
+                    })
+                }
+                // Entry strategies don't need fill-time conditions
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Get ALL wake conditions that should currently be active based on state.
+    ///
+    /// This is called after a trigger fires to restore the correct set of conditions.
+    /// Unlike `compute_condition_update`, this doesn't track transitions - it just
+    /// returns what SHOULD be active right now.
+    ///
+    /// Rules:
+    /// - Entry conditions (ThresholdBuyer): active if flat (no position)
+    /// - Exit conditions (StopLoss, TakeProfit, ThresholdSeller): active if holding
+    /// - NewsReactor: always active
+    pub fn current_wake_conditions(&self) -> Vec<WakeCondition> {
+        let symbol = self.portfolio.primary_symbol().clone();
+        let is_flat = self.is_flat();
+        let has_position = self.has_position();
+
+        self.strategies
+            .iter()
+            .filter_map(|strategy| match strategy {
+                // Entry: active when flat
+                ReactiveStrategyType::ThresholdBuyer { buy_price, .. } if is_flat => {
+                    Some(WakeCondition::PriceCross {
+                        symbol: symbol.clone(),
+                        threshold: *buy_price,
+                        direction: CrossDirection::Below,
+                    })
+                }
+
+                // Exits: active when holding position
+                ReactiveStrategyType::StopLoss { stop_pct } if has_position => {
+                    let threshold = Price((self.cost_basis.0 as f64 * (1.0 - stop_pct)) as i64);
+                    Some(WakeCondition::PriceCross {
+                        symbol: symbol.clone(),
+                        threshold,
+                        direction: CrossDirection::Below,
+                    })
+                }
+                ReactiveStrategyType::TakeProfit { target_pct } if has_position => {
+                    let threshold = Price((self.cost_basis.0 as f64 * (1.0 + target_pct)) as i64);
+                    Some(WakeCondition::PriceCross {
+                        symbol: symbol.clone(),
+                        threshold,
+                        direction: CrossDirection::Above,
+                    })
+                }
+                ReactiveStrategyType::ThresholdSeller { sell_price, .. } if has_position => {
+                    Some(WakeCondition::PriceCross {
+                        symbol: symbol.clone(),
+                        threshold: *sell_price,
+                        direction: CrossDirection::Above,
+                    })
+                }
+
+                // NewsReactor: always active (but registered at spawn, not here)
+                // Other cases: not active
                 _ => None,
             })
             .collect()
@@ -304,8 +365,8 @@ impl ReactiveAgent {
 
         let had_position = position_before > 0;
         let has_position = position_after > 0;
-        let at_capacity = self.remaining_capacity().0 == 0;
-        let has_capacity = self.remaining_capacity().0 > 0;
+        let bought = position_after > position_before;
+        let sold_to_flat = had_position && !has_position;
 
         let mut update = ConditionUpdate::new(self.id);
 
@@ -313,16 +374,22 @@ impl ReactiveAgent {
         for strategy in &self.strategies {
             match strategy {
                 // Entry condition: ThresholdBuyer
+                // Remove only when at max capacity (can't buy more)
+                // Re-add when has capacity again (after any sell)
                 ReactiveStrategyType::ThresholdBuyer { buy_price, .. } => {
-                    if at_capacity {
-                        // At max position - remove entry condition
+                    let at_capacity = self.remaining_capacity().0 == 0;
+                    let was_at_capacity = position_before >= self.max_position.0 as i64;
+
+                    if bought && at_capacity {
+                        // Just hit capacity - remove entry condition
                         update.remove.push(WakeCondition::PriceCross {
                             symbol: symbol.clone(),
                             threshold: *buy_price,
                             direction: CrossDirection::Below,
                         });
-                    } else if !had_position && has_capacity && position_after == 0 {
-                        // Sold entire position and have capacity - re-add entry
+                    }
+                    if sold_to_flat || (was_at_capacity && !at_capacity) {
+                        // Sold some/all - re-add entry condition if we have capacity
                         update.add.push(WakeCondition::PriceCross {
                             symbol: symbol.clone(),
                             threshold: *buy_price,
@@ -341,10 +408,15 @@ impl ReactiveAgent {
                             threshold,
                             direction: CrossDirection::Below,
                         });
-                    } else if had_position && !has_position {
-                        // Closed position - remove stop loss (use old threshold estimate)
-                        // Note: We don't have old cost_basis, but removal by agent_id works
-                        // The wake_index.unregister_all is cleaner for full position close
+                    }
+                    if sold_to_flat {
+                        // Closed position - remove stop loss
+                        let threshold = Price((self.cost_basis.0 as f64 * (1.0 - stop_pct)) as i64);
+                        update.remove.push(WakeCondition::PriceCross {
+                            symbol: symbol.clone(),
+                            threshold,
+                            direction: CrossDirection::Below,
+                        });
                     }
                 }
 
@@ -360,31 +432,8 @@ impl ReactiveAgent {
                             direction: CrossDirection::Above,
                         });
                     }
-                }
-
-                // ThresholdSeller: Static exit, always registered if has position
-                // NewsReactor: Always active, no updates needed
-                _ => {}
-            }
-        }
-
-        // If closed entire position, remove all exit conditions and re-enable entry
-        if had_position && !has_position {
-            // Clear all dynamic exit conditions for this symbol
-            for strategy in &self.strategies {
-                match strategy {
-                    ReactiveStrategyType::StopLoss { stop_pct } => {
-                        // Remove at any price level - wake_index handles by agent_id
-                        // We need to estimate what threshold was registered
-                        // For now, use a marker that unregister can match
-                        let threshold = Price((self.cost_basis.0 as f64 * (1.0 - stop_pct)) as i64);
-                        update.remove.push(WakeCondition::PriceCross {
-                            symbol: symbol.clone(),
-                            threshold,
-                            direction: CrossDirection::Below,
-                        });
-                    }
-                    ReactiveStrategyType::TakeProfit { target_pct } => {
+                    if sold_to_flat {
+                        // Closed position - remove take profit
                         let threshold =
                             Price((self.cost_basis.0 as f64 * (1.0 + target_pct)) as i64);
                         update.remove.push(WakeCondition::PriceCross {
@@ -393,16 +442,30 @@ impl ReactiveAgent {
                             direction: CrossDirection::Above,
                         });
                     }
-                    ReactiveStrategyType::ThresholdBuyer { buy_price, .. } => {
-                        // Re-add entry condition since we can buy again
+                }
+
+                // Exit condition: ThresholdSeller (fixed-price exit)
+                ReactiveStrategyType::ThresholdSeller { sell_price, .. } => {
+                    if !had_position && has_position {
+                        // Just opened position - add threshold sell
                         update.add.push(WakeCondition::PriceCross {
                             symbol: symbol.clone(),
-                            threshold: *buy_price,
-                            direction: CrossDirection::Below,
+                            threshold: *sell_price,
+                            direction: CrossDirection::Above,
                         });
                     }
-                    _ => {}
+                    if sold_to_flat {
+                        // Closed position - remove threshold sell
+                        update.remove.push(WakeCondition::PriceCross {
+                            symbol: symbol.clone(),
+                            threshold: *sell_price,
+                            direction: CrossDirection::Above,
+                        });
+                    }
                 }
+
+                // NewsReactor: Always active, no updates needed
+                _ => {}
             }
         }
 
@@ -728,9 +791,8 @@ impl Agent for ReactiveAgent {
             .iter()
             .find_map(|strategy| {
                 self.check_strategy_trigger(strategy, current_price, tick, ctx)
-                    .map(|action| {
+                    .inspect(|_| {
                         self.last_evaluated_tick = tick;
-                        action
                     })
             })
             .unwrap_or_else(AgentAction::none)
@@ -758,6 +820,11 @@ impl Agent for ReactiveAgent {
     fn fill_wake_conditions(&self) -> Vec<crate::WakeCondition> {
         // Delegate to the inherent method
         ReactiveAgent::fill_wake_conditions(self)
+    }
+
+    fn current_wake_conditions(&self) -> Vec<crate::WakeCondition> {
+        // Delegate to the inherent method
+        ReactiveAgent::current_wake_conditions(self)
     }
 
     fn post_fill_condition_update(

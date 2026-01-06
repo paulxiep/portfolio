@@ -232,6 +232,14 @@ pub trait Agent: Send {
         Vec::new()
     }
 
+    /// Get ALL wake conditions that should currently be active based on agent state.
+    ///
+    /// Called after a trigger fires to restore correct conditions.
+    /// Returns the complete set of conditions that should be registered.
+    fn current_wake_conditions(&self) -> Vec<crate::WakeCondition> {
+        Vec::new()
+    }
+
     /// Generate condition updates after a fill to maintain wake index consistency.
     ///
     /// Called after on_fill() for T2 agents. Returns conditions to add/remove:

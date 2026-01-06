@@ -109,6 +109,26 @@ pub struct SimConfig {
     pub t2_initial_cash: Cash,
     /// Maximum position size for Tier 2 agents.
     pub t2_max_position: u64,
+    /// ThresholdBuyer: minimum buy price (dollars).
+    pub t2_buy_threshold_min: f64,
+    /// ThresholdBuyer: maximum buy price (dollars).
+    pub t2_buy_threshold_max: f64,
+    /// StopLoss: minimum stop percentage (e.g., 0.02 = 2%).
+    pub t2_stop_loss_min: f64,
+    /// StopLoss: maximum stop percentage (e.g., 0.08 = 8%).
+    pub t2_stop_loss_max: f64,
+    /// TakeProfit: minimum target percentage (e.g., 0.10 = 10%).
+    pub t2_take_profit_min: f64,
+    /// TakeProfit: maximum target percentage (e.g., 0.30 = 30%).
+    pub t2_take_profit_max: f64,
+    /// ThresholdSeller: minimum sell price (dollars).
+    pub t2_sell_threshold_min: f64,
+    /// ThresholdSeller: maximum sell price (dollars).
+    pub t2_sell_threshold_max: f64,
+    /// Probability of having TakeProfit vs ThresholdSeller (0.0 - 1.0).
+    pub t2_take_profit_prob: f64,
+    /// Probability of having NewsReactor strategy (0.0 - 1.0).
+    pub t2_news_reactor_prob: f64,
 
     // ─────────────────────────────────────────────────────────────────────────
     // Market Maker Parameters
@@ -176,7 +196,7 @@ impl Default for SimConfig {
             verbose: false,
 
             // Tier 1 Agent Counts (minimums per type)
-            num_market_makers: 150,
+            num_market_makers: 350,
             num_noise_traders: 400,
             num_momentum_traders: 50,
             num_trend_followers: 50,
@@ -192,7 +212,17 @@ impl Default for SimConfig {
             // Tier 2 Reactive Agent Parameters (V3.2)
             // Equal starting cash to noise traders for fair comparison
             t2_initial_cash: Cash::from_float(100_000.0),
-            t2_max_position: 100,
+            t2_max_position: 500,
+            t2_buy_threshold_min: 60.0, // Buy when price drops to $50-75
+            t2_buy_threshold_max: 90.0,
+            t2_stop_loss_min: 0.15, // StopLoss 15-35% (wider to avoid noise)
+            t2_stop_loss_max: 0.5,
+            t2_take_profit_min: 0.15, // TakeProfit 15-50% (aggressive targets)
+            t2_take_profit_max: 0.50,
+            t2_sell_threshold_min: 110.0, // ThresholdSeller $110-140
+            t2_sell_threshold_max: 140.0,
+            t2_take_profit_prob: 0.5,  // 50% TakeProfit, 50% ThresholdSeller
+            t2_news_reactor_prob: 0.1, // 20% have NewsReactor
 
             // Market Maker Parameters
             mm_initial_cash: Cash::from_float(1_000_000.0),

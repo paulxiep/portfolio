@@ -270,14 +270,8 @@ impl Simulation {
         let position_validator =
             PositionValidator::new(primary_config, config.short_selling.clone());
 
-        // V3.2: Initialize wake index with starting prices for cross detection
-        let mut wake_index = WakeConditionIndex::new();
-        let initial_prices: Vec<(Symbol, Price)> = config
-            .get_symbol_configs()
-            .iter()
-            .map(|sc| (sc.symbol.clone(), sc.initial_price))
-            .collect();
-        wake_index.update_prices(&initial_prices);
+        // V3.2: Initialize wake index for T2 agent conditions
+        let wake_index = WakeConditionIndex::new();
 
         Self {
             market,
@@ -771,6 +765,18 @@ impl Simulation {
         // V3.2: Track triggered count for stats
         self.stats.t2_triggered_this_tick = triggered_t2.len();
 
+        // V3.2: IMPORTANT - Remove triggered PriceCross conditions immediately!
+        // This prevents satisfaction-based conditions from firing every tick.
+        // Each condition fires ONCE, then compute_condition_update re-adds if needed.
+        for (agent_id, conditions) in &triggered_t2 {
+            for condition in conditions {
+                // Only remove PriceCross conditions (news stays active)
+                if matches!(condition, agents::WakeCondition::PriceCross { .. }) {
+                    self.wake_index.unregister(*agent_id, condition);
+                }
+            }
+        }
+
         // V3.2: Build list of indices to call - T1 always, T2 only if triggered
         // This avoids iterating all 4000+ agents every tick
         let mut indices_to_call: Vec<usize> = self.t1_indices.clone();
@@ -943,6 +949,21 @@ impl Simulation {
         // Apply all condition updates (add/remove) to wake index
         self.wake_index.apply_updates(condition_updates);
 
+        // V3.2: Restore conditions for triggered T2 agents
+        // Since we removed conditions on trigger, we need to re-add them based on current state.
+        // This ensures agents get their entry conditions back if they didn't act,
+        // or new exit conditions if they opened a position.
+        for agent_id in triggered_t2.keys() {
+            if let Some(&idx) = self.agent_id_to_index.get(agent_id) {
+                let agent = &self.agents[idx];
+                if agent.is_reactive() {
+                    for condition in agent.current_wake_conditions() {
+                        self.wake_index.register(*agent_id, condition);
+                    }
+                }
+            }
+        }
+
         // Notify agents of resting orders (so they can track OrderIds for cancellation)
         resting_notifications.iter().for_each(|(agent_id, order)| {
             if let Some(agent) = self.agents.iter_mut().find(|a| a.id() == *agent_id) {
@@ -970,11 +991,6 @@ impl Simulation {
             let equity = agent.equity(&prices).to_float();
             self.risk_tracker.record_equity(agent.id(), equity);
         }
-
-        // V3.2: Update wake index prices for next tick's cross detection
-        let price_updates: Vec<(Symbol, Price)> =
-            prices.iter().map(|(sym, p)| (sym.clone(), *p)).collect();
-        self.wake_index.update_prices(&price_updates);
 
         // Clear all order books at end of tick (orders expire after tick)
         // This ensures fresh liquidity each tick from market makers

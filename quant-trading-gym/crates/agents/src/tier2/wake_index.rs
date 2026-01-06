@@ -50,9 +50,6 @@ pub struct WakeConditionIndex {
 
     /// Reverse index: agent -> conditions (for removal).
     agent_conditions: HashMap<AgentId, SmallVec<[WakeCondition; 4]>>,
-
-    /// Previous tick's prices for cross detection.
-    previous_prices: HashMap<Symbol, Price>,
 }
 
 impl WakeConditionIndex {
@@ -164,65 +161,57 @@ impl WakeConditionIndex {
         }
     }
 
-    /// Get agents triggered by current prices (cross detection).
+    /// Get agents triggered by current prices.
     ///
-    /// Compares current prices with previous prices to detect crossings.
+    /// Triggers when current price satisfies the condition:
+    /// - PriceCross::Below at threshold → triggers if price ≤ threshold
+    /// - PriceCross::Above at threshold → triggers if price ≥ threshold
     pub fn triggered_by_price(
         &self,
         current_prices: &[(Symbol, Price)],
     ) -> Vec<(AgentId, WakeCondition)> {
         current_prices
             .iter()
-            .filter_map(|(symbol, current_price)| {
-                self.previous_prices
-                    .get(symbol)
-                    .map(|&prev_price| (symbol, *current_price, prev_price))
-            })
-            .flat_map(|(symbol, current_price, prev_price)| {
-                let current = OrderedPrice::from_price(current_price);
-                let prev = OrderedPrice::from_price(prev_price);
+            .flat_map(|(symbol, current_price)| {
+                let current = OrderedPrice::from_price(*current_price);
+                let symbol = symbol.clone();
 
-                // Price went up - check for "above" crossings
-                let above_triggers: Vec<_> = if prev < current {
-                    self.price_above
-                        .range((symbol.clone(), prev)..(symbol.clone(), current))
-                        .filter(|((sym, threshold), _)| {
-                            sym == symbol && *threshold > prev && *threshold <= current
-                        })
-                        .flat_map(|((_, threshold), agents)| {
-                            let condition = WakeCondition::PriceCross {
-                                symbol: symbol.clone(),
-                                threshold: threshold.to_price(),
-                                direction: CrossDirection::Above,
-                            };
-                            agents.iter().map(move |&id| (id, condition.clone()))
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-
-                // Price went down - check for "below" crossings
-                let below_triggers: Vec<_> = if prev > current {
-                    self.price_below
-                        .range((symbol.clone(), current)..(symbol.clone(), prev))
-                        .filter(|((sym, threshold), _)| {
-                            sym == symbol && *threshold < prev && *threshold >= current
-                        })
-                        .flat_map(|((_, threshold), agents)| {
+                // "Below" conditions: trigger if price ≤ threshold (all thresholds >= current)
+                let symbol_below = symbol.clone();
+                let below_triggers = self
+                    .price_below
+                    .range((symbol.clone(), current)..)
+                    .take_while(move |((s, _), _)| s == &symbol_below)
+                    .flat_map({
+                        let symbol = symbol.clone();
+                        move |((_, threshold), agents)| {
                             let condition = WakeCondition::PriceCross {
                                 symbol: symbol.clone(),
                                 threshold: threshold.to_price(),
                                 direction: CrossDirection::Below,
                             };
                             agents.iter().map(move |&id| (id, condition.clone()))
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
+                        }
+                    });
 
-                above_triggers.into_iter().chain(below_triggers)
+                // "Above" conditions: trigger if price ≥ threshold (all thresholds <= current)
+                let symbol_above = symbol.clone();
+                let above_triggers = self
+                    .price_above
+                    .range(..(symbol.clone(), OrderedPrice(current.0 + 1)))
+                    .rev()
+                    .take_while(move |((s, _), _)| s == &symbol_above)
+                    .filter(move |((_, threshold), _)| threshold.0 <= current.0)
+                    .flat_map(move |((_, threshold), agents)| {
+                        let condition = WakeCondition::PriceCross {
+                            symbol: symbol.clone(),
+                            threshold: threshold.to_price(),
+                            direction: CrossDirection::Above,
+                        };
+                        agents.iter().map(move |&id| (id, condition.clone()))
+                    });
+
+                below_triggers.chain(above_triggers)
             })
             .collect()
     }
@@ -306,12 +295,6 @@ impl WakeConditionIndex {
         }
 
         result
-    }
-
-    /// Update previous prices for next tick's cross detection.
-    pub fn update_prices(&mut self, prices: &[(Symbol, Price)]) {
-        self.previous_prices
-            .extend(prices.iter().map(|(s, p)| (s.clone(), *p)));
     }
 
     /// Apply deferred condition updates.
@@ -463,5 +446,168 @@ mod tests {
 
         let triggered_200 = index.triggered_by_time_exact(200);
         assert_eq!(triggered_200.len(), 1);
+    }
+
+    #[test]
+    fn test_price_below_trigger() {
+        use types::Price;
+
+        let mut index = WakeConditionIndex::new();
+        let agent1 = AgentId(1); // threshold $60
+        let agent2 = AgentId(2); // threshold $80
+        let agent3 = AgentId(3); // threshold $65
+        let symbol: Symbol = "ACME".into();
+
+        // Register "Below" conditions (ThresholdBuyer style)
+        // These should trigger when price DROPS TO OR BELOW the threshold
+        index.register(
+            agent1,
+            WakeCondition::PriceCross {
+                symbol: symbol.clone(),
+                threshold: Price::from_float(60.0), // Buy at $60
+                direction: CrossDirection::Below,
+            },
+        );
+        index.register(
+            agent2,
+            WakeCondition::PriceCross {
+                symbol: symbol.clone(),
+                threshold: Price::from_float(80.0), // Buy at $80
+                direction: CrossDirection::Below,
+            },
+        );
+        index.register(
+            agent3,
+            WakeCondition::PriceCross {
+                symbol: symbol.clone(),
+                threshold: Price::from_float(65.0), // Buy at $65
+                direction: CrossDirection::Below,
+            },
+        );
+
+        // Price at $75 - should NOT trigger agent1 ($60) or agent3 ($65)
+        // Should trigger agent2 ($80) because price ($75) is below threshold ($80)
+        let current_prices = vec![(symbol.clone(), Price::from_float(75.0))];
+        let triggered = index.triggered_by_price(&current_prices);
+
+        println!(
+            "Price $75, triggered agents: {:?}",
+            triggered.iter().map(|(id, _)| id.0).collect::<Vec<_>>()
+        );
+
+        assert_eq!(
+            triggered.len(),
+            1,
+            "Only agent2 ($80 threshold) should trigger at price $75"
+        );
+        assert_eq!(triggered[0].0, agent2);
+
+        // Price at $55 - should trigger ALL agents (price below all thresholds)
+        let current_prices = vec![(symbol.clone(), Price::from_float(55.0))];
+        let triggered = index.triggered_by_price(&current_prices);
+
+        println!(
+            "Price $55, triggered agents: {:?}",
+            triggered.iter().map(|(id, _)| id.0).collect::<Vec<_>>()
+        );
+
+        assert_eq!(triggered.len(), 3, "All agents should trigger at price $55");
+
+        // Price at $90 - should trigger NO agents (price above all thresholds)
+        let current_prices = vec![(symbol.clone(), Price::from_float(90.0))];
+        let triggered = index.triggered_by_price(&current_prices);
+
+        println!(
+            "Price $90, triggered agents: {:?}",
+            triggered.iter().map(|(id, _)| id.0).collect::<Vec<_>>()
+        );
+
+        assert!(
+            triggered.is_empty(),
+            "No agents should trigger at price $90"
+        );
+    }
+
+    #[test]
+    fn test_price_above_trigger() {
+        use types::Price;
+
+        let mut index = WakeConditionIndex::new();
+        let agent1 = AgentId(1); // threshold $110
+        let agent2 = AgentId(2); // threshold $90
+        let agent3 = AgentId(3); // threshold $120
+        let symbol: Symbol = "ACME".into();
+
+        // Register "Above" conditions (ThresholdSeller/TakeProfit style)
+        // These should trigger when price RISES TO OR ABOVE the threshold
+        index.register(
+            agent1,
+            WakeCondition::PriceCross {
+                symbol: symbol.clone(),
+                threshold: Price::from_float(110.0), // Sell at $110
+                direction: CrossDirection::Above,
+            },
+        );
+        index.register(
+            agent2,
+            WakeCondition::PriceCross {
+                symbol: symbol.clone(),
+                threshold: Price::from_float(90.0), // Sell at $90
+                direction: CrossDirection::Above,
+            },
+        );
+        index.register(
+            agent3,
+            WakeCondition::PriceCross {
+                symbol: symbol.clone(),
+                threshold: Price::from_float(120.0), // Sell at $120
+                direction: CrossDirection::Above,
+            },
+        );
+
+        // Price at $100 - should trigger agent2 ($90) only
+        let current_prices = vec![(symbol.clone(), Price::from_float(100.0))];
+        let triggered = index.triggered_by_price(&current_prices);
+
+        println!(
+            "Price $100, triggered agents: {:?}",
+            triggered.iter().map(|(id, _)| id.0).collect::<Vec<_>>()
+        );
+
+        assert_eq!(
+            triggered.len(),
+            1,
+            "Only agent2 ($90 threshold) should trigger at price $100"
+        );
+        assert_eq!(triggered[0].0, agent2);
+
+        // Price at $75 - should trigger NO agents
+        let current_prices = vec![(symbol.clone(), Price::from_float(75.0))];
+        let triggered = index.triggered_by_price(&current_prices);
+
+        println!(
+            "Price $75, triggered agents: {:?}",
+            triggered.iter().map(|(id, _)| id.0).collect::<Vec<_>>()
+        );
+
+        assert!(
+            triggered.is_empty(),
+            "No agents should trigger at price $75"
+        );
+
+        // Price at $125 - should trigger ALL agents
+        let current_prices = vec![(symbol.clone(), Price::from_float(125.0))];
+        let triggered = index.triggered_by_price(&current_prices);
+
+        println!(
+            "Price $125, triggered agents: {:?}",
+            triggered.iter().map(|(id, _)| id.0).collect::<Vec<_>>()
+        );
+
+        assert_eq!(
+            triggered.len(),
+            3,
+            "All agents should trigger at price $125"
+        );
     }
 }

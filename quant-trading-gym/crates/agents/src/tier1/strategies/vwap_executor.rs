@@ -145,13 +145,13 @@ impl VwapExecutor {
 
     /// Update running VWAP with new trades.
     fn update_vwap(&mut self, recent_trades: &[Trade]) {
-        let (delta_value, delta_volume) = recent_trades.iter().fold(
-            (0.0, 0u64),
-            |(value, volume), trade| {
-                let trade_value = trade.price.to_float() * trade.quantity.raw() as f64;
-                (value + trade_value, volume + trade.quantity.raw())
-            },
-        );
+        let (delta_value, delta_volume) =
+            recent_trades
+                .iter()
+                .fold((0.0, 0u64), |(value, volume), trade| {
+                    let trade_value = trade.price.to_float() * trade.quantity.raw() as f64;
+                    (value + trade_value, volume + trade.quantity.raw())
+                });
         self.total_value += delta_value;
         self.total_volume += delta_volume;
     }
