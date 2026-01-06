@@ -23,8 +23,8 @@ use std::thread;
 use std::time::Duration;
 
 use agents::{
-    BollingerReversion, BollingerReversionConfig, MacdCrossover, MacdCrossoverConfig, MarketMaker,
-    MarketMakerConfig, MomentumConfig, MomentumTrader, NoiseTrader, NoiseTraderConfig,
+    Agent, BollingerReversion, BollingerReversionConfig, MacdCrossover, MacdCrossoverConfig,
+    MarketMaker, MarketMakerConfig, MomentumConfig, MomentumTrader, NoiseTrader, NoiseTraderConfig,
     ReactiveAgent, ReactiveStrategyType, TrendFollower, TrendFollowerConfig, VwapExecutor,
     VwapExecutorConfig,
 };
@@ -117,20 +117,22 @@ fn build_update(
         .collect();
 
     // Build per-symbol book data (V2.3)
-    let mut bids_map = HashMap::new();
-    let mut asks_map = HashMap::new();
-    let mut last_price_map = HashMap::new();
-
-    for symbol in &symbols {
-        if let Some(book) = sim.get_book(symbol) {
+    let (bids_map, asks_map): (HashMap<_, _>, HashMap<_, _>) = symbols
+        .iter()
+        .filter_map(|symbol| sim.get_book(symbol).map(|book| (symbol, book)))
+        .map(|(symbol, book)| {
             let snapshot = book.snapshot(sim.timestamp(), sim.tick(), 10);
-            bids_map.insert(symbol.clone(), snapshot.bids);
-            asks_map.insert(symbol.clone(), snapshot.asks);
-            if let Some(price) = book.last_price() {
-                last_price_map.insert(symbol.clone(), price);
-            }
-        }
-    }
+            ((symbol.clone(), snapshot.bids), (symbol.clone(), snapshot.asks))
+        })
+        .unzip();
+
+    let last_price_map: HashMap<_, _> = symbols
+        .iter()
+        .filter_map(|symbol| {
+            sim.get_book(symbol)
+                .and_then(|book| book.last_price().map(|price| (symbol.clone(), price)))
+        })
+        .collect();
 
     // Aggregate trades across all symbols
     let trades: Vec<_> = symbols
@@ -159,21 +161,19 @@ fn build_update(
     }
 }
 
-/// Spawn a single agent of the given type with the next available ID.
+/// Spawn a single agent of the given type with the specified ID.
 ///
 /// For multi-symbol support: symbol and initial_price are passed explicitly
 /// so agents can be spawned per-symbol (market makers, noise traders) or
 /// assigned to the primary symbol (quant strategies).
-fn spawn_agent(
-    sim: &mut Simulation,
+fn create_agent(
     agent_type: Tier1AgentType,
-    next_id: &mut u64,
+    id: u64,
     config: &SimConfig,
     symbol: &str,
     initial_price: Price,
-) {
-    let id = AgentId(*next_id);
-    *next_id += 1;
+) -> Box<dyn Agent> {
+    let id = AgentId(id);
 
     match agent_type {
         Tier1AgentType::NoiseTrader => {
@@ -198,7 +198,7 @@ fn spawn_agent(
                 initial_cash: Cash::from_float(adjusted_cash),
                 initial_position: config.nt_initial_position,
             };
-            sim.add_agent(Box::new(NoiseTrader::new(id, nt_config)));
+            Box::new(NoiseTrader::new(id, nt_config))
         }
         Tier1AgentType::MomentumTrader => {
             let momentum_config = MomentumConfig {
@@ -209,7 +209,7 @@ fn spawn_agent(
                 max_position: config.quant_max_position,
                 ..Default::default()
             };
-            sim.add_agent(Box::new(MomentumTrader::new(id, momentum_config)));
+            Box::new(MomentumTrader::new(id, momentum_config))
         }
         Tier1AgentType::TrendFollower => {
             let trend_config = TrendFollowerConfig {
@@ -220,7 +220,7 @@ fn spawn_agent(
                 max_position: config.quant_max_position,
                 ..Default::default()
             };
-            sim.add_agent(Box::new(TrendFollower::new(id, trend_config)));
+            Box::new(TrendFollower::new(id, trend_config))
         }
         Tier1AgentType::MacdTrader => {
             let macd_config = MacdCrossoverConfig {
@@ -231,7 +231,7 @@ fn spawn_agent(
                 max_position: config.quant_max_position,
                 ..Default::default()
             };
-            sim.add_agent(Box::new(MacdCrossover::new(id, macd_config)));
+            Box::new(MacdCrossover::new(id, macd_config))
         }
         Tier1AgentType::BollingerTrader => {
             let bollinger_config = BollingerReversionConfig {
@@ -242,7 +242,7 @@ fn spawn_agent(
                 max_position: config.quant_max_position,
                 ..Default::default()
             };
-            sim.add_agent(Box::new(BollingerReversion::new(id, bollinger_config)));
+            Box::new(BollingerReversion::new(id, bollinger_config))
         }
         Tier1AgentType::VwapExecutor => {
             let vwap_config = VwapExecutorConfig {
@@ -251,7 +251,7 @@ fn spawn_agent(
                 initial_cash: config.quant_initial_cash,
                 ..Default::default()
             };
-            sim.add_agent(Box::new(VwapExecutor::new(id, vwap_config)));
+            Box::new(VwapExecutor::new(id, vwap_config))
         }
     }
 }
@@ -287,69 +287,77 @@ fn spawn_tier2_agents(
     let remainder = num_agents % num_symbols;
 
     // Fixed-point scale: 10000 per dollar
-    // $50 = 500_000, $100 = 1_000_000
+    // $50 = 500_000, $100 = 1,000,000
     const PRICE_SCALE: i64 = 10_000;
 
-    // Distribute agents across symbols
-    for (sym_idx, spec) in symbols.iter().enumerate() {
-        let count = agents_per_symbol + if sym_idx < remainder { 1 } else { 0 };
+    // Helper to create strategies for one agent
+    let make_strategies = |rng: &mut rand::prelude::ThreadRng| -> Vec<ReactiveStrategyType> {
+        let buy_dollars = 50.0 + rng.random::<f64>() * 45.0;
+        let buy_price = Price((buy_dollars * PRICE_SCALE as f64) as i64);
+        let entry_size = 0.3 + rng.random::<f64>() * 0.4;
 
-        for _ in 0..count {
-            let id = AgentId(*next_id);
-            *next_id += 1;
-
-            // Entry: ThresholdBuyer at random price between $50-$95
-            let buy_dollars = 50.0 + rng.random::<f64>() * 45.0; // $50-$95
-            let buy_price = Price((buy_dollars * PRICE_SCALE as f64) as i64);
-            let entry_size = 0.3 + rng.random::<f64>() * 0.4; // 30-70% of max position
-
-            let entry = ReactiveStrategyType::ThresholdBuyer {
+        let mut strategies = vec![
+            ReactiveStrategyType::ThresholdBuyer {
                 buy_price,
                 size_fraction: entry_size,
-            };
+            },
+            ReactiveStrategyType::StopLoss {
+                stop_pct: 0.02 + rng.random::<f64>() * 0.06,
+            },
+        ];
 
-            // Exit strategies: pick 1-2 from StopLoss, TakeProfit, ThresholdSeller
-            let mut strategies = vec![entry];
+        // 50% chance: TakeProfit or ThresholdSeller
+        if rng.random::<f64>() < 0.5 {
+            strategies.push(ReactiveStrategyType::TakeProfit {
+                target_pct: 0.05 + rng.random::<f64>() * 0.10,
+            });
+        } else {
+            let sell_dollars = 100.0 + rng.random::<f64>() * 20.0;
+            strategies.push(ReactiveStrategyType::ThresholdSeller {
+                sell_price: Price((sell_dollars * PRICE_SCALE as f64) as i64),
+                size_fraction: 1.0,
+            });
+        }
 
-            // Always add StopLoss (2-8% below cost basis)
-            let stop_pct = 0.02 + rng.random::<f64>() * 0.06;
-            strategies.push(ReactiveStrategyType::StopLoss { stop_pct });
+        // 20% chance: NewsReactor
+        if rng.random::<f64>() < 0.20 {
+            strategies.push(ReactiveStrategyType::NewsReactor {
+                min_magnitude: 0.3 + rng.random::<f64>() * 0.4,
+                sentiment_multiplier: 1.0 + rng.random::<f64>() * 2.0,
+            });
+        }
 
-            // 50% chance: add TakeProfit OR ThresholdSeller
-            if rng.random::<f64>() < 0.5 {
-                // TakeProfit: percentage-based (5-15% above cost basis)
-                let target_pct = 0.05 + rng.random::<f64>() * 0.10;
-                strategies.push(ReactiveStrategyType::TakeProfit { target_pct });
-            } else {
-                // ThresholdSeller: absolute price target ($100-$120)
-                let sell_dollars = 100.0 + rng.random::<f64>() * 20.0;
-                let sell_price = Price((sell_dollars * PRICE_SCALE as f64) as i64);
-                strategies.push(ReactiveStrategyType::ThresholdSeller {
-                    sell_price,
-                    size_fraction: 1.0, // Sell entire position
-                });
-            }
+        strategies
+    };
 
-            // 20% chance to also have NewsReactor
-            if rng.random::<f64>() < 0.20 {
-                let min_mag = 0.3 + rng.random::<f64>() * 0.4; // 0.3-0.7
-                let multiplier = 1.0 + rng.random::<f64>() * 2.0; // 1-3x
-                strategies.push(ReactiveStrategyType::NewsReactor {
-                    min_magnitude: min_mag,
-                    sentiment_multiplier: multiplier,
-                });
-            }
+    // Build (spec, count) pairs then flatten to agent assignments
+    let agent_specs: Vec<_> = symbols
+        .iter()
+        .enumerate()
+        .flat_map(|(sym_idx, spec)| {
+            let count = agents_per_symbol + if sym_idx < remainder { 1 } else { 0 };
+            std::iter::repeat(spec).take(count)
+        })
+        .collect();
 
-            let agent = ReactiveAgent::new(
-                id,
+    let start_id = *next_id;
+    let agents: Vec<_> = agent_specs
+        .iter()
+        .enumerate()
+        .map(|(i, spec)| {
+            Box::new(ReactiveAgent::new(
+                AgentId(start_id + i as u64),
                 spec.symbol.clone().into(),
-                strategies,
+                make_strategies(rng),
                 Quantity(config.t2_max_position),
                 config.t2_initial_cash,
-            );
+            )) as Box<dyn Agent>
+        })
+        .collect();
 
-            sim.add_agent(Box::new(agent));
-        }
+    *next_id += agents.len() as u64;
+    for agent in agents {
+        sim.add_agent(agent);
     }
 }
 
@@ -397,167 +405,125 @@ fn run_simulation(tx: Sender<SimUpdate>, cmd_rx: Receiver<SimCommand>, config: S
 
     let mut rng = rand::rng();
 
-    // Helper to pick a random symbol
-    let pick_symbol =
-        |rng: &mut rand::prelude::ThreadRng| -> &SymbolSpec { all_symbols.choose(rng).unwrap() };
-
     // Market Makers (infrastructure, distributed across symbols)
-    // First ensure each symbol gets at least num_market_makers / num_symbols
-    // Then randomly assign remainder
     let mm_per_symbol = config.num_market_makers / num_symbols;
     let mm_remainder = config.num_market_makers % num_symbols;
+    let mm_distributed_count = mm_per_symbol * num_symbols;
 
-    for spec in &all_symbols {
-        for _ in 0..mm_per_symbol {
-            let mm_config = MarketMakerConfig {
-                symbol: spec.symbol.clone(),
-                initial_price: spec.initial_price,
-                half_spread: config.mm_half_spread,
-                quote_size: config.mm_quote_size,
-                refresh_interval: config.mm_refresh_interval,
-                max_inventory: config.mm_max_inventory,
-                inventory_skew: config.mm_inventory_skew,
-                initial_cash: config.mm_initial_cash,
-                initial_position: 500,  // Start with inventory from the float
-                fair_value_weight: 0.3, // 30% fair value, 70% mid price
-            };
-            sim.add_agent(Box::new(MarketMaker::new(AgentId(next_id), mm_config)));
-            next_id += 1;
-        }
-    }
-    // Randomly assign remainder
-    for _ in 0..mm_remainder {
-        let spec = pick_symbol(&mut rng);
-        let mm_config = MarketMakerConfig {
-            symbol: spec.symbol.clone(),
-            initial_price: spec.initial_price,
-            half_spread: config.mm_half_spread,
-            quote_size: config.mm_quote_size,
-            refresh_interval: config.mm_refresh_interval,
-            max_inventory: config.mm_max_inventory,
-            inventory_skew: config.mm_inventory_skew,
-            initial_cash: config.mm_initial_cash,
-            initial_position: 500,
-            fair_value_weight: 0.3, // 30% fair value, 70% mid price
-        };
-        sim.add_agent(Box::new(MarketMaker::new(AgentId(next_id), mm_config)));
-        next_id += 1;
-    }
+    // Helper to create MM config
+    let make_mm_config = |spec: &SymbolSpec| MarketMakerConfig {
+        symbol: spec.symbol.clone(),
+        initial_price: spec.initial_price,
+        half_spread: config.mm_half_spread,
+        quote_size: config.mm_quote_size,
+        refresh_interval: config.mm_refresh_interval,
+        max_inventory: config.mm_max_inventory,
+        inventory_skew: config.mm_inventory_skew,
+        initial_cash: config.mm_initial_cash,
+        initial_position: 500,
+        fair_value_weight: 0.3,
+    };
+
+    // Distributed MMs across all symbols
+    let distributed_mms: Vec<_> = all_symbols
+        .iter()
+        .flat_map(|spec| std::iter::repeat(spec).take(mm_per_symbol))
+        .zip(next_id..next_id + mm_distributed_count as u64)
+        .map(|(spec, id)| {
+            Box::new(MarketMaker::new(AgentId(id), make_mm_config(spec))) as Box<dyn Agent>
+        })
+        .collect();
+    next_id += mm_distributed_count as u64;
+
+    // Remainder MMs (randomly assigned)
+    let remainder_mm_specs: Vec<_> = (0..mm_remainder)
+        .map(|_| all_symbols.choose(&mut rng).unwrap())
+        .collect();
+    let remainder_mms: Vec<_> = remainder_mm_specs
+        .iter()
+        .zip(next_id..next_id + mm_remainder as u64)
+        .map(|(spec, id)| {
+            Box::new(MarketMaker::new(AgentId(id), make_mm_config(spec))) as Box<dyn Agent>
+        })
+        .collect();
+    next_id += mm_remainder as u64;
 
     // Noise Traders (distributed across symbols)
     let nt_per_symbol = config.num_noise_traders / num_symbols;
     let nt_remainder = config.num_noise_traders % num_symbols;
+    let nt_distributed_count = nt_per_symbol * num_symbols;
 
-    for spec in &all_symbols {
-        for _ in 0..nt_per_symbol {
-            spawn_agent(
-                &mut sim,
-                Tier1AgentType::NoiseTrader,
-                &mut next_id,
-                &config,
-                &spec.symbol,
-                spec.initial_price,
-            );
-        }
-    }
-    // Randomly assign remainder
-    for _ in 0..nt_remainder {
-        let spec = pick_symbol(&mut rng);
-        spawn_agent(
-            &mut sim,
-            Tier1AgentType::NoiseTrader,
-            &mut next_id,
-            &config,
-            &spec.symbol,
-            spec.initial_price,
-        );
-    }
+    let distributed_nts: Vec<_> = all_symbols
+        .iter()
+        .flat_map(|spec| std::iter::repeat(spec).take(nt_per_symbol))
+        .zip(next_id..next_id + nt_distributed_count as u64)
+        .map(|(spec, id)| create_agent(Tier1AgentType::NoiseTrader, id, &config, &spec.symbol, spec.initial_price))
+        .collect();
+    next_id += nt_distributed_count as u64;
 
-    // Quant strategies: randomly assigned to symbols (equal chance per symbol)
+    // Remainder noise traders
+    let remainder_nt_specs: Vec<_> = (0..nt_remainder)
+        .map(|_| all_symbols.choose(&mut rng).unwrap())
+        .collect();
+    let remainder_nts: Vec<_> = remainder_nt_specs
+        .iter()
+        .zip(next_id..next_id + nt_remainder as u64)
+        .map(|(spec, id)| create_agent(Tier1AgentType::NoiseTrader, id, &config, &spec.symbol, spec.initial_price))
+        .collect();
+    next_id += nt_remainder as u64;
 
-    // Momentum Traders (RSI)
-    for _ in 0..config.num_momentum_traders {
-        let spec = pick_symbol(&mut rng);
-        spawn_agent(
-            &mut sim,
-            Tier1AgentType::MomentumTrader,
-            &mut next_id,
-            &config,
-            &spec.symbol,
-            spec.initial_price,
-        );
-    }
+    // Quant strategies: randomly assigned to symbols
+    let quant_agent_counts = [
+        (Tier1AgentType::MomentumTrader, config.num_momentum_traders),
+        (Tier1AgentType::TrendFollower, config.num_trend_followers),
+        (Tier1AgentType::MacdTrader, config.num_macd_traders),
+        (Tier1AgentType::BollingerTrader, config.num_bollinger_traders),
+        (Tier1AgentType::VwapExecutor, config.num_vwap_executors),
+    ];
 
-    // Trend Followers (SMA crossover)
-    for _ in 0..config.num_trend_followers {
-        let spec = pick_symbol(&mut rng);
-        spawn_agent(
-            &mut sim,
-            Tier1AgentType::TrendFollower,
-            &mut next_id,
-            &config,
-            &spec.symbol,
-            spec.initial_price,
-        );
-    }
+    let quant_specs: Vec<_> = quant_agent_counts
+        .iter()
+        .flat_map(|(agent_type, count)| {
+            std::iter::repeat(*agent_type).take(*count)
+        })
+        .map(|agent_type| (agent_type, all_symbols.choose(&mut rng).unwrap()))
+        .collect();
 
-    // MACD Traders
-    for _ in 0..config.num_macd_traders {
-        let spec = pick_symbol(&mut rng);
-        spawn_agent(
-            &mut sim,
-            Tier1AgentType::MacdTrader,
-            &mut next_id,
-            &config,
-            &spec.symbol,
-            spec.initial_price,
-        );
-    }
-
-    // Bollinger Traders
-    for _ in 0..config.num_bollinger_traders {
-        let spec = pick_symbol(&mut rng);
-        spawn_agent(
-            &mut sim,
-            Tier1AgentType::BollingerTrader,
-            &mut next_id,
-            &config,
-            &spec.symbol,
-            spec.initial_price,
-        );
-    }
-
-    // VWAP Executors
-    for _ in 0..config.num_vwap_executors {
-        let spec = pick_symbol(&mut rng);
-        spawn_agent(
-            &mut sim,
-            Tier1AgentType::VwapExecutor,
-            &mut next_id,
-            &config,
-            &spec.symbol,
-            spec.initial_price,
-        );
-    }
+    let quant_agents: Vec<_> = quant_specs
+        .iter()
+        .zip(next_id..next_id + quant_specs.len() as u64)
+        .map(|((agent_type, spec), id)| create_agent(*agent_type, id, &config, &spec.symbol, spec.initial_price))
+        .collect();
+    next_id += quant_specs.len() as u64;
 
     // ─────────────────────────────────────────────────────────────────────────
     // Phase 2: Fill to Tier 1 minimum with random agents (random symbol)
     // ─────────────────────────────────────────────────────────────────────────
 
     let random_count = config.random_tier1_count();
-    if random_count > 0 {
-        for _ in 0..random_count {
-            let agent_type = Tier1AgentType::random(&mut rng);
-            let spec = pick_symbol(&mut rng);
-            spawn_agent(
-                &mut sim,
-                agent_type,
-                &mut next_id,
-                &config,
-                &spec.symbol,
-                spec.initial_price,
-            );
-        }
+    let random_specs: Vec<_> = (0..random_count)
+        .map(|_| (Tier1AgentType::random(&mut rng), all_symbols.choose(&mut rng).unwrap()))
+        .collect();
+
+    let random_agents: Vec<_> = random_specs
+        .iter()
+        .zip(next_id..next_id + random_count as u64)
+        .map(|((agent_type, spec), id)| create_agent(*agent_type, id, &config, &spec.symbol, spec.initial_price))
+        .collect();
+    next_id += random_count as u64;
+
+    // Add all Tier 1 agents to simulation (imperative: sim.add_agent is side-effectful)
+    let all_tier1_agents: Vec<_> = distributed_mms
+        .into_iter()
+        .chain(remainder_mms)
+        .chain(distributed_nts)
+        .chain(remainder_nts)
+        .chain(quant_agents)
+        .chain(random_agents)
+        .collect();
+
+    for agent in all_tier1_agents {
+        sim.add_agent(agent);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -572,17 +538,17 @@ fn run_simulation(tx: Sender<SimUpdate>, cmd_rx: Receiver<SimCommand>, config: S
         .iter()
         .map(|s| s.symbol.clone())
         .collect();
-    let mut price_history: HashMap<Symbol, Vec<f64>> = HashMap::new();
-    for symbol in &symbols {
-        price_history.insert(symbol.clone(), Vec::with_capacity(config.max_price_history));
-    }
 
     // Initialize price history with initial prices
-    for spec in config.get_symbols() {
-        if let Some(history) = price_history.get_mut(&spec.symbol) {
+    let mut price_history: HashMap<Symbol, Vec<f64>> = config
+        .get_symbols()
+        .iter()
+        .map(|spec| {
+            let mut history = Vec::with_capacity(config.max_price_history);
             history.push(spec.initial_price.to_float());
-        }
-    }
+            (spec.symbol.clone(), history)
+        })
+        .collect();
 
     // Tier counts for TUI display
     let tier1_count = config.total_tier1_agents();
@@ -654,6 +620,7 @@ fn run_simulation(tx: Sender<SimUpdate>, cmd_rx: Receiver<SimCommand>, config: S
         tick += 1;
 
         // Update price history for each symbol (V2.3)
+        // (imperative: complex conditional mutation of price_history)
         for symbol in &symbols {
             if let Some(book) = sim.get_book(symbol)
                 && let Some(price) = book.last_price()

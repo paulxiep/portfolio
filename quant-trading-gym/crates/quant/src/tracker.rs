@@ -284,9 +284,9 @@ mod tests {
             105.0, 110.0, // Recovery
         ];
 
-        for equity in equities {
-            tracker.record_equity(agent, equity);
-        }
+        equities
+            .iter()
+            .for_each(|&equity| tracker.record_equity(agent, equity));
 
         let metrics = tracker.compute_metrics(agent);
 

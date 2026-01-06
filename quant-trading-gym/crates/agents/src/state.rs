@@ -77,10 +77,10 @@ pub struct AgentState {
 impl AgentState {
     /// Create a new agent state with initial cash for given symbols.
     pub fn new(initial_cash: Cash, symbols: &[&str]) -> Self {
-        let mut positions = HashMap::new();
-        for symbol in symbols {
-            positions.insert(symbol.to_string(), PositionEntry::empty());
-        }
+        let positions = symbols
+            .iter()
+            .map(|symbol| (symbol.to_string(), PositionEntry::empty()))
+            .collect();
         Self {
             positions,
             cash: initial_cash,
@@ -92,10 +92,10 @@ impl AgentState {
 
     /// Create a new agent state with owned symbol strings.
     pub fn with_symbols(initial_cash: Cash, symbols: Vec<Symbol>) -> Self {
-        let mut positions = HashMap::new();
-        for symbol in symbols {
-            positions.insert(symbol, PositionEntry::empty());
-        }
+        let positions = symbols
+            .into_iter()
+            .map(|symbol| (symbol, PositionEntry::empty()))
+            .collect();
         Self {
             positions,
             cash: initial_cash,
@@ -218,18 +218,18 @@ impl AgentState {
 
     /// Compute total equity given prices for all symbols.
     pub fn equity(&self, prices: &HashMap<Symbol, Price>) -> Cash {
-        let mut equity = self.cash;
-        for (symbol, entry) in &self.positions {
-            if let Some(price) = prices.get(symbol) {
-                let position_value = if entry.quantity >= 0 {
-                    *price * types::Quantity(entry.quantity as u64)
-                } else {
-                    -(*price * types::Quantity((-entry.quantity) as u64))
-                };
-                equity += position_value;
-            }
-        }
-        equity
+        self.positions
+            .iter()
+            .filter_map(|(symbol, entry)| {
+                prices.get(symbol).map(|price| {
+                    if entry.quantity >= 0 {
+                        *price * types::Quantity(entry.quantity as u64)
+                    } else {
+                        -(*price * types::Quantity((-entry.quantity) as u64))
+                    }
+                })
+            })
+            .fold(self.cash, |acc, val| acc + val)
     }
 
     /// Compute equity for a single symbol (convenience for single-symbol agents).

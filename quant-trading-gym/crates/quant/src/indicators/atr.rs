@@ -46,12 +46,14 @@ impl Indicator for Atr {
             return None;
         }
 
-        // Calculate true ranges
-        let mut true_ranges: Vec<f64> = Vec::with_capacity(candles.len() - 1);
-        for i in 1..candles.len() {
-            let prev_close = candles[i - 1].close.to_float();
-            true_ranges.push(Self::true_range(&candles[i], prev_close));
-        }
+        // Calculate true ranges using iterator over window pairs
+        let true_ranges: Vec<f64> = candles
+            .windows(2)
+            .map(|w| {
+                let prev_close = w[0].close.to_float();
+                Self::true_range(&w[1], prev_close)
+            })
+            .collect();
 
         // Calculate initial ATR as simple average
         let initial_atr: f64 =

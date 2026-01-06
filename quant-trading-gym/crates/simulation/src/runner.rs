@@ -324,8 +324,8 @@ impl Simulation {
         if is_reactive {
             self.t2_indices.push(index);
             // Register initial wake conditions for reactive agents
-            let conditions = agent.initial_wake_conditions(self.tick);
-            for condition in conditions {
+            // (imperative: wake_index.register is side-effectful)
+            for condition in agent.initial_wake_conditions(self.tick) {
                 self.wake_index.register(agent_id, condition);
             }
         } else {
@@ -498,19 +498,17 @@ impl Simulation {
 
     /// Build indicator snapshot for current tick (all symbols).
     fn build_indicator_snapshot(&mut self) -> IndicatorSnapshot {
-        let mut snapshot = IndicatorSnapshot::new(self.tick);
-
-        // Compute indicators for each symbol
-        for (symbol, symbol_candles) in &self.candles {
-            if !symbol_candles.is_empty() {
+        let indicators = self
+            .candles
+            .iter()
+            .filter(|(_, symbol_candles)| !symbol_candles.is_empty())
+            .filter_map(|(symbol, symbol_candles)| {
                 let values = self.indicator_engine.compute_all(symbol_candles);
-                if !values.is_empty() {
-                    snapshot.insert(symbol.clone(), values);
-                }
-            }
-        }
+                (!values.is_empty()).then(|| (symbol.clone(), values))
+            })
+            .collect();
 
-        snapshot
+        IndicatorSnapshot::from_map(self.tick, indicators)
     }
 
     /// Build candles map for StrategyContext (just return reference).
@@ -778,11 +776,11 @@ impl Simulation {
         let mut indices_to_call: Vec<usize> = self.t1_indices.clone();
 
         // Add triggered T2 agent indices
-        for agent_id in triggered_t2.keys() {
-            if let Some(&idx) = self.agent_id_to_index.get(agent_id) {
-                indices_to_call.push(idx);
-            }
-        }
+        indices_to_call.extend(
+            triggered_t2
+                .keys()
+                .filter_map(|agent_id| self.agent_id_to_index.get(agent_id).copied()),
+        );
 
         // Shuffle only the agents we're actually calling
         indices_to_call.shuffle(&mut rand::rng());
@@ -909,46 +907,48 @@ impl Simulation {
         }
 
         // Add trades to recent trades per symbol (newest first)
-        for trade in tick_trades.iter().rev() {
+        tick_trades.iter().rev().for_each(|trade| {
             let symbol_trades = self.recent_trades.entry(trade.symbol.clone()).or_default();
             symbol_trades.insert(0, trade.clone());
-        }
+        });
 
         // Trim recent trades per symbol to max
-        for symbol_trades in self.recent_trades.values_mut() {
+        self.recent_trades.values_mut().for_each(|symbol_trades| {
             if symbol_trades.len() > self.config.max_recent_trades {
                 symbol_trades.truncate(self.config.max_recent_trades);
             }
-        }
+        });
 
         // Update candles with trade data
         self.update_candles(&tick_trades);
 
         // Notify agents of fills and collect condition updates
         // V3.2: Use post_fill_condition_update for proper add/remove lifecycle
-        let mut condition_updates = Vec::new();
-        for (agent_id, trade, pos_before) in &fill_notifications {
-            if let Some(agent) = self.agents.iter_mut().find(|a| a.id() == *agent_id) {
-                agent.on_fill(trade);
-
-                // Get condition updates for reactive agents
-                if agent.is_reactive()
-                    && let Some(update) = agent.post_fill_condition_update(*pos_before)
-                {
-                    condition_updates.push(update);
-                }
-            }
-        }
+        let condition_updates: Vec<_> = fill_notifications
+            .iter()
+            .filter_map(|(agent_id, trade, pos_before)| {
+                self.agents
+                    .iter_mut()
+                    .find(|a| a.id() == *agent_id)
+                    .and_then(|agent| {
+                        agent.on_fill(trade);
+                        agent
+                            .is_reactive()
+                            .then(|| agent.post_fill_condition_update(*pos_before))
+                            .flatten()
+                    })
+            })
+            .collect();
 
         // Apply all condition updates (add/remove) to wake index
         self.wake_index.apply_updates(condition_updates);
 
         // Notify agents of resting orders (so they can track OrderIds for cancellation)
-        for (agent_id, order) in resting_notifications {
-            if let Some(agent) = self.agents.iter_mut().find(|a| a.id() == agent_id) {
-                agent.on_order_resting(order.id, &order);
+        resting_notifications.iter().for_each(|(agent_id, order)| {
+            if let Some(agent) = self.agents.iter_mut().find(|a| a.id() == *agent_id) {
+                agent.on_order_resting(order.id, order);
             }
-        }
+        });
 
         // Update risk tracking with current equity values
         // Build price map for all symbols for mark-to-market valuation
@@ -965,6 +965,7 @@ impl Simulation {
             })
             .collect();
 
+        // Record equity for each agent (imperative: risk_tracker is stateful)
         for agent in &self.agents {
             let equity = agent.equity(&prices).to_float();
             self.risk_tracker.record_equity(agent.id(), equity);
@@ -995,14 +996,10 @@ impl Simulation {
     ///
     /// Returns total trades across all ticks.
     pub fn run(&mut self, ticks: u64) -> Vec<Trade> {
-        let mut all_trades = Vec::new();
-
-        for _ in 0..ticks {
-            let trades = self.step();
-            all_trades.extend(trades);
-        }
-
-        all_trades
+        (0..ticks).fold(Vec::new(), |mut all_trades, _| {
+            all_trades.extend(self.step());
+            all_trades
+        })
     }
 
     // =========================================================================

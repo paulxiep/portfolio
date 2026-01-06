@@ -49,7 +49,7 @@ cargo test --workspace # ✅ All tests pass
 
 ---
 
-## 2026-01-05: V3.1 Multi-Symbol & Multi-Symbol & IOC Orders
+## 2026-01-05: V3.1 Multi-Symbol & IOC Orders
 
 ### Summary
 Refactored `AgentState` to multi-symbol HashMap-based architecture and implemented IOC (Immediate-Or-Cancel) order behavior. All strategies updated to per-symbol position tracking.

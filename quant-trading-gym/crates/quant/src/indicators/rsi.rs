@@ -49,15 +49,21 @@ impl Rsi {
         avg_loss /= period as f64;
 
         // Wilder's smoothing for remaining periods
-        for &change in changes.iter().skip(period) {
-            let (gain, loss) = if change > 0.0 {
-                (change, 0.0)
-            } else {
-                (0.0, -change)
-            };
-            avg_gain = (avg_gain * (period as f64 - 1.0) + gain) / period as f64;
-            avg_loss = (avg_loss * (period as f64 - 1.0) + loss) / period as f64;
-        }
+        let (avg_gain, avg_loss) =
+            changes
+                .iter()
+                .skip(period)
+                .fold((avg_gain, avg_loss), |(ag, al), &change| {
+                    let (gain, loss) = if change > 0.0 {
+                        (change, 0.0)
+                    } else {
+                        (0.0, -change)
+                    };
+                    (
+                        (ag * (period as f64 - 1.0) + gain) / period as f64,
+                        (al * (period as f64 - 1.0) + loss) / period as f64,
+                    )
+                });
 
         // Calculate RSI
         if avg_loss == 0.0 {

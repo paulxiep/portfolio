@@ -171,62 +171,60 @@ impl WakeConditionIndex {
         &self,
         current_prices: &[(Symbol, Price)],
     ) -> Vec<(AgentId, WakeCondition)> {
-        let mut triggered = Vec::new();
+        current_prices
+            .iter()
+            .filter_map(|(symbol, current_price)| {
+                self.previous_prices
+                    .get(symbol)
+                    .map(|&prev_price| (symbol, *current_price, prev_price))
+            })
+            .flat_map(|(symbol, current_price, prev_price)| {
+                let current = OrderedPrice::from_price(current_price);
+                let prev = OrderedPrice::from_price(prev_price);
 
-        for (symbol, current_price) in current_prices {
-            let Some(&prev_price) = self.previous_prices.get(symbol) else {
-                continue;
-            };
-
-            let current = OrderedPrice::from_price(*current_price);
-            let prev = OrderedPrice::from_price(prev_price);
-
-            // Check price_above: was below, now above
-            if prev < current {
                 // Price went up - check for "above" crossings
-                for ((sym, threshold), agents) in self
-                    .price_above
-                    .range((symbol.clone(), prev)..(symbol.clone(), current))
-                {
-                    if sym == symbol && *threshold > prev && *threshold <= current {
-                        for &agent_id in agents {
-                            triggered.push((
-                                agent_id,
-                                WakeCondition::PriceCross {
-                                    symbol: symbol.clone(),
-                                    threshold: threshold.to_price(),
-                                    direction: CrossDirection::Above,
-                                },
-                            ));
-                        }
-                    }
-                }
-            }
+                let above_triggers: Vec<_> = if prev < current {
+                    self.price_above
+                        .range((symbol.clone(), prev)..(symbol.clone(), current))
+                        .filter(|((sym, threshold), _)| {
+                            sym == symbol && *threshold > prev && *threshold <= current
+                        })
+                        .flat_map(|((_, threshold), agents)| {
+                            let condition = WakeCondition::PriceCross {
+                                symbol: symbol.clone(),
+                                threshold: threshold.to_price(),
+                                direction: CrossDirection::Above,
+                            };
+                            agents.iter().map(move |&id| (id, condition.clone()))
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
 
-            // Check price_below: was above, now below
-            if prev > current {
                 // Price went down - check for "below" crossings
-                for ((sym, threshold), agents) in self
-                    .price_below
-                    .range((symbol.clone(), current)..(symbol.clone(), prev))
-                {
-                    if sym == symbol && *threshold < prev && *threshold >= current {
-                        for &agent_id in agents {
-                            triggered.push((
-                                agent_id,
-                                WakeCondition::PriceCross {
-                                    symbol: symbol.clone(),
-                                    threshold: threshold.to_price(),
-                                    direction: CrossDirection::Below,
-                                },
-                            ));
-                        }
-                    }
-                }
-            }
-        }
+                let below_triggers: Vec<_> = if prev > current {
+                    self.price_below
+                        .range((symbol.clone(), current)..(symbol.clone(), prev))
+                        .filter(|((sym, threshold), _)| {
+                            sym == symbol && *threshold < prev && *threshold >= current
+                        })
+                        .flat_map(|((_, threshold), agents)| {
+                            let condition = WakeCondition::PriceCross {
+                                symbol: symbol.clone(),
+                                threshold: threshold.to_price(),
+                                direction: CrossDirection::Below,
+                            };
+                            agents.iter().map(move |&id| (id, condition.clone()))
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
 
-        triggered
+                above_triggers.into_iter().chain(below_triggers)
+            })
+            .collect()
     }
 
     /// Get agents triggered by exact time.
@@ -312,9 +310,8 @@ impl WakeConditionIndex {
 
     /// Update previous prices for next tick's cross detection.
     pub fn update_prices(&mut self, prices: &[(Symbol, Price)]) {
-        for (symbol, price) in prices {
-            self.previous_prices.insert(symbol.clone(), *price);
-        }
+        self.previous_prices
+            .extend(prices.iter().map(|(s, p)| (s.clone(), *p)));
     }
 
     /// Apply deferred condition updates.
@@ -355,17 +352,8 @@ impl WakeConditionIndex {
 
     /// Clean up expired time-exact conditions.
     pub fn cleanup_expired(&mut self, current_tick: Tick) {
-        // Remove all time_exact entries for ticks that have passed
-        let expired: Vec<Tick> = self
-            .time_exact
-            .keys()
-            .filter(|&&t| t < current_tick)
-            .copied()
-            .collect();
-
-        for tick in expired {
-            self.time_exact.remove(&tick);
-        }
+        // Retain only entries for future ticks
+        self.time_exact.retain(|&tick, _| tick >= current_tick);
     }
 }
 

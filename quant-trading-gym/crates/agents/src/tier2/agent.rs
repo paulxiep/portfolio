@@ -224,37 +224,34 @@ impl ReactiveAgent {
     /// - NewsReactor: NewsEvent subscription
     /// - StopLoss/TakeProfit: Registered later via fill_wake_conditions()
     pub fn initial_wake_conditions(&self, _current_tick: Tick) -> Vec<WakeCondition> {
-        let mut conditions = Vec::new();
         let symbol = self.portfolio.primary_symbol().clone();
 
-        for strategy in &self.strategies {
-            match strategy {
+        self.strategies
+            .iter()
+            .filter_map(|strategy| match strategy {
                 ReactiveStrategyType::ThresholdBuyer { buy_price, .. } => {
-                    conditions.push(WakeCondition::PriceCross {
+                    Some(WakeCondition::PriceCross {
                         symbol: symbol.clone(),
                         threshold: *buy_price,
                         direction: CrossDirection::Below,
-                    });
+                    })
                 }
                 ReactiveStrategyType::ThresholdSeller { sell_price, .. } => {
-                    conditions.push(WakeCondition::PriceCross {
+                    Some(WakeCondition::PriceCross {
                         symbol: symbol.clone(),
                         threshold: *sell_price,
                         direction: CrossDirection::Above,
-                    });
+                    })
                 }
-                ReactiveStrategyType::NewsReactor { .. } => {
-                    conditions.push(WakeCondition::NewsEvent {
-                        symbols: smallvec::smallvec![symbol.clone()],
-                    });
-                }
+                ReactiveStrategyType::NewsReactor { .. } => Some(WakeCondition::NewsEvent {
+                    symbols: smallvec::smallvec![symbol.clone()],
+                }),
                 // StopLoss/TakeProfit are registered on fill via fill_wake_conditions()
                 ReactiveStrategyType::StopLoss { .. } | ReactiveStrategyType::TakeProfit { .. } => {
+                    None
                 }
-            }
-        }
-
-        conditions
+            })
+            .collect()
     }
 
     /// Generate wake conditions after a fill (for exit strategies).
@@ -266,33 +263,31 @@ impl ReactiveAgent {
             return Vec::new();
         }
 
-        let mut conditions = Vec::new();
         let symbol = self.portfolio.primary_symbol().clone();
 
-        for strategy in &self.strategies {
-            match strategy {
+        self.strategies
+            .iter()
+            .filter_map(|strategy| match strategy {
                 ReactiveStrategyType::StopLoss { stop_pct } => {
                     let threshold = Price((self.cost_basis.0 as f64 * (1.0 - stop_pct)) as i64);
-                    conditions.push(WakeCondition::PriceCross {
+                    Some(WakeCondition::PriceCross {
                         symbol: symbol.clone(),
                         threshold,
                         direction: CrossDirection::Below,
-                    });
+                    })
                 }
                 ReactiveStrategyType::TakeProfit { target_pct } => {
                     let threshold = Price((self.cost_basis.0 as f64 * (1.0 + target_pct)) as i64);
-                    conditions.push(WakeCondition::PriceCross {
+                    Some(WakeCondition::PriceCross {
                         symbol: symbol.clone(),
                         threshold,
                         direction: CrossDirection::Above,
-                    });
+                    })
                 }
                 // Other strategies don't need fill-time conditions
-                _ => {}
-            }
-        }
-
-        conditions
+                _ => None,
+            })
+            .collect()
     }
 
     /// Compute condition updates after a fill based on state transitions.
@@ -485,15 +480,14 @@ impl ReactiveAgent {
         }
 
         // Try strategies in order until one triggers
-        for strategy in &self.strategies {
-            if let Some(action) = self.try_strategy(strategy, ctx) {
-                // Generate condition updates based on action
+        self.strategies
+            .iter()
+            .find_map(|strategy| self.try_strategy(strategy, ctx))
+            .map(|action| {
                 let update = self.generate_condition_update(&action, ctx.tick);
-                return (Some(action), update);
-            }
-        }
-
-        (None, None)
+                (Some(action), update)
+            })
+            .unwrap_or((None, None))
     }
 
     /// Try to execute a strategy, returning an action if conditions are met.
@@ -729,14 +723,17 @@ impl Agent for ReactiveAgent {
         }
 
         // Check each strategy for trigger conditions
-        for strategy in &self.strategies.clone() {
-            if let Some(action) = self.check_strategy_trigger(strategy, current_price, tick, ctx) {
-                self.last_evaluated_tick = tick;
-                return action;
-            }
-        }
-
-        AgentAction::none()
+        self.strategies
+            .clone()
+            .iter()
+            .find_map(|strategy| {
+                self.check_strategy_trigger(strategy, current_price, tick, ctx)
+                    .map(|action| {
+                        self.last_evaluated_tick = tick;
+                        action
+                    })
+            })
+            .unwrap_or_else(AgentAction::none)
     }
 
     fn on_fill(&mut self, trade: &Trade) {
@@ -848,34 +845,37 @@ impl ReactiveAgent {
                 min_magnitude,
                 sentiment_multiplier,
             } => {
-                // Check for active news events
-                for event in ctx.active_events() {
-                    if event.magnitude >= *min_magnitude {
+                // Check for active news events - find first actionable event
+                ctx.active_events()
+                    .iter()
+                    .filter(|event| event.magnitude >= *min_magnitude)
+                    .filter_map(|event| {
                         let base_size = (self.max_position.0 as f64 * 0.1) as u64;
                         let size = (base_size as f64 * event.sentiment.abs() * sentiment_multiplier)
                             as u64;
-                        if size > 0 {
-                            let side = if event.sentiment > 0.0 {
-                                OrderSide::Buy
-                            } else {
-                                OrderSide::Sell
-                            };
-                            // Check position guards
-                            let can_trade = match side {
-                                OrderSide::Buy => self.remaining_capacity().0 > 0,
-                                OrderSide::Sell => self.has_position(),
-                            };
-                            if can_trade {
-                                let order_size = match side {
-                                    OrderSide::Buy => size.min(self.remaining_capacity().0),
-                                    OrderSide::Sell => size.min(self.current_position() as u64),
-                                };
-                                return Some(self.market_order(symbol, side, Quantity(order_size)));
-                            }
+                        if size == 0 {
+                            return None;
                         }
-                    }
-                }
-                None
+                        let side = if event.sentiment > 0.0 {
+                            OrderSide::Buy
+                        } else {
+                            OrderSide::Sell
+                        };
+                        // Check position guards
+                        let can_trade = match side {
+                            OrderSide::Buy => self.remaining_capacity().0 > 0,
+                            OrderSide::Sell => self.has_position(),
+                        };
+                        if !can_trade {
+                            return None;
+                        }
+                        let order_size = match side {
+                            OrderSide::Buy => size.min(self.remaining_capacity().0),
+                            OrderSide::Sell => size.min(self.current_position() as u64),
+                        };
+                        Some(self.market_order(symbol, side, Quantity(order_size)))
+                    })
+                    .next()
             }
 
             // Strategy didn't match conditions or position guard failed

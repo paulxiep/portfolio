@@ -246,6 +246,11 @@ impl IndicatorSnapshot {
         }
     }
 
+    /// Create a snapshot from a pre-built map.
+    pub fn from_map(tick: Tick, values: HashMap<Symbol, HashMap<IndicatorType, f64>>) -> Self {
+        Self { tick, values }
+    }
+
     /// Add indicator values for a symbol.
     pub fn insert(&mut self, symbol: Symbol, indicators: HashMap<IndicatorType, f64>) {
         self.values.insert(symbol, indicators);
