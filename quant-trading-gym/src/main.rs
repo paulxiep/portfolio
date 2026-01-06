@@ -25,9 +25,11 @@ use std::time::Duration;
 use agents::{
     BollingerReversion, BollingerReversionConfig, MacdCrossover, MacdCrossoverConfig, MarketMaker,
     MarketMakerConfig, MomentumConfig, MomentumTrader, NoiseTrader, NoiseTraderConfig,
-    TrendFollower, TrendFollowerConfig, VwapExecutor, VwapExecutorConfig,
+    ReactiveAgent, ReactiveStrategyType, TrendFollower, TrendFollowerConfig, VwapExecutor,
+    VwapExecutorConfig,
 };
 use crossbeam_channel::{Receiver, Sender, bounded};
+use rand::Rng;
 use rand::prelude::IndexedRandom;
 use simulation::{Simulation, SimulationConfig};
 use tui::{AgentInfo, RiskInfo, SimCommand, SimUpdate, TuiApp};
@@ -47,10 +49,13 @@ fn digit_width(n: usize) -> usize {
 /// Build a SimUpdate from current simulation state.
 ///
 /// V2.3: Now builds per-symbol data for multi-symbol support.
+/// V3.2: Added tier1_count and tier2_count for agent tier display.
 fn build_update(
     sim: &Simulation,
     price_history: &HashMap<Symbol, Vec<f64>>,
     finished: bool,
+    tier1_count: usize,
+    tier2_count: usize,
 ) -> SimUpdate {
     let stats = sim.stats();
     let symbols: Vec<Symbol> = sim.config().symbols();
@@ -143,8 +148,12 @@ fn build_update(
         last_price: last_price_map,
         trades,
         agents,
+        tier1_count,
+        tier2_count,
         total_trades: stats.total_trades,
         total_orders: stats.total_orders,
+        agents_called: stats.agents_called_this_tick,
+        t2_triggered: stats.t2_triggered_this_tick,
         finished,
         risk_metrics,
     }
@@ -243,6 +252,103 @@ fn spawn_agent(
                 ..Default::default()
             };
             sim.add_agent(Box::new(VwapExecutor::new(id, vwap_config)));
+        }
+    }
+}
+
+/// Spawn Tier 2 reactive agents distributed across symbols.
+///
+/// Each agent gets:
+/// - ThresholdBuyer entry (buy at absolute price level)
+/// - 1-2 exit strategies (StopLoss, TakeProfit, or ThresholdSeller)
+/// - Optionally NewsReactor (20% chance)
+///
+/// Price assumptions:
+/// - Initial price: $100 (1,000,000 in fixed-point)
+/// - Can drop to $50 initially due to selling pressure
+/// - ThresholdBuyer targets: $50-$95 range to catch dips
+/// - ThresholdSeller targets: above entry price for profit taking
+fn spawn_tier2_agents(
+    sim: &mut Simulation,
+    next_id: &mut u64,
+    config: &SimConfig,
+    symbols: &[SymbolSpec],
+    rng: &mut rand::prelude::ThreadRng,
+) {
+    use types::Price;
+
+    let num_agents = config.num_tier2_agents;
+    if num_agents == 0 {
+        return;
+    }
+
+    let num_symbols = symbols.len();
+    let agents_per_symbol = num_agents / num_symbols;
+    let remainder = num_agents % num_symbols;
+
+    // Fixed-point scale: 10000 per dollar
+    // $50 = 500_000, $100 = 1_000_000
+    const PRICE_SCALE: i64 = 10_000;
+
+    // Distribute agents across symbols
+    for (sym_idx, spec) in symbols.iter().enumerate() {
+        let count = agents_per_symbol + if sym_idx < remainder { 1 } else { 0 };
+
+        for _ in 0..count {
+            let id = AgentId(*next_id);
+            *next_id += 1;
+
+            // Entry: ThresholdBuyer at random price between $50-$95
+            let buy_dollars = 50.0 + rng.random::<f64>() * 45.0; // $50-$95
+            let buy_price = Price((buy_dollars * PRICE_SCALE as f64) as i64);
+            let entry_size = 0.3 + rng.random::<f64>() * 0.4; // 30-70% of max position
+
+            let entry = ReactiveStrategyType::ThresholdBuyer {
+                buy_price,
+                size_fraction: entry_size,
+            };
+
+            // Exit strategies: pick 1-2 from StopLoss, TakeProfit, ThresholdSeller
+            let mut strategies = vec![entry];
+
+            // Always add StopLoss (2-8% below cost basis)
+            let stop_pct = 0.02 + rng.random::<f64>() * 0.06;
+            strategies.push(ReactiveStrategyType::StopLoss { stop_pct });
+
+            // 50% chance: add TakeProfit OR ThresholdSeller
+            if rng.random::<f64>() < 0.5 {
+                // TakeProfit: percentage-based (5-15% above cost basis)
+                let target_pct = 0.05 + rng.random::<f64>() * 0.10;
+                strategies.push(ReactiveStrategyType::TakeProfit { target_pct });
+            } else {
+                // ThresholdSeller: absolute price target ($100-$120)
+                let sell_dollars = 100.0 + rng.random::<f64>() * 20.0;
+                let sell_price = Price((sell_dollars * PRICE_SCALE as f64) as i64);
+                strategies.push(ReactiveStrategyType::ThresholdSeller {
+                    sell_price,
+                    size_fraction: 1.0, // Sell entire position
+                });
+            }
+
+            // 20% chance to also have NewsReactor
+            if rng.random::<f64>() < 0.20 {
+                let min_mag = 0.3 + rng.random::<f64>() * 0.4; // 0.3-0.7
+                let multiplier = 1.0 + rng.random::<f64>() * 2.0; // 1-3x
+                strategies.push(ReactiveStrategyType::NewsReactor {
+                    min_magnitude: min_mag,
+                    sentiment_multiplier: multiplier,
+                });
+            }
+
+            let agent = ReactiveAgent::new(
+                id,
+                spec.symbol.clone().into(),
+                strategies,
+                Quantity(config.t2_max_position),
+                config.t2_initial_cash,
+            );
+
+            sim.add_agent(Box::new(agent));
         }
     }
 }
@@ -454,6 +560,12 @@ fn run_simulation(tx: Sender<SimUpdate>, cmd_rx: Receiver<SimCommand>, config: S
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Phase 3: Spawn Tier 2 Reactive Agents (V3.2)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    spawn_tier2_agents(&mut sim, &mut next_id, &config, &all_symbols, &mut rng);
+
     // Price history for chart (V2.3: per-symbol)
     let symbols: Vec<Symbol> = config
         .get_symbols()
@@ -472,8 +584,18 @@ fn run_simulation(tx: Sender<SimUpdate>, cmd_rx: Receiver<SimCommand>, config: S
         }
     }
 
+    // Tier counts for TUI display
+    let tier1_count = config.total_tier1_agents();
+    let tier2_count = config.num_tier2_agents;
+
     // Send initial state before starting (so TUI has something to display)
-    let _ = tx.send(build_update(&sim, &price_history, false));
+    let _ = tx.send(build_update(
+        &sim,
+        &price_history,
+        false,
+        tier1_count,
+        tier2_count,
+    ));
 
     // Simulation control state - starts paused, press Space to run
     let mut running = false;
@@ -490,7 +612,13 @@ fn run_simulation(tx: Sender<SimUpdate>, cmd_rx: Receiver<SimCommand>, config: S
                 SimCommand::Toggle => running = !running,
                 SimCommand::Quit => {
                     // Send final update and exit
-                    let _ = tx.send(build_update(&sim, &price_history, true));
+                    let _ = tx.send(build_update(
+                        &sim,
+                        &price_history,
+                        true,
+                        tier1_count,
+                        tier2_count,
+                    ));
                     return;
                 }
             }
@@ -505,7 +633,13 @@ fn run_simulation(tx: Sender<SimUpdate>, cmd_rx: Receiver<SimCommand>, config: S
         // Check if we've reached max ticks
         if tick >= total_ticks {
             // Send final update
-            let _ = tx.send(build_update(&sim, &price_history, true));
+            let _ = tx.send(build_update(
+                &sim,
+                &price_history,
+                true,
+                tier1_count,
+                tier2_count,
+            ));
             // Keep checking for quit command
             loop {
                 match cmd_rx.recv() {
@@ -533,7 +667,7 @@ fn run_simulation(tx: Sender<SimUpdate>, cmd_rx: Receiver<SimCommand>, config: S
         }
 
         // Send update to TUI
-        let update = build_update(&sim, &price_history, false);
+        let update = build_update(&sim, &price_history, false, tier1_count, tier2_count);
         if tx.send(update).is_err() {
             // TUI closed, exit
             break;
@@ -603,13 +737,18 @@ fn main() {
     );
     eprintln!("╠═══════════════════════════════════════════════════════════════════════╣");
     eprintln!(
-        "║  Tier 1 Minimum: {:2}  │  Random Fill: {:2}  │  Total: {:2}              ║",
+        "║  Tier 1 Min: {:2}  │  Random Fill: {:2}  │  Total T1: {:2}               ║",
         config.min_tier1_agents,
         config.random_tier1_count(),
-        config.total_agents()
+        config.total_tier1_agents()
     );
     eprintln!(
-        "║  Total Starting Cash: ${:>14.2}                              ║",
+        "║  Tier 2 Agents: {:4}                                                 ║",
+        config.num_tier2_agents
+    );
+    eprintln!(
+        "║  Total Agents: {:5}  │  Total Cash: ${:>14.2}          ║",
+        config.total_agents(),
         config.total_starting_cash().to_float()
     );
     eprintln!("╚═══════════════════════════════════════════════════════════════════════╝");

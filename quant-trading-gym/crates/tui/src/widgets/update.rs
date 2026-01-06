@@ -83,10 +83,18 @@ pub struct SimUpdate {
     // ─────────────────────────────────────────────────────────────────────────
     /// Agent summaries for P&L table.
     pub agents: Vec<AgentInfo>,
+    /// Number of Tier 1 agents.
+    pub tier1_count: usize,
+    /// Number of Tier 2 reactive agents (V3.2).
+    pub tier2_count: usize,
     /// Total trades executed.
     pub total_trades: u64,
     /// Total orders submitted.
     pub total_orders: u64,
+    /// Agents called this tick (V3.2 debug).
+    pub agents_called: usize,
+    /// T2 agents triggered this tick (V3.2 debug).
+    pub t2_triggered: usize,
     /// Simulation is complete.
     pub finished: bool,
     /// Per-agent risk metrics.

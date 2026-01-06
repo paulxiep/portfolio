@@ -11,3 +11,5 @@ sim-core.workspace = true
 quant.workspace = true
 news.workspace = true
 rand.workspace = true
+serde = { workspace = true, features = ["derive"] }
+smallvec = { version = "1.13", features = ["serde"] }

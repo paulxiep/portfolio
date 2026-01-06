@@ -206,6 +206,48 @@ pub trait Agent: Send {
     fn equity_for(&self, symbol: &str, price: types::Price) -> types::Cash {
         self.state().equity_for(symbol, price)
     }
+
+    /// Whether this agent uses reactive/event-driven wake conditions (Tier 2).
+    ///
+    /// Reactive agents are NOT called every tick via `on_tick()`. Instead, they
+    /// register wake conditions and are only invoked when conditions trigger.
+    /// Override this to return `true` for T2 agents.
+    fn is_reactive(&self) -> bool {
+        false
+    }
+
+    /// Get initial wake conditions for registration with WakeConditionIndex.
+    ///
+    /// Called once when agent is added to simulation. Override for T2 agents.
+    /// T1 agents return empty (they're called every tick via on_tick).
+    fn initial_wake_conditions(&self, _current_tick: types::Tick) -> Vec<crate::WakeCondition> {
+        Vec::new()
+    }
+
+    /// Get wake conditions to register after a fill (for exit strategies).
+    ///
+    /// Called after on_fill() for T2 agents. Exit strategies like StopLoss/TakeProfit
+    /// compute absolute thresholds from cost_basis at fill time.
+    fn fill_wake_conditions(&self) -> Vec<crate::WakeCondition> {
+        Vec::new()
+    }
+
+    /// Generate condition updates after a fill to maintain wake index consistency.
+    ///
+    /// Called after on_fill() for T2 agents. Returns conditions to add/remove:
+    /// - Remove entry conditions when at max capacity or out of cash
+    /// - Add exit conditions when opening a position (was 0, now > 0)
+    /// - Remove exit conditions when closing a position (was > 0, now 0)
+    /// - Re-add entry conditions when position closed and has capacity
+    ///
+    /// # Arguments
+    /// * `position_before` - Agent's position before the fill
+    fn post_fill_condition_update(
+        &self,
+        _position_before: i64,
+    ) -> Option<crate::tiers::ConditionUpdate> {
+        None
+    }
 }
 
 #[cfg(test)]

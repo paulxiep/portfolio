@@ -1,125 +1,89 @@
 # Development Log
 
-## 2026-01-06: V3.1 Cleanup - IOC Orders & Debug Removal
+## 2026-01-06: V3.2 Tier 2 Reactive Agents
 
 ### Summary
-Implemented end-of-tick order expiration (IOC behavior), removed debug logging, and reverted simulation to start paused.
+Complete Tier 2 reactive agent system with proper wake condition lifecycle. 4000 T2 agents spawn with randomized strategies (1 entry + 1 exit + optional NewsReactor). Entry conditions removed at max capacity, exit conditions added/removed based on position state.
 
-### Completed
+### Wake Condition Lifecycle
 
-#### Order Expiration (IOC Mode)
-- ✅ `OrderBook::clear()` method to remove all resting orders
-- ✅ All order books cleared at end of each `step()` tick
-- ✅ Orders rest during tick (allowing matching), expire after
-- ✅ Market makers now quote every tick (`refresh_interval: 1`)
+**Problem:** T2 agents triggered repeatedly on every price cross because conditions were never removed after acting.
 
-### Technical Notes
+**Solution:** `post_fill_condition_update()` returns `ConditionUpdate` (add/remove lists):
+- Entry conditions (ThresholdBuyer): Remove at max capacity, re-add when flat
+- Exit conditions (StopLoss/TakeProfit): Add when opening position (computed from cost_basis), remove when closing
 
-**Why IOC (Immediate-Or-Cancel)?**
-- Prevents stale orders accumulating in book
-- Each tick starts fresh - cleaner mental model
-- Market makers provide liquidity by quoting every tick
-- Eliminates need for order TTL tracking
-
-**Market Maker Adjustment:**
-```rust
-// Before: quote every 10 ticks (orders persisted)
-mm_refresh_interval: 10
-
-// After: quote every tick (orders expire)
-mm_refresh_interval: 1
 ```
+At startup: ThresholdBuyer/Seller → PriceCross conditions; StopLoss/TakeProfit → NOT registered
+After BUY: If at_capacity → REMOVE entry; If just opened → ADD exits
+After SELL: If closed to flat → REMOVE exits, ADD entry back
+```
+
+### ReactiveAgent Implementation
+- `AgentState` field for position/cash tracking (SoC: AgentState owns state, ReactiveAgent owns strategy)
+- `Agent` trait implementation with `on_tick()` and `on_fill()`
+- `compute_condition_update()` detects state transitions and returns add/remove lists
+- Optimized T1/T2 iteration using index arrays (avoids iterating all 4000 agents)
+
+### Config & TUI
+- `SimConfig`: Added `num_tier2_agents` (default 4000), `t2_initial_cash`, `t2_max_position`
+- TUI: T1/T2 agent counts displayed separately (T1 cyan, T2 magenta)
 
 ### Files Modified
 | File | Changes |
 |------|---------|
-| `crates/sim-core/src/order_book.rs` | Added `clear()` method |
-| `crates/simulation/src/runner.rs` | IOC: clear books at end of tick, removed debug |
-| `crates/agents/src/strategies/market_maker.rs` | Default `refresh_interval: 1` |
-| `src/config.rs` | Default `mm_refresh_interval: 1` |
-| `src/main.rs` | Reverted to `running = false` |
+| `crates/agents/src/traits.rs` | Added `post_fill_condition_update()` to Agent trait |
+| `crates/agents/src/tier2/agent.rs` | AgentState integration, Agent trait impl, `compute_condition_update()` |
+| `crates/agents/src/lib.rs` | Export ReactiveAgent, ReactivePortfolio, ReactiveStrategyType |
+| `crates/simulation/src/runner.rs` | Collect and apply condition updates, T1/T2 index optimization |
+| `src/config.rs` | `num_tier2_agents`, `t2_initial_cash`, `t2_max_position` |
+| `src/main.rs` | `spawn_tier2_agents()`, random strategy generators |
+| `crates/tui/src/widgets/*.rs` | T1/T2 count display |
 
 ### Exit Criteria
 ```
-cargo fmt --check      # ✅ No formatting issues
-cargo clippy           # ✅ No warnings  
-cargo test --workspace # ✅ All 224 tests pass
+cargo fmt              # ✅ No formatting issues
+cargo clippy           # ✅ No warnings
+cargo test --workspace # ✅ All tests pass
 ```
 
 ---
 
-## 2026-01-05: V3.1 - Multi-Symbol AgentState
+## 2026-01-05: V3.1 Multi-Symbol & Multi-Symbol & IOC Orders
 
 ### Summary
-Refactored `AgentState` from single-symbol position tracking to multi-symbol HashMap-based architecture. Clean API without backward compatibility cruft. Updated all strategies, simulation runner, and TUI to use per-symbol positions.
+Refactored `AgentState` to multi-symbol HashMap-based architecture and implemented IOC (Immediate-Or-Cancel) order behavior. All strategies updated to per-symbol position tracking.
 
-### Completed
+### Multi-Symbol AgentState
 
-#### AgentState Refactor (`agents/state.rs`)
-- ✅ `PositionEntry { quantity: i64, avg_cost: f64 }` for per-symbol tracking
-- ✅ `positions: HashMap<Symbol, PositionEntry>` replaces `position: i64`
-- ✅ New API: `on_buy(symbol, qty, value)`, `on_sell(symbol, qty, value)`
-- ✅ `position_for(symbol)` returns per-symbol position
-- ✅ `position()` returns aggregate sum (convenience, not backward compat)
-- ✅ Weighted average cost tracking for realized P&L calculation
-- ✅ `equity(&HashMap<Symbol, Price>)` for multi-symbol mark-to-market
+#### Core Changes (`agents/state.rs`)
+- `PositionEntry { quantity: i64, avg_cost: f64 }` for per-symbol tracking
+- `positions: HashMap<Symbol, PositionEntry>` replaces `position: i64`
+- New API: `on_buy(symbol, qty, value)`, `on_sell(symbol, qty, value)`, `position_for(symbol)`
+- Weighted average cost tracking for realized P&L calculation
+- `equity(&HashMap<Symbol, Price>)` for multi-symbol mark-to-market
 
 #### Agent Trait Extensions (`agents/traits.rs`)
-- ✅ `positions() -> &HashMap<Symbol, PositionEntry>`
-- ✅ `position_for(symbol) -> i64`
-- ✅ `watched_symbols() -> &[Symbol]` (foundation for V3.2 wake conditions)
-- ✅ `equity(&prices_map) -> Cash`
-- ✅ `equity_for(symbol, price) -> Cash`
+- `positions()`, `position_for(symbol)`, `watched_symbols()`, `equity()`, `equity_for()`
 
-#### Strategy Updates (all 7 strategies)
-- ✅ `NoiseTrader`: Updated constructor and `on_fill`
-- ✅ `MarketMaker`: Updated constructor and `on_fill`
-- ✅ `Momentum`: Updated constructor and `on_fill`
-- ✅ `TrendFollower`: Updated constructor and `on_fill`
-- ✅ `MacdCrossover`: Updated constructor and `on_fill`
-- ✅ `BollingerReversion`: Updated constructor and `on_fill`
-- ✅ `VwapExecutor`: Updated constructor and `on_fill`
+#### Strategy Updates
+All 7 strategies (NoiseTrader, MarketMaker, Momentum, TrendFollower, MacdCrossover, BollingerReversion, VwapExecutor) updated to use `AgentState::new(cash, &[symbols])` and per-symbol `on_buy`/`on_sell`.
 
-#### Simulation Runner (`simulation/runner.rs`)
-- ✅ Build `HashMap<Symbol, Price>` from all symbol configs for mark-to-market
-- ✅ Use `MarketView::last_price(symbol)` with fallback to `initial_price`
-- ✅ Fixed test agents to use new `AgentState::new(cash, &[symbols])` API
-
-#### TUI Updates (`tui/`)
-- ✅ `AgentTable::symbol(sym)` method to filter position display
-- ✅ Position column shows per-symbol position for selected tab
-- ✅ Aggregate position shown when no symbol selected
-
-### Technical Notes
-
-**API Design Decision:**
-Removed backward compatibility in favor of clean API. User stated "this is portfolio, not production system" - no need for migration paths.
-
-**Pattern for Strategy Updates:**
-```rust
-// Constructor
-AgentState::new(initial_cash, &[&config.symbol])
-
-// on_fill
-self.state.on_buy(&trade.symbol, trade.quantity.raw(), trade.value());
-self.state.on_sell(&trade.symbol, trade.quantity.raw(), trade.value());
-```
-
-**Known Limitation:**
-Runner's `validate_order` still uses aggregate position for limit checks. Per-symbol position limits deferred to V3.2 when position validator is symbol-aware.
+### IOC Order Expiration
+- `OrderBook::clear()` removes all resting orders at end of each tick
+- Each tick starts fresh - cleaner mental model, no stale order accumulation
+- Market makers now quote every tick (`refresh_interval: 1`)
 
 ### Files Modified
 | File | Changes |
 |------|---------|
 | `crates/agents/src/state.rs` | Complete refactor to multi-symbol |
 | `crates/agents/src/traits.rs` | New trait methods |
-| `crates/agents/src/lib.rs` | Export `PositionEntry` |
 | `crates/agents/src/strategies/*.rs` | All 7 strategies updated |
-| `crates/simulation/src/runner.rs` | Multi-symbol equity calculation |
-| `crates/simulation/tests/agent_strategies.rs` | Test fixtures updated |
+| `crates/sim-core/src/order_book.rs` | Added `clear()` method |
+| `crates/simulation/src/runner.rs` | Multi-symbol equity, IOC clearing |
 | `crates/tui/src/widgets/agent_table.rs` | Per-symbol position display |
-| `crates/tui/src/app.rs` | Pass selected symbol to agent table |
-| `project_plan_vertical.md` | V3.1 section updated |
+| `src/config.rs` | Default `mm_refresh_interval: 1` |
 
 ### Exit Criteria
 ```

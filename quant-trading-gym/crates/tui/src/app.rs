@@ -547,7 +547,10 @@ impl TuiApp {
             .last_price(self.state.current_last_price())
             .total_trades(self.state.total_trades)
             .total_orders(self.state.total_orders)
-            .agent_count(self.state.agents.len())
+            .tier1_count(self.state.tier1_count)
+            .tier2_count(self.state.tier2_count)
+            .agents_called(self.state.agents_called)
+            .t2_triggered(self.state.t2_triggered)
             .spread(spread);
 
         frame.render_widget(stats, area);

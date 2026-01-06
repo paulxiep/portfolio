@@ -16,10 +16,20 @@
 //!
 //! The simulation supports multiple symbols via `Market` (HashMap<Symbol, OrderBook>).
 //! Each symbol has independent candles, trades, and indicators.
+//!
+//! # Tiered Agent Architecture (V3.2)
+//!
+//! Agents are split into two tiers:
+//! - **Tier 1**: Called every tick via `on_tick()` (market makers, technical traders)
+//! - **Tier 2**: Reactive agents woken only when conditions trigger (via WakeConditionIndex)
+//!
+//! This reduces per-tick overhead from O(n) to O(k) where k << n triggered agents.
 
 use std::collections::HashMap;
 
-use agents::{Agent, AgentAction, BorrowLedger, PositionValidator, StrategyContext};
+use agents::{
+    Agent, AgentAction, BorrowLedger, PositionValidator, StrategyContext, WakeConditionIndex,
+};
 use quant::{
     AgentRiskSnapshot, AgentRiskTracker, IndicatorCache, IndicatorEngine, IndicatorSnapshot,
 };
@@ -61,6 +71,12 @@ pub struct SimulationStats {
 
     /// Total orders rejected due to position limit violations (V2.1).
     pub rejected_orders: u64,
+
+    /// Agents called this tick (V3.2 debug).
+    pub agents_called_this_tick: usize,
+
+    /// T2 agents triggered this tick (V3.2 debug).
+    pub t2_triggered_this_tick: usize,
 }
 
 /// The main simulation runner.
@@ -85,6 +101,15 @@ pub struct Simulation {
 
     /// Trading agents.
     agents: Vec<Box<dyn Agent>>,
+
+    /// Indices of Tier 1 agents (called every tick).
+    t1_indices: Vec<usize>,
+
+    /// Indices of Tier 2 agents (called only when triggered).
+    t2_indices: Vec<usize>,
+
+    /// Map from AgentId to index in agents vec (for T2 lookup).
+    agent_id_to_index: HashMap<AgentId, usize>,
 
     /// Current tick.
     tick: Tick,
@@ -137,6 +162,9 @@ pub struct Simulation {
 
     /// Symbol fundamentals for fair value calculation (V2.4).
     fundamentals: news::SymbolFundamentals,
+
+    /// Wake condition index for Tier 2 reactive agents (V3.2).
+    wake_index: WakeConditionIndex,
 }
 
 /// Helper for building candles incrementally.
@@ -242,10 +270,22 @@ impl Simulation {
         let position_validator =
             PositionValidator::new(primary_config, config.short_selling.clone());
 
+        // V3.2: Initialize wake index with starting prices for cross detection
+        let mut wake_index = WakeConditionIndex::new();
+        let initial_prices: Vec<(Symbol, Price)> = config
+            .get_symbol_configs()
+            .iter()
+            .map(|sc| (sc.symbol.clone(), sc.initial_price))
+            .collect();
+        wake_index.update_prices(&initial_prices);
+
         Self {
             market,
             engine: MatchingEngine::new(),
             agents: Vec::new(),
+            t1_indices: Vec::new(),
+            t2_indices: Vec::new(),
+            agent_id_to_index: HashMap::new(),
             tick: 0,
             timestamp: 0,
             recent_trades,
@@ -262,6 +302,7 @@ impl Simulation {
             news_generator,
             active_events: Vec::new(),
             fundamentals,
+            wake_index,
             config,
         }
     }
@@ -272,7 +313,28 @@ impl Simulation {
     }
 
     /// Add an agent to the simulation.
+    ///
+    /// For reactive (T2) agents, registers their initial wake conditions.
     pub fn add_agent(&mut self, agent: Box<dyn Agent>) {
+        let agent_id = agent.id();
+        let is_reactive = agent.is_reactive();
+        let index = self.agents.len();
+
+        // Track index by tier
+        if is_reactive {
+            self.t2_indices.push(index);
+            // Register initial wake conditions for reactive agents
+            let conditions = agent.initial_wake_conditions(self.tick);
+            for condition in conditions {
+                self.wake_index.register(agent_id, condition);
+            }
+        } else {
+            self.t1_indices.push(index);
+        }
+
+        // Map agent ID to index for triggered T2 lookup
+        self.agent_id_to_index.insert(agent_id, index);
+
         self.agents.push(agent);
     }
 
@@ -683,18 +745,56 @@ impl Simulation {
             &self.fundamentals,
         );
 
-        // Shuffle agent processing order to eliminate ID-based priority bias.
-        // Without this, lower-indexed agents would always get their orders
-        // processed first within each tick, creating unfair advantages.
-        let mut indices: Vec<usize> = (0..self.agents.len()).collect();
-        indices.shuffle(&mut rand::rng());
+        // V3.2: Collect current prices for wake condition checking
+        // Use last trade price if available, otherwise initial price
+        let current_prices: Vec<(Symbol, Price)> = self
+            .config
+            .get_symbol_configs()
+            .iter()
+            .map(|sc| {
+                let price = self
+                    .market
+                    .last_price(&sc.symbol)
+                    .unwrap_or(sc.initial_price);
+                (sc.symbol.clone(), price)
+            })
+            .collect();
 
-        // Phase 2: Collect all agent actions with their current state for validation.
-        // We capture per-symbol positions for correct multi-symbol validation (V3.1).
-        let actions_with_state: Vec<AgentActionWithState> = indices
+        // V3.2: Get triggered T2 agents from wake index
+        let news_symbols: Vec<Symbol> = self
+            .active_events
+            .iter()
+            .filter_map(|e| e.symbol().cloned())
+            .collect();
+        let triggered_t2 =
+            self.wake_index
+                .collect_triggered(self.tick, &current_prices, &news_symbols);
+
+        // V3.2: Track triggered count for stats
+        self.stats.t2_triggered_this_tick = triggered_t2.len();
+
+        // V3.2: Build list of indices to call - T1 always, T2 only if triggered
+        // This avoids iterating all 4000+ agents every tick
+        let mut indices_to_call: Vec<usize> = self.t1_indices.clone();
+
+        // Add triggered T2 agent indices
+        for agent_id in triggered_t2.keys() {
+            if let Some(&idx) = self.agent_id_to_index.get(agent_id) {
+                indices_to_call.push(idx);
+            }
+        }
+
+        // Shuffle only the agents we're actually calling
+        indices_to_call.shuffle(&mut rand::rng());
+
+        // Phase 2: Collect agent actions with their current state for validation.
+        // V3.2: Only call T1 agents every tick; T2 agents only when triggered.
+        let actions_with_state: Vec<AgentActionWithState> = indices_to_call
             .iter()
             .map(|&i| {
                 let agent = &mut self.agents[i];
+                let agent_id = agent.id();
+
                 let action = agent.on_tick(&ctx);
                 // Capture per-symbol positions for validation
                 let positions: HashMap<Symbol, i64> = agent
@@ -704,9 +804,12 @@ impl Simulation {
                     .collect();
                 let cash = agent.cash();
                 let is_mm = agent.is_market_maker();
-                (agent.id(), action, positions, cash, is_mm)
+                (agent_id, action, positions, cash, is_mm)
             })
             .collect();
+
+        // V3.2: Track how many agents were actually called
+        self.stats.agents_called_this_tick = actions_with_state.len();
 
         // Phase 3: ctx is now dropped (goes out of scope) - releases borrow on book
         // Process all orders with validation
@@ -821,12 +924,24 @@ impl Simulation {
         // Update candles with trade data
         self.update_candles(&tick_trades);
 
-        // Notify agents of fills
-        for (agent_id, trade, _pos_before) in &fill_notifications {
+        // Notify agents of fills and collect condition updates
+        // V3.2: Use post_fill_condition_update for proper add/remove lifecycle
+        let mut condition_updates = Vec::new();
+        for (agent_id, trade, pos_before) in &fill_notifications {
             if let Some(agent) = self.agents.iter_mut().find(|a| a.id() == *agent_id) {
                 agent.on_fill(trade);
+
+                // Get condition updates for reactive agents
+                if agent.is_reactive()
+                    && let Some(update) = agent.post_fill_condition_update(*pos_before)
+                {
+                    condition_updates.push(update);
+                }
             }
         }
+
+        // Apply all condition updates (add/remove) to wake index
+        self.wake_index.apply_updates(condition_updates);
 
         // Notify agents of resting orders (so they can track OrderIds for cancellation)
         for (agent_id, order) in resting_notifications {
@@ -854,6 +969,11 @@ impl Simulation {
             let equity = agent.equity(&prices).to_float();
             self.risk_tracker.record_equity(agent.id(), equity);
         }
+
+        // V3.2: Update wake index prices for next tick's cross detection
+        let price_updates: Vec<(Symbol, Price)> =
+            prices.iter().map(|(sym, p)| (sym.clone(), *p)).collect();
+        self.wake_index.update_prices(&price_updates);
 
         // Clear all order books at end of tick (orders expire after tick)
         // This ensures fresh liquidity each tick from market makers

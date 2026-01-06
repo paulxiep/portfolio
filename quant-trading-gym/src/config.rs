@@ -98,6 +98,18 @@ pub struct SimConfig {
     /// random Tier 1 agents are spawned to fill the gap.
     pub min_tier1_agents: usize,
 
+    /// Number of Tier 2 reactive agents (V3.2).
+    /// These are lightweight event-driven agents.
+    pub num_tier2_agents: usize,
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Tier 2 Reactive Agent Parameters (V3.2)
+    // ─────────────────────────────────────────────────────────────────────────
+    /// Starting cash for each Tier 2 reactive agent.
+    pub t2_initial_cash: Cash,
+    /// Maximum position size for Tier 2 agents.
+    pub t2_max_position: u64,
+
     // ─────────────────────────────────────────────────────────────────────────
     // Market Maker Parameters
     // ─────────────────────────────────────────────────────────────────────────
@@ -164,7 +176,7 @@ impl Default for SimConfig {
             verbose: false,
 
             // Tier 1 Agent Counts (minimums per type)
-            num_market_makers: 100,
+            num_market_makers: 150,
             num_noise_traders: 400,
             num_momentum_traders: 50,
             num_trend_followers: 50,
@@ -173,6 +185,14 @@ impl Default for SimConfig {
             num_vwap_executors: 50,
             // Tier Minimums
             min_tier1_agents: 1000, // Random agents fill the gap
+
+            // Tier 2 Reactive Agents (V3.2)
+            num_tier2_agents: 4000,
+
+            // Tier 2 Reactive Agent Parameters (V3.2)
+            // Equal starting cash to noise traders for fair comparison
+            t2_initial_cash: Cash::from_float(100_000.0),
+            t2_max_position: 100,
 
             // Market Maker Parameters
             mm_initial_cash: Cash::from_float(1_000_000.0),
@@ -336,6 +356,24 @@ impl SimConfig {
         self
     }
 
+    /// Set number of Tier 2 reactive agents (V3.2).
+    pub fn tier2_agents(mut self, count: usize) -> Self {
+        self.num_tier2_agents = count;
+        self
+    }
+
+    /// Set Tier 2 agent initial cash (V3.2).
+    pub fn t2_cash(mut self, cash: f64) -> Self {
+        self.t2_initial_cash = Cash::from_float(cash);
+        self
+    }
+
+    /// Set Tier 2 agent max position (V3.2).
+    pub fn t2_max_position(mut self, max_pos: u64) -> Self {
+        self.t2_max_position = max_pos;
+        self
+    }
+
     /// Set market maker initial cash.
     pub fn mm_cash(mut self, cash: f64) -> Self {
         self.mm_initial_cash = Cash::from_float(cash);
@@ -413,9 +451,14 @@ impl SimConfig {
         self.min_tier1_agents.saturating_sub(specified)
     }
 
-    /// Total number of agents (specified + random fill).
-    pub fn total_agents(&self) -> usize {
+    /// Total number of Tier 1 agents (specified + random fill).
+    pub fn total_tier1_agents(&self) -> usize {
         self.specified_tier1_agents() + self.random_tier1_count()
+    }
+
+    /// Total number of agents (Tier 1 + Tier 2).
+    pub fn total_agents(&self) -> usize {
+        self.total_tier1_agents() + self.num_tier2_agents
     }
 
     /// Total starting cash in the system (estimate, doesn't include random agents).
@@ -548,11 +591,12 @@ mod tests {
             .macd_traders(0)
             .bollinger_traders(0)
             .vwap_executors(0)
-            .min_tier1(10);
+            .min_tier1(10)
+            .tier2_agents(0); // Explicitly set tier2 to 0 for this test
 
         assert_eq!(config.specified_tier1_agents(), 5);
         assert_eq!(config.random_tier1_count(), 5); // Need 5 more to reach 10
-        assert_eq!(config.total_agents(), 10);
+        assert_eq!(config.total_tier1_agents(), 10);
     }
 
     #[test]

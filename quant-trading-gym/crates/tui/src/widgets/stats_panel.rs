@@ -19,8 +19,14 @@ pub struct StatsPanel {
     pub total_trades: u64,
     /// Total orders submitted.
     pub total_orders: u64,
-    /// Number of agents.
-    pub agent_count: usize,
+    /// Number of Tier 1 agents.
+    pub tier1_count: usize,
+    /// Number of Tier 2 agents.
+    pub tier2_count: usize,
+    /// Agents called this tick.
+    pub agents_called: usize,
+    /// T2 agents triggered this tick.
+    pub t2_triggered: usize,
     /// Spread (if available).
     pub spread: Option<Price>,
 }
@@ -33,7 +39,10 @@ impl StatsPanel {
             last_price: None,
             total_trades: 0,
             total_orders: 0,
-            agent_count: 0,
+            tier1_count: 0,
+            tier2_count: 0,
+            agents_called: 0,
+            t2_triggered: 0,
             spread: None,
         }
     }
@@ -62,9 +71,27 @@ impl StatsPanel {
         self
     }
 
-    /// Set agent count.
-    pub fn agent_count(mut self, count: usize) -> Self {
-        self.agent_count = count;
+    /// Set Tier 1 agent count.
+    pub fn tier1_count(mut self, count: usize) -> Self {
+        self.tier1_count = count;
+        self
+    }
+
+    /// Set Tier 2 agent count.
+    pub fn tier2_count(mut self, count: usize) -> Self {
+        self.tier2_count = count;
+        self
+    }
+
+    /// Set agents called this tick.
+    pub fn agents_called(mut self, count: usize) -> Self {
+        self.agents_called = count;
+        self
+    }
+
+    /// Set T2 agents triggered this tick.
+    pub fn t2_triggered(mut self, count: usize) -> Self {
+        self.t2_triggered = count;
         self
     }
 
@@ -93,6 +120,7 @@ impl Widget for StatsPanel {
             None => "—".to_string(),
         };
 
+        // Compact layout: combine related stats on same line
         let lines = vec![
             Line::from(vec![
                 Span::styled("Tick: ", Style::default().fg(Color::Gray)),
@@ -102,16 +130,14 @@ impl Widget for StatsPanel {
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
                 ),
-            ]),
-            Line::from(vec![
-                Span::styled("Last Price: ", Style::default().fg(Color::Gray)),
+                Span::raw("  "),
+                Span::styled("Price: ", Style::default().fg(Color::Gray)),
                 Span::styled(price_str, Style::default().fg(Color::White)),
             ]),
             Line::from(vec![
                 Span::styled("Spread: ", Style::default().fg(Color::Gray)),
                 Span::styled(spread_str, Style::default().fg(Color::Yellow)),
-            ]),
-            Line::from(vec![
+                Span::raw("  "),
                 Span::styled("Trades: ", Style::default().fg(Color::Gray)),
                 Span::styled(
                     format!("{}", self.total_trades),
@@ -119,17 +145,23 @@ impl Widget for StatsPanel {
                 ),
             ]),
             Line::from(vec![
-                Span::styled("Orders: ", Style::default().fg(Color::Gray)),
+                Span::styled("Agents: ", Style::default().fg(Color::Gray)),
                 Span::styled(
-                    format!("{}", self.total_orders),
-                    Style::default().fg(Color::White),
+                    format!("{}T1 + {}T2", self.tier1_count, self.tier2_count),
+                    Style::default().fg(Color::Magenta),
                 ),
             ]),
             Line::from(vec![
-                Span::styled("Agents: ", Style::default().fg(Color::Gray)),
+                Span::styled("Called: ", Style::default().fg(Color::Gray)),
                 Span::styled(
-                    format!("{}", self.agent_count),
-                    Style::default().fg(Color::Magenta),
+                    format!("{}", self.agents_called),
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::raw("  "),
+                Span::styled("T2 Wake: ", Style::default().fg(Color::Gray)),
+                Span::styled(
+                    format!("{}", self.t2_triggered),
+                    Style::default().fg(Color::Yellow),
                 ),
             ]),
         ];
@@ -164,7 +196,8 @@ mod tests {
             .last_price(Some(Price::from_float(100.25)))
             .total_trades(42)
             .total_orders(150)
-            .agent_count(12)
+            .tier1_count(12)
+            .tier2_count(4000)
             .spread(Some(Price::from_float(0.50)));
 
         let area = Rect::new(0, 0, 30, 10);

@@ -63,16 +63,26 @@ mod borrow_ledger;
 mod context;
 mod position_limits;
 mod state;
-pub mod strategies;
+pub mod tiers;
 mod traits;
+
+// Tiered agent architecture (V3.2)
+pub mod tier1;
+pub mod tier2;
 
 pub use borrow_ledger::{BorrowLedger, BorrowPosition};
 pub use context::StrategyContext;
 pub use position_limits::PositionValidator;
 pub use state::{AgentState, PositionEntry};
-pub use strategies::{
+// Re-export strategies from tier1 for backward compatibility
+pub use tier1::{
     BollingerReversion, BollingerReversionConfig, MacdCrossover, MacdCrossoverConfig, MarketMaker,
     MarketMakerConfig, MomentumConfig, MomentumTrader, NoiseTrader, NoiseTraderConfig,
     TrendFollower, TrendFollowerConfig, VwapExecutor, VwapExecutorConfig,
+};
+// Re-export Tier 2 types for V3.2
+pub use tier2::{ReactiveAgent, ReactivePortfolio, ReactiveStrategyType, WakeConditionIndex};
+pub use tiers::{
+    ConditionUpdate, CrossDirection, OrderedPrice, PriceReference, TickFrequency, WakeCondition,
 };
 pub use traits::{Agent, AgentAction};

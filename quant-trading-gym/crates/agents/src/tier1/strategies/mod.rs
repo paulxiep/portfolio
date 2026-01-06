@@ -1,21 +1,22 @@
-//! Trading strategy implementations.
+//! Tier 1 Trading Strategies - Full-context agents that run every tick.
 //!
-//! This module contains concrete `Agent` implementations for various
-//! trading strategies. These are "Tier 1" agents that run every tick.
+//! These strategies implement the `Agent` trait and receive complete
+//! `StrategyContext` each tick, enabling complex computations including
+//! indicator calculations, factor scoring, and risk analysis.
 //!
 //! # Available Strategies
 //!
-//! ## Market Infrastructure (Phase 5)
+//! ## Market Infrastructure
 //! - [`NoiseTrader`] - Random orders near mid price to generate activity
-//! - [`MarketMaker`] - Provides liquidity with bid/ask spread
+//! - [`MarketMaker`] - Provides two-sided liquidity with bid/ask spread
 //!
-//! ## Technical Strategies (Phase 7)
-//! - [`MomentumTrader`] - RSI-based momentum strategy (buy oversold, sell overbought)
+//! ## Technical Strategies
+//! - [`MomentumTrader`] - RSI-based momentum (buy oversold, sell overbought)
 //! - [`TrendFollower`] - SMA crossover trend following (golden/death cross)
 //! - [`MacdCrossover`] - MACD signal line crossover strategy
 //! - [`BollingerReversion`] - Mean reversion using Bollinger Bands
 //!
-//! ## Execution Algorithms (Phase 8)
+//! ## Execution Algorithms
 //! - [`VwapExecutor`] - VWAP-targeting order execution algorithm
 
 mod bollinger_reversion;
