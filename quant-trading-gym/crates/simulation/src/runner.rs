@@ -40,6 +40,7 @@
 //! compete in a single auction per tick, rather than sequential price-time priority.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use agents::{
     Agent, AgentAction, BACKGROUND_POOL_ID, BackgroundAgentPool, BorrowLedger, PoolContext,
@@ -56,6 +57,7 @@ use types::{
 };
 
 use crate::config::SimulationConfig;
+use crate::hooks::{BookSnapshot, HookContext, HookRunner, MarketSnapshot, SimulationHook};
 use crate::parallel;
 
 /// Agent action with captured state for order validation.
@@ -195,6 +197,9 @@ pub struct Simulation {
 
     /// Optional Tier 3 background pool for statistical order generation (V3.4).
     background_pool: Option<BackgroundAgentPool>,
+
+    /// Hook runner for simulation observers (V3.6).
+    hooks: HookRunner,
 }
 
 /// Helper for building candles incrementally.
@@ -328,6 +333,7 @@ impl Simulation {
             fundamentals,
             wake_index,
             background_pool: None,
+            hooks: HookRunner::new(),
             config,
         }
     }
@@ -335,6 +341,65 @@ impl Simulation {
     /// Create a simulation with default configuration.
     pub fn with_defaults() -> Self {
         Self::new(SimulationConfig::default())
+    }
+
+    // =========================================================================
+    // Hooks (V3.6)
+    // =========================================================================
+
+    /// Register a simulation hook.
+    ///
+    /// Hooks are called in registration order at each lifecycle point.
+    /// Use `Arc` to share hooks between multiple simulations or retain access.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use simulation::hooks::MetricsHook;
+    /// use std::sync::Arc;
+    ///
+    /// let metrics = Arc::new(MetricsHook::new());
+    /// sim.add_hook(metrics.clone());
+    /// sim.run(1000);
+    /// println!("Avg trades/tick: {:.2}", metrics.snapshot().avg_trades_per_tick);
+    /// ```
+    pub fn add_hook(&mut self, hook: Arc<dyn SimulationHook>) {
+        self.hooks.add(hook);
+    }
+
+    /// Get the number of registered hooks.
+    pub fn hook_count(&self) -> usize {
+        self.hooks.len()
+    }
+
+    /// Build hook context with current market state.
+    ///
+    /// Creates owned snapshots to avoid borrow conflicts.
+    fn build_hook_context(&self) -> HookContext {
+        let mut market_snapshot = MarketSnapshot::new();
+
+        for symbol in self.market.symbols() {
+            if let Some(book) = self.market.get_book(symbol) {
+                let snapshot = BookSnapshot {
+                    best_bid: book.best_bid().map(|(price, _)| price),
+                    best_ask: book.best_ask().map(|(price, _)| price),
+                    bid_depth: book.bid_depth(5),
+                    ask_depth: book.ask_depth(5),
+                    last_price: book.last_price(),
+                };
+                market_snapshot.add_book(symbol.clone(), snapshot);
+            }
+        }
+
+        let t3_count = self
+            .background_pool
+            .as_ref()
+            .map(|p| p.config().pool_size)
+            .unwrap_or(0);
+
+        HookContext::new(self.tick, self.timestamp)
+            .with_market(market_snapshot)
+            .with_tiers(self.t1_indices.len(), self.t2_indices.len(), t3_count)
     }
 
     /// Set the Tier 3 background pool for statistical order generation (V3.4).
@@ -840,7 +905,10 @@ impl Simulation {
     fn compute_agents_to_call(
         &mut self,
         current_prices: &[(Symbol, Price)],
-    ) -> (Vec<usize>, HashMap<AgentId, smallvec::SmallVec<[agents::WakeCondition; 2]>>) {
+    ) -> (
+        Vec<usize>,
+        HashMap<AgentId, smallvec::SmallVec<[agents::WakeCondition; 2]>>,
+    ) {
         // Get news symbols for condition checking
         let news_symbols: Vec<Symbol> = self
             .active_events
@@ -934,7 +1002,10 @@ impl Simulation {
     /// Build reference prices for batch auction clearing.
     ///
     /// Priority: fair_value (fundamentals) > last_price (order book).
-    fn build_reference_prices<'a>(&self, symbols: impl Iterator<Item = &'a Symbol>) -> HashMap<String, Price> {
+    fn build_reference_prices<'a>(
+        &self,
+        symbols: impl Iterator<Item = &'a Symbol>,
+    ) -> HashMap<String, Price> {
         symbols
             .filter_map(|symbol| {
                 self.fundamentals
@@ -1176,25 +1247,35 @@ impl Simulation {
     /// # Phases
     ///
     /// 0. Process news events (updates fundamentals and active events)
-    /// 1. Determine which agents to call (T1 always, T2 when triggered)
-    /// 2. Build strategy context for agents
-    /// 3. Collect agent actions (orders and cancellations)
-    /// 4. Run batch auction for agent orders
-    /// 5. Process Tier 3 background pool orders
-    /// 6. Update market data (recent trades, candles)
-    /// 7. Notify agents of fills and update wake conditions
-    /// 8. Update risk tracking
-    /// 9. Finalize tick (clear books, advance time)
+    /// 1. Hook: on_tick_start (V3.6)
+    /// 2. Determine which agents to call (T1 always, T2 when triggered)
+    /// 3. Build strategy context for agents
+    /// 4. Collect agent actions (orders and cancellations)
+    /// 5. Hook: on_orders_collected (V3.6)
+    /// 6. Run batch auction for agent orders
+    /// 7. Process Tier 3 background pool orders
+    /// 8. Hook: on_trades (V3.6)
+    /// 9. Update market data (recent trades, candles)
+    /// 10. Notify agents of fills and update wake conditions
+    /// 11. Update risk tracking
+    /// 12. Hook: on_tick_end (V3.6)
+    /// 13. Finalize tick (clear books, advance time)
     pub fn step(&mut self) -> Vec<Trade> {
         // Phase 0: Process news events
         self.process_news_events();
 
-        // Phase 1: Determine which agents to call (before building ctx to avoid borrow conflict)
+        // Phase 1 (V3.6): Hook - tick start
+        if !self.hooks.is_empty() {
+            let hook_ctx = self.build_hook_context();
+            self.hooks.on_tick_start(&hook_ctx);
+        }
+
+        // Phase 2: Determine which agents to call (before building ctx to avoid borrow conflict)
         // This mutates wake_index, so must happen before taking immutable refs to self
         let current_prices = self.collect_current_prices();
         let (indices_to_call, triggered_t2) = self.compute_agents_to_call(&current_prices);
 
-        // Phase 2: Build strategy context for agents
+        // Phase 3: Build strategy context for agents
         let candles_map = self.build_candles_map();
         let trades_map = self.build_trades_map();
         let indicators = self.build_indicator_snapshot();
@@ -1209,13 +1290,21 @@ impl Simulation {
             &self.fundamentals,
         );
 
-        // Phase 3: Collect agent actions
+        // Phase 4: Collect agent actions
         let actions_with_state = self.collect_agent_actions(&indices_to_call, &ctx);
         self.stats.agents_called_this_tick = actions_with_state.len();
 
-        // Phase 4: Run batch auction for agent orders
+        // Phase 5: Run batch auction for agent orders
         let position_cache = self.build_position_cache();
         let orders_by_symbol = self.collect_orders_for_auction(actions_with_state);
+
+        // Phase 5b (V3.6): Hook - orders collected (before matching)
+        if !self.hooks.is_empty() {
+            let all_orders: Vec<Order> = orders_by_symbol.values().flatten().cloned().collect();
+            let hook_ctx = self.build_hook_context();
+            self.hooks.on_orders_collected(&all_orders, &hook_ctx);
+        }
+
         let reference_prices = self.build_reference_prices(orders_by_symbol.keys());
         let auction_results = run_parallel_auctions(
             orders_by_symbol,
@@ -1227,21 +1316,33 @@ impl Simulation {
         let (mut tick_trades, fill_notifications) =
             self.process_auction_results(auction_results, &position_cache);
 
-        // Phase 5: Process Tier 3 background pool orders
+        // Phase 7: Process Tier 3 background pool orders
         self.process_background_pool(&mut tick_trades);
 
-        // Phase 6: Update market data
+        // Phase 8 (V3.6): Hook - trades produced
+        if !self.hooks.is_empty() {
+            let hook_ctx = self.build_hook_context();
+            self.hooks.on_trades(&tick_trades, &hook_ctx);
+        }
+
+        // Phase 9: Update market data
         self.update_recent_trades(&tick_trades);
         self.update_candles(&tick_trades);
 
-        // Phase 7: Notify agents and update wake conditions
+        // Phase 10: Notify agents and update wake conditions
         self.process_fill_notifications(fill_notifications);
         self.restore_t2_wake_conditions(&triggered_t2);
 
-        // Phase 8: Update risk tracking
+        // Phase 11: Update risk tracking
         self.update_risk_tracking();
 
-        // Phase 9: Finalize tick
+        // Phase 12 (V3.6): Hook - tick end
+        if !self.hooks.is_empty() {
+            let hook_ctx = self.build_hook_context();
+            self.hooks.on_tick_end(&self.stats, &hook_ctx);
+        }
+
+        // Phase 13: Finalize tick
         self.finalize_tick();
 
         tick_trades
@@ -1251,10 +1352,15 @@ impl Simulation {
     ///
     /// Returns total trades across all ticks.
     pub fn run(&mut self, ticks: u64) -> Vec<Trade> {
-        (0..ticks).fold(Vec::new(), |mut all_trades, _| {
+        let result = (0..ticks).fold(Vec::new(), |mut all_trades, _| {
             all_trades.extend(self.step());
             all_trades
-        })
+        });
+
+        // V3.6: Notify hooks that simulation ended
+        self.hooks.on_simulation_end(&self.stats);
+
+        result
     }
 
     // =========================================================================

@@ -1462,6 +1462,7 @@ dependencies = [
  "crossbeam-channel",
  "crossterm",
  "ratatui",
+ "serde",
  "types",
 ]
 

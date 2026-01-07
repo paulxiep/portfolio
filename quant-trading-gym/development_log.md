@@ -1,5 +1,28 @@
 # Development Log
 
+## 2026-01-07: V3.6 Hooks System
+
+### Summary
+Added extensible hook infrastructure for simulation events. Hooks receive **owned data** (snapshots, cloned orders/trades) to avoid borrow-checker issues with async/network use. TUI BookDepth widget removed (meaningless in batch auction mode).
+
+### Files
+
+| File | Changes |
+|------|---------|
+| `crates/simulation/src/hooks.rs` | `SimulationHook` trait, `HookContext`, `HookRunner` |
+| `crates/simulation/src/metrics.rs` | `MetricsHook` implementation with atomic counters |
+| `crates/simulation/src/runner.rs` | Hook integration in `step()` phases |
+| `crates/tui/src/widgets/update.rs` | Added `Serialize` derives for network hooks |
+| `crates/tui/src/app.rs` | Removed BookDepth, expanded risk panel |
+
+### Design Decisions
+
+1. **Owned data over references**: Hooks receive `Vec<Order>`, `Vec<Trade>`, `MarketSnapshot` — enables serialization, async, and avoids lifetime complexity
+2. **`Arc<dyn SimulationHook>`**: Shared ownership for registering hooks across contexts
+3. **Built-in `MetricsHook`**: Aggregates tick/trade/volume stats with atomics for thread-safety
+
+---
+
 ## 2026-01-07: V3.5 Parallel Execution & Batch Auction
 
 ### Summary

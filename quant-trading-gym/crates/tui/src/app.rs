@@ -35,7 +35,7 @@ use ratatui::{
 };
 
 use crate::SimCommand;
-use crate::widgets::{AgentTable, BookDepth, PriceChart, RiskPanel, SimUpdate, StatsPanel};
+use crate::widgets::{AgentTable, PriceChart, RiskPanel, SimUpdate, StatsPanel};
 
 /// TUI application state.
 pub struct TuiApp {
@@ -373,13 +373,12 @@ impl TuiApp {
             .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
             .split(main_chunks[2]);
 
-        // Left panel: stats + order book + risk panel
+        // Left panel: stats + risk panel (book removed - batch auction clears each tick)
         let left_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(9),  // Stats
-                Constraint::Length(14), // Order book (reduced)
-                Constraint::Min(10),    // Risk panel (expanded)
+                Constraint::Length(9), // Stats
+                Constraint::Min(10),   // Risk panel (expanded)
             ])
             .split(content_chunks[0]);
 
@@ -390,13 +389,12 @@ impl TuiApp {
             .split(content_chunks[1]);
 
         // Store areas for mouse detection
-        self.risk_area = Some(left_chunks[2]);
+        self.risk_area = Some(left_chunks[1]);
         self.agent_area = Some(right_chunks[1]);
 
         // Draw widgets
         self.draw_stats(frame, left_chunks[0]);
-        self.draw_book_depth(frame, left_chunks[1]);
-        self.draw_risk_panel(frame, left_chunks[2]);
+        self.draw_risk_panel(frame, left_chunks[1]);
         self.draw_price_chart(frame, right_chunks[0]);
         self.draw_agent_table(frame, right_chunks[1]);
 
@@ -557,14 +555,6 @@ impl TuiApp {
             .spread(spread);
 
         frame.render_widget(stats, area);
-    }
-
-    /// Draw the order book depth.
-    fn draw_book_depth(&self, frame: &mut Frame, area: Rect) {
-        let bids = self.state.current_bids();
-        let asks = self.state.current_asks();
-        let book = BookDepth::new(bids, asks).max_levels(10);
-        frame.render_widget(book, area);
     }
 
     /// Draw the price chart.

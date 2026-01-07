@@ -590,7 +590,10 @@ fn spawn_quant_agents(
         (Tier1AgentType::MomentumTrader, config.num_momentum_traders),
         (Tier1AgentType::TrendFollower, config.num_trend_followers),
         (Tier1AgentType::MacdTrader, config.num_macd_traders),
-        (Tier1AgentType::BollingerTrader, config.num_bollinger_traders),
+        (
+            Tier1AgentType::BollingerTrader,
+            config.num_bollinger_traders,
+        ),
         (Tier1AgentType::VwapExecutor, config.num_vwap_executors),
     ];
 
@@ -654,12 +657,7 @@ fn spawn_random_tier1_agents(
 ) -> (Vec<Box<dyn Agent>>, u64) {
     let count = config.random_tier1_count();
     let agents: Vec<_> = (0..count)
-        .map(|_| {
-            (
-                Tier1AgentType::random(rng),
-                symbols.choose(rng).unwrap(),
-            )
-        })
+        .map(|_| (Tier1AgentType::random(rng), symbols.choose(rng).unwrap()))
         .zip(start_id..)
         .map(|((agent_type, spec), id)| {
             create_agent(agent_type, id, config, &spec.symbol, spec.initial_price)

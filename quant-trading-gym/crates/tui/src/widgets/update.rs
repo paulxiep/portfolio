@@ -15,9 +15,10 @@ use std::collections::HashMap;
 use types::{BookLevel, Cash, Price, Symbol, Tick, Trade};
 
 use crate::widgets::RiskInfo;
+use serde::{Deserialize, Serialize};
 
 /// Agent state summary for TUI display.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentInfo {
     /// Agent display name.
     pub name: String,
@@ -55,7 +56,12 @@ impl AgentInfo {
 ///
 /// Market data is now keyed by symbol. Use `selected_symbol` index
 /// to determine which symbol to display, or show overlay for all.
-#[derive(Debug, Clone, Default)]
+///
+/// # Serialization (V3.6)
+///
+/// Implements Serialize/Deserialize for network transmission
+/// (WebSocket hooks, remote TUI clients).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SimUpdate {
     /// Current simulation tick.
     pub tick: Tick,
