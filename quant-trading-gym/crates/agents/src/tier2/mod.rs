@@ -17,6 +17,10 @@
 //! - [`WakeConditionIndex`] - O(log n) lookup for price/time triggers
 //! - [`ReactivePortfolio`] - Portfolio scope (SingleSymbol for V3.2)
 //!
+//! # V3.3 Multi-Symbol Strategies
+//!
+//! - [`SectorRotator`] - Sentiment-driven multi-symbol portfolio rotation
+//!
 //! # Memory Budget
 //!
 //! Target: ~200 bytes per agent (vs ~3KB for Tier 1)
@@ -53,11 +57,13 @@
 mod agent;
 mod context;
 mod portfolio;
+pub mod sector_rotator;
 mod strategies;
 mod wake_index;
 
 pub use agent::ReactiveAgent;
 pub use context::LightweightContext;
 pub use portfolio::ReactivePortfolio;
+pub use sector_rotator::{SectorRotator, SectorRotatorConfig};
 pub use strategies::ReactiveStrategyType;
 pub use wake_index::WakeConditionIndex;

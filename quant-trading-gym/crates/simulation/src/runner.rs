@@ -404,8 +404,20 @@ impl Simulation {
     }
 
     /// Get agent summaries for display (V3.1: per-symbol positions).
-    /// Returns a vec of (name, positions_map, cash, realized_pnl) tuples.
+    /// Returns a vec of (name, positions_map, cash, total_pnl) tuples.
     pub fn agent_summaries(&self) -> Vec<(&str, HashMap<Symbol, i64>, types::Cash, types::Cash)> {
+        // Get current prices for all symbols
+        let prices: HashMap<Symbol, types::Price> = self
+            .market
+            .symbols()
+            .filter_map(|sym| {
+                self.market
+                    .get_book(sym)
+                    .and_then(|b| b.last_price())
+                    .map(|p| (sym.clone(), p))
+            })
+            .collect();
+
         self.agents
             .iter()
             .map(|a| {
@@ -414,7 +426,8 @@ impl Simulation {
                     .iter()
                     .map(|(sym, entry)| (sym.clone(), entry.quantity))
                     .collect();
-                (a.name(), positions, a.cash(), a.realized_pnl())
+                let total_pnl = a.state().total_pnl(&prices);
+                (a.name(), positions, a.cash(), total_pnl)
             })
             .collect()
     }

@@ -25,15 +25,15 @@ use std::time::Duration;
 use agents::{
     Agent, BollingerReversion, BollingerReversionConfig, MacdCrossover, MacdCrossoverConfig,
     MarketMaker, MarketMakerConfig, MomentumConfig, MomentumTrader, NoiseTrader, NoiseTraderConfig,
-    ReactiveAgent, ReactiveStrategyType, TrendFollower, TrendFollowerConfig, VwapExecutor,
-    VwapExecutorConfig,
+    PairsTrading, PairsTradingConfig, ReactiveAgent, ReactiveStrategyType, SectorRotator,
+    SectorRotatorConfig, TrendFollower, TrendFollowerConfig, VwapExecutor, VwapExecutorConfig,
 };
 use crossbeam_channel::{Receiver, Sender, bounded};
 use rand::Rng;
 use rand::prelude::IndexedRandom;
 use simulation::{Simulation, SimulationConfig};
 use tui::{AgentInfo, RiskInfo, SimCommand, SimUpdate, TuiApp};
-use types::{AgentId, Cash, Price, Quantity, ShortSellingConfig, Symbol, SymbolConfig};
+use types::{AgentId, Cash, Price, Quantity, Sector, ShortSellingConfig, Symbol, SymbolConfig};
 
 pub use config::{SimConfig, SymbolSpec, Tier1AgentType};
 
@@ -69,7 +69,7 @@ fn build_update(
     let agents: Vec<AgentInfo> = agent_summaries
         .iter()
         .enumerate()
-        .map(|(i, (name, positions, cash, realized_pnl))| {
+        .map(|(i, (name, positions, cash, total_pnl))| {
             let is_mm = name.contains("Market");
             // Calculate equity from all positions
             let position_value: f64 = positions
@@ -88,7 +88,7 @@ fn build_update(
             AgentInfo {
                 name: format!("{:0width$}-{}", i + 1, name, width = width),
                 positions: positions.clone(),
-                realized_pnl: *realized_pnl,
+                total_pnl: *total_pnl,
                 cash: *cash,
                 is_market_maker: is_mm,
                 equity,
@@ -256,6 +256,14 @@ fn create_agent(
             };
             Box::new(VwapExecutor::new(id, vwap_config))
         }
+        Tier1AgentType::PairsTrading => {
+            // PairsTrading requires two symbols - should be handled separately
+            // This is a fallback that creates a self-referencing pair (effectively no-op)
+            let pairs_config = PairsTradingConfig::new(symbol, symbol)
+                .with_initial_cash(config.quant_initial_cash)
+                .with_max_position(config.quant_max_position);
+            Box::new(PairsTrading::new(id, pairs_config))
+        }
     }
 }
 
@@ -359,6 +367,59 @@ fn spawn_tier2_agents(
                 Quantity(config.t2_max_position),
                 config.t2_initial_cash,
             )) as Box<dyn Agent>
+        })
+        .collect();
+
+    *next_id += agents.len() as u64;
+    for agent in agents {
+        sim.add_agent(agent);
+    }
+}
+
+/// Spawn Sector Rotator agents (V3.3 - special Tier 2 category).
+///
+/// SectorRotator agents:
+/// - Watch all symbols across sectors
+/// - React to news events affecting their watched sectors
+/// - Rotate allocation to highest-sentiment sectors
+///
+/// These are displayed as "SectorRotator" in TUI (not "ReactiveAgent").
+fn spawn_sector_rotators(
+    sim: &mut Simulation,
+    next_id: &mut u64,
+    config: &SimConfig,
+    symbols: &[SymbolSpec],
+) {
+    let num_agents = config.num_sector_rotators;
+    if num_agents == 0 || symbols.is_empty() {
+        return;
+    }
+
+    // Group symbols by sector
+    use std::collections::HashMap;
+    let mut sector_symbols: HashMap<Sector, Vec<String>> = HashMap::new();
+    for spec in symbols {
+        sector_symbols
+            .entry(spec.sector)
+            .or_default()
+            .push(spec.symbol.clone());
+    }
+
+    // Create sector rotators - each watches all sectors
+    let start_id = *next_id;
+    let agents: Vec<_> = (0..num_agents)
+        .map(|i| {
+            let mut config = SectorRotatorConfig::new()
+                .with_initial_cash(config.quant_initial_cash)
+                .with_sentiment_scale(0.3) // ±30% allocation shift based on sentiment
+                .with_rebalance_threshold(0.05); // Rebalance on 5% drift
+
+            // Add all sector -> symbols mappings
+            for (sector, syms) in &sector_symbols {
+                config = config.with_sector(*sector, syms.clone());
+            }
+
+            Box::new(SectorRotator::new(AgentId(start_id + i as u64), config)) as Box<dyn Agent>
         })
         .collect();
 
@@ -523,6 +584,33 @@ fn run_simulation(tx: Sender<SimUpdate>, cmd_rx: Receiver<SimCommand>, config: S
     next_id += quant_specs.len() as u64;
 
     // ─────────────────────────────────────────────────────────────────────────
+    // V3.3: Pairs Trading Agents (multi-symbol Tier 1)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // PairsTrading requires at least 2 symbols
+    let pairs_agents: Vec<_> = if num_symbols >= 2 {
+        (0..config.num_pairs_traders)
+            .zip(next_id..next_id + config.num_pairs_traders as u64)
+            .map(|(i, id)| {
+                // Pick two different symbols for each pair
+                let idx_a = i % num_symbols;
+                let idx_b = (i + 1) % num_symbols;
+                let spec_a = &all_symbols[idx_a];
+                let spec_b = &all_symbols[idx_b];
+
+                let pairs_config = PairsTradingConfig::new(&spec_a.symbol, &spec_b.symbol)
+                    .with_initial_cash(config.quant_initial_cash)
+                    .with_max_position(config.quant_max_position);
+
+                Box::new(PairsTrading::new(AgentId(id), pairs_config)) as Box<dyn Agent>
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    next_id += pairs_agents.len() as u64;
+
+    // ─────────────────────────────────────────────────────────────────────────
     // Phase 2: Fill to Tier 1 minimum with random agents (random symbol)
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -552,6 +640,7 @@ fn run_simulation(tx: Sender<SimUpdate>, cmd_rx: Receiver<SimCommand>, config: S
         .chain(distributed_nts)
         .chain(remainder_nts)
         .chain(quant_agents)
+        .chain(pairs_agents)
         .chain(random_agents)
         .collect();
 
@@ -564,6 +653,12 @@ fn run_simulation(tx: Sender<SimUpdate>, cmd_rx: Receiver<SimCommand>, config: S
     // ─────────────────────────────────────────────────────────────────────────
 
     spawn_tier2_agents(&mut sim, &mut next_id, &config, &all_symbols, &mut rng);
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Phase 4: Spawn Sector Rotator Agents (V3.3 - special Tier 2)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    spawn_sector_rotators(&mut sim, &mut next_id, &config, &all_symbols);
 
     // Price history for chart (V2.3: per-symbol)
     let symbols: Vec<Symbol> = config
@@ -584,8 +679,9 @@ fn run_simulation(tx: Sender<SimUpdate>, cmd_rx: Receiver<SimCommand>, config: S
         .collect();
 
     // Tier counts for TUI display
+    // Note: SectorRotators are special Tier 2 agents (reactive, wake on news events)
     let tier1_count = config.total_tier1_agents();
-    let tier2_count = config.num_tier2_agents;
+    let tier2_count = config.num_tier2_agents + config.num_sector_rotators;
 
     // Send initial state before starting (so TUI has something to display)
     let _ = tx.send(build_update(

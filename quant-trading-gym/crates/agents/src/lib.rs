@@ -78,10 +78,14 @@ pub use state::{AgentState, PositionEntry};
 pub use tier1::{
     BollingerReversion, BollingerReversionConfig, MacdCrossover, MacdCrossoverConfig, MarketMaker,
     MarketMakerConfig, MomentumConfig, MomentumTrader, NoiseTrader, NoiseTraderConfig,
-    TrendFollower, TrendFollowerConfig, VwapExecutor, VwapExecutorConfig,
+    PairsTrading, PairsTradingConfig, TrendFollower, TrendFollowerConfig, VwapExecutor,
+    VwapExecutorConfig,
 };
 // Re-export Tier 2 types for V3.2
-pub use tier2::{ReactiveAgent, ReactivePortfolio, ReactiveStrategyType, WakeConditionIndex};
+pub use tier2::{
+    ReactiveAgent, ReactivePortfolio, ReactiveStrategyType, SectorRotator, SectorRotatorConfig,
+    WakeConditionIndex,
+};
 pub use tiers::{
     ConditionUpdate, CrossDirection, OrderedPrice, PriceReference, TickFrequency, WakeCondition,
 };

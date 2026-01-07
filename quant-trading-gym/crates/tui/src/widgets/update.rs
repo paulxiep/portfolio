@@ -23,8 +23,8 @@ pub struct AgentInfo {
     pub name: String,
     /// Positions per symbol (positive = long, negative = short).
     pub positions: HashMap<Symbol, i64>,
-    /// Total realized P&L.
-    pub realized_pnl: Cash,
+    /// Total P&L (realized + unrealized).
+    pub total_pnl: Cash,
     /// Current cash balance.
     pub cash: Cash,
     /// Whether this is a market maker (for sorting to bottom).

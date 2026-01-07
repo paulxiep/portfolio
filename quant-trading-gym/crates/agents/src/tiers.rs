@@ -313,7 +313,7 @@ mod tests {
     #[test]
     fn test_tick_frequency_every_tick() {
         let freq = TickFrequency::EveryTick;
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         for i in 0u64..100 {
             assert!(freq.should_run(i, &mut rng));
         }
@@ -322,7 +322,7 @@ mod tests {
     #[test]
     fn test_tick_frequency_every_n() {
         let freq = TickFrequency::EveryN(10);
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         assert!(freq.should_run(0, &mut rng));
         assert!(!freq.should_run(1, &mut rng));
         assert!(freq.should_run(10, &mut rng));

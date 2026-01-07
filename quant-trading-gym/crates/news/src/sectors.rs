@@ -95,10 +95,8 @@ mod tests {
         let mut model = SectorModel::new();
         model.add("AAPL", Sector::Tech);
         model.add("MSFT", Sector::Tech);
-        model.add("XOM", Sector::Energy);
 
         assert_eq!(model.sector(&"AAPL".to_string()), Some(Sector::Tech));
-        assert_eq!(model.sector(&"XOM".to_string()), Some(Sector::Energy));
         assert_eq!(model.sector(&"GOOG".to_string()), None);
     }
 
@@ -108,15 +106,11 @@ mod tests {
         model.add("AAPL", Sector::Tech);
         model.add("MSFT", Sector::Tech);
         model.add("GOOG", Sector::Tech);
-        model.add("XOM", Sector::Energy);
 
         let tech_symbols = model.symbols_in_sector(Sector::Tech);
         assert_eq!(tech_symbols.len(), 3);
         assert!(tech_symbols.contains(&"AAPL".to_string()));
         assert!(tech_symbols.contains(&"MSFT".to_string()));
-
-        let energy_symbols = model.symbols_in_sector(Sector::Energy);
-        assert_eq!(energy_symbols.len(), 1);
     }
 
     #[test]
@@ -125,7 +119,7 @@ mod tests {
         model.add("AAPL", Sector::Tech);
 
         assert!(model.is_in_sector(&"AAPL".to_string(), Sector::Tech));
-        assert!(!model.is_in_sector(&"AAPL".to_string(), Sector::Energy));
-        assert!(!model.is_in_sector(&"XOM".to_string(), Sector::Energy));
+        assert!(!model.is_in_sector(&"AAPL".to_string(), Sector::Utilities));
+        assert!(!model.is_in_sector(&"XOM".to_string(), Sector::Utilities));
     }
 }

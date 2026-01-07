@@ -1,5 +1,102 @@
 # Development Log
 
+## 2026-01-07: V3.3 Multi-Symbol Strategies
+
+### Summary
+Implemented two flagship multi-symbol strategies: PairsTrading (Tier 1) and SectorRotator (Tier 2). Added quant extensions for cointegration tracking and sector sentiment aggregation. Updated TUI to show Total P&L (realized + unrealized).
+
+### Quant Extensions (`crates/quant/src/stats.rs`)
+
+**CointegrationTracker:**
+- Rolling OLS hedge ratio computation
+- Spread z-score calculation for mean-reversion signals
+- Configurable lookback window
+
+**SectorSentimentAggregator:**
+- `NewsEventLike` trait for decoupling from `news` crate
+- Decay-weighted sentiment aggregation per sector
+- Event expiration filtering by magnitude threshold
+
+### PairsTrading Strategy (Tier 1)
+
+```rust
+pub struct PairsTradingConfig {
+    pub symbol_a: Symbol,
+    pub symbol_b: Symbol,
+    pub entry_z_threshold: f64,   // Default: 2.0
+    pub exit_z_threshold: f64,    // Default: 0.5
+    pub max_position_per_leg: i64,
+}
+```
+
+- Runs every tick (continuous spread monitoring)
+- Uses `CointegrationTracker` for z-score signals
+- Returns `AgentAction::multiple()` for simultaneous leg execution
+- Declarative exit logic via `filter_map` patterns
+
+### SectorRotator Strategy (Tier 2)
+
+```rust
+pub struct SectorRotatorConfig {
+    pub symbols_per_sector: HashMap<Sector, Vec<Symbol>>,
+    pub sentiment_scale: f64,      // ±30% allocation shift
+    pub rebalance_threshold: f64,  // 5% drift threshold
+}
+```
+
+- Wakes on `NewsEvent` for watched symbols
+- Implements `initial_wake_conditions()` trait method (critical fix)
+- Sentiment-driven allocation with clamping and normalization
+- Multi-symbol rebalance orders via `flat_map` patterns
+
+### TUI Updates
+
+Changed P&L display from "Realized P&L" to "Total P&L":
+- `AgentState::total_pnl(&prices)` computes realized + unrealized
+- Unrealized = Σ (current_price - avg_cost) × quantity
+- Agents sorted by total P&L descending
+
+### Config & Simulation Integration
+
+```rust
+// New config fields
+num_pairs_traders: 50,     // Tier 1 (included in specified_tier1_agents)
+num_sector_rotators: 300,  // Special Tier 2 (added to tier2_count)
+```
+
+- PairsTrading cycles through symbol pairs
+- SectorRotator watches all sectors with all symbols
+- TUI widget counts updated: `tier2_count = num_tier2_agents + num_sector_rotators`
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `crates/quant/src/stats.rs` | `CointegrationTracker`, `SectorSentimentAggregator`, `NewsEventLike` |
+| `crates/agents/src/tier1/strategies/pairs_trading.rs` | New: Tier 1 multi-symbol pairs strategy |
+| `crates/agents/src/tier2/sector_rotator.rs` | New: Tier 2 sentiment-driven rotation |
+| `crates/agents/src/state.rs` | Added `total_pnl()` method |
+| `crates/simulation/src/runner.rs` | `agent_summaries()` returns total P&L |
+| `crates/tui/src/widgets/update.rs` | `AgentInfo.total_pnl` field |
+| `crates/tui/src/widgets/agent_table.rs` | "Total P&L" column, sorting by total_pnl |
+| `src/config.rs` | `num_pairs_traders`, `num_sector_rotators`, `specified_tier1_agents()` |
+| `src/main.rs` | `spawn_sector_rotators()`, pairs trading spawn, tier count fix |
+
+### Key Fixes
+
+1. **SectorRotator wake conditions**: Must implement `initial_wake_conditions(tick)` trait method, not just a helper method
+2. **Tier 2 count**: `tier2_count = num_tier2_agents + num_sector_rotators` (was missing sector rotators)
+3. **Declarative refactoring**: Converted for loops to `filter_map`, `flat_map`, `fold` patterns
+
+### Exit Criteria
+```
+cargo fmt              # ✅ No formatting issues
+cargo clippy           # ✅ No warnings  
+cargo test --workspace # ✅ All tests pass
+```
+
+---
+
 ## 2026-01-06: V3.2 Tier 2 Reactive Agents
 
 ### Summary

@@ -18,12 +18,16 @@
 //!
 //! ## Execution Algorithms
 //! - [`VwapExecutor`] - VWAP-targeting order execution algorithm
+//!
+//! ## Multi-Symbol Strategies (V3.3)
+//! - [`PairsTrading`] - Cointegration-based spread trading between two symbols
 
 mod bollinger_reversion;
 mod macd_crossover;
 mod market_maker;
 mod momentum;
 mod noise_trader;
+mod pairs_trading;
 mod trend_follower;
 mod vwap_executor;
 
@@ -32,5 +36,6 @@ pub use macd_crossover::{MacdCrossover, MacdCrossoverConfig};
 pub use market_maker::{MarketMaker, MarketMakerConfig};
 pub use momentum::{MomentumConfig, MomentumTrader};
 pub use noise_trader::{NoiseTrader, NoiseTraderConfig};
+pub use pairs_trading::{PairsTrading, PairsTradingConfig};
 pub use trend_follower::{TrendFollower, TrendFollowerConfig};
 pub use vwap_executor::{VwapExecutor, VwapExecutorConfig};

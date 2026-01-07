@@ -209,12 +209,10 @@ impl std::error::Error for RiskViolation {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Sector {
     Tech,
-    Energy,
     Finance,
     Healthcare,
     Consumer,
     Industrials,
-    Materials,
     Utilities,
     RealEstate,
     Communications,
@@ -225,12 +223,10 @@ impl Sector {
     pub fn all() -> &'static [Sector] {
         &[
             Sector::Tech,
-            Sector::Energy,
             Sector::Finance,
             Sector::Healthcare,
             Sector::Consumer,
             Sector::Industrials,
-            Sector::Materials,
             Sector::Utilities,
             Sector::RealEstate,
             Sector::Communications,
@@ -242,12 +238,10 @@ impl std::fmt::Display for Sector {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Sector::Tech => write!(f, "Technology"),
-            Sector::Energy => write!(f, "Energy"),
             Sector::Finance => write!(f, "Finance"),
             Sector::Healthcare => write!(f, "Healthcare"),
             Sector::Consumer => write!(f, "Consumer"),
             Sector::Industrials => write!(f, "Industrials"),
-            Sector::Materials => write!(f, "Materials"),
             Sector::Utilities => write!(f, "Utilities"),
             Sector::RealEstate => write!(f, "Real Estate"),
             Sector::Communications => write!(f, "Communications"),

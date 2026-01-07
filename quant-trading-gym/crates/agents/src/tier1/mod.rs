@@ -19,5 +19,6 @@ pub mod strategies;
 pub use strategies::{
     BollingerReversion, BollingerReversionConfig, MacdCrossover, MacdCrossoverConfig, MarketMaker,
     MarketMakerConfig, MomentumConfig, MomentumTrader, NoiseTrader, NoiseTraderConfig,
-    TrendFollower, TrendFollowerConfig, VwapExecutor, VwapExecutorConfig,
+    PairsTrading, PairsTradingConfig, TrendFollower, TrendFollowerConfig, VwapExecutor,
+    VwapExecutorConfig,
 };

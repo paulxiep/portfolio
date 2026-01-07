@@ -154,6 +154,24 @@ impl AgentState {
         self.realized_pnl
     }
 
+    /// Compute total P&L (realized + unrealized) given current prices.
+    ///
+    /// Unrealized P&L = Σ (current_price - avg_cost) * quantity for each position.
+    pub fn total_pnl(&self, prices: &HashMap<Symbol, Price>) -> Cash {
+        let unrealized: f64 = self
+            .positions
+            .iter()
+            .map(|(symbol, entry)| {
+                let current_price = prices
+                    .get(symbol)
+                    .map(|p| p.to_float())
+                    .unwrap_or(entry.avg_cost); // Use cost basis if no price
+                (current_price - entry.avg_cost) * entry.quantity as f64
+            })
+            .sum();
+        Cash::from_float(self.realized_pnl.to_float() + unrealized)
+    }
+
     /// Get average cost basis for a specific symbol.
     pub fn avg_cost_for(&self, symbol: &str) -> f64 {
         self.positions

@@ -90,6 +90,10 @@ pub struct SimConfig {
     pub num_bollinger_traders: usize,
     /// Minimum number of VWAP executors.
     pub num_vwap_executors: usize,
+    /// Minimum number of pairs trading agents (V3.3 multi-symbol).
+    pub num_pairs_traders: usize,
+    /// Minimum number of sector rotator agents (V3.3 multi-symbol, special Tier 2).
+    pub num_sector_rotators: usize,
 
     // ─────────────────────────────────────────────────────────────────────────
     // Tier Minimums
@@ -187,7 +191,7 @@ impl Default for SimConfig {
             // Simulation Control - default multi-symbol with different sectors (V2.4)
             symbols: vec![
                 SymbolSpec::with_sector("Duck Delish", 100.0, Sector::Consumer),
-                SymbolSpec::with_sector("Zephyr Zap", 100.0, Sector::Energy),
+                SymbolSpec::with_sector("Zephyr Zap", 100.0, Sector::Utilities),
                 SymbolSpec::with_sector("Vraiment Villa", 100.0, Sector::RealEstate),
                 SymbolSpec::with_sector("Quant Quotation", 100.0, Sector::Finance),
             ],
@@ -197,17 +201,19 @@ impl Default for SimConfig {
 
             // Tier 1 Agent Counts (minimums per type)
             num_market_makers: 350,
-            num_noise_traders: 400,
+            num_noise_traders: 250,
             num_momentum_traders: 50,
             num_trend_followers: 50,
             num_macd_traders: 50,
             num_bollinger_traders: 50,
             num_vwap_executors: 50,
+            num_pairs_traders: 50,    // V3.3: multi-symbol pairs traders
+            num_sector_rotators: 100, // V3.3: sector rotation agents (special T2)
             // Tier Minimums
             min_tier1_agents: 1000, // Random agents fill the gap
 
             // Tier 2 Reactive Agents (V3.2)
-            num_tier2_agents: 4000,
+            num_tier2_agents: 3900,
 
             // Tier 2 Reactive Agent Parameters (V3.2)
             // Equal starting cash to noise traders for fair comparison
@@ -263,10 +269,12 @@ pub enum Tier1AgentType {
     MacdTrader,
     BollingerTrader,
     VwapExecutor,
+    PairsTrading, // V3.3: multi-symbol pairs trading
 }
 
 impl Tier1AgentType {
     /// All spawnable Tier 1 agent types (excludes MarketMaker as it's infrastructure).
+    /// Note: PairsTrading excluded from random spawn (requires 2-symbol pairs config).
     pub const SPAWNABLE: &'static [Tier1AgentType] = &[
         Tier1AgentType::NoiseTrader,
         Tier1AgentType::MomentumTrader,
@@ -380,6 +388,18 @@ impl SimConfig {
         self
     }
 
+    /// Set minimum number of pairs trading agents (V3.3).
+    pub fn pairs_traders(mut self, count: usize) -> Self {
+        self.num_pairs_traders = count;
+        self
+    }
+
+    /// Set minimum number of sector rotator agents (V3.3).
+    pub fn sector_rotators(mut self, count: usize) -> Self {
+        self.num_sector_rotators = count;
+        self
+    }
+
     /// Set minimum total Tier 1 agents.
     pub fn min_tier1(mut self, count: usize) -> Self {
         self.min_tier1_agents = count;
@@ -473,6 +493,7 @@ impl SimConfig {
             + self.num_macd_traders
             + self.num_bollinger_traders
             + self.num_vwap_executors
+            + self.num_pairs_traders
     }
 
     /// Number of random Tier 1 agents to spawn to meet minimum.
@@ -486,9 +507,9 @@ impl SimConfig {
         self.specified_tier1_agents() + self.random_tier1_count()
     }
 
-    /// Total number of agents (Tier 1 + Tier 2).
+    /// Total number of agents (Tier 1 + Tier 2 + SectorRotators).
     pub fn total_agents(&self) -> usize {
-        self.total_tier1_agents() + self.num_tier2_agents
+        self.total_tier1_agents() + self.num_tier2_agents + self.num_sector_rotators
     }
 
     /// Total starting cash in the system (estimate, doesn't include random agents).
@@ -585,7 +606,8 @@ mod tests {
             + config.num_trend_followers
             + config.num_macd_traders
             + config.num_bollinger_traders
-            + config.num_vwap_executors;
+            + config.num_vwap_executors
+            + config.num_pairs_traders;
         assert_eq!(config.specified_tier1_agents(), expected_specified);
 
         // Sanity checks - defaults should be reasonable
@@ -621,6 +643,7 @@ mod tests {
             .macd_traders(0)
             .bollinger_traders(0)
             .vwap_executors(0)
+            .pairs_traders(0)
             .min_tier1(10)
             .tier2_agents(0); // Explicitly set tier2 to 0 for this test
 

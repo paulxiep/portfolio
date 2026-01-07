@@ -302,20 +302,114 @@ V3 adds efficient event subscriptions for scale.
 - `ReactivePortfolio` enum: `SingleSymbol(i64, Price)` (~150 bytes) or `Full(HashMap)` (~1KB)
 - Enum dispatch for strategies: `ThresholdBuyer`, `ThresholdSeller`, `NewsReactor`, `MomentumFollower`
 
-### V3.3: Tier 3 Background Pool (~4 days)
+### V3.3: Multi-Symbol Strategies
+
+**Goal:** Two flagship multi-symbol strategies demonstrating the V3.1/V3.2 infrastructure.
+
+#### Quant Extensions
+
+Added statistical tools to `quant/stats.rs`:
+
+- **CointegrationTracker**: Rolling cointegration test for pairs trading
+  - `update(price_a, price_b) -> Option<CointegrationResult>` with spread, z_score, hedge_ratio
+  - OLS-based hedge ratio computation
+  - Rolling window for mean/std calculation
+
+- **SectorSentimentAggregator**: Sentiment aggregation from news events
+  - `aggregate_all(events, current_tick) -> HashMap<Sector, SectorSentiment>`
+  - Decay-weighted sentiment with magnitude scaling
+  - Event expiration filtering
+
+#### PairsTrading Strategy (Tier 1)
+
+**What it does:** Exploits mean-reversion between two cointegrated symbols.
+
+```rust
+pub struct PairsTradingConfig {
+    pub symbol_a: Symbol,
+    pub symbol_b: Symbol,
+    pub lookback_window: usize,      // Default: 100 ticks
+    pub entry_z_threshold: f64,      // Default: 2.0
+    pub exit_z_threshold: f64,       // Default: 0.5
+    pub max_position_per_leg: i64,   // Default: 100 shares
+}
+```
+
+**Decision logic:**
+1. Update `CointegrationTracker` with latest prices
+2. If no position and `|z_score| > entry_threshold` → enter spread
+3. If in position and `|z_score| < exit_threshold` → exit both legs
+
+**Returns:** `AgentAction::multiple(orders)` for simultaneous leg execution.
+
+#### SectorRotator Strategy (Tier 2)
+
+**What it does:** Shifts portfolio allocation toward sectors with positive sentiment.
+
+```rust
+pub struct SectorRotatorConfig {
+    pub symbols_per_sector: HashMap<Sector, Vec<Symbol>>,
+    pub sentiment_scale: f64,         // How much sentiment shifts allocation
+    pub min_allocation: f64,          // Floor (e.g., 0.05)
+    pub max_allocation: f64,          // Ceiling (e.g., 0.40)
+    pub rebalance_threshold: f64,     // Only trade if drift > threshold
+}
+```
+
+**Wake condition:** `WakeCondition::NewsEvent { symbols }` for all watched symbols.
+
+**Decision logic:**
+1. On wake, aggregate sentiment per sector
+2. Compute target allocations: `base + (sentiment * scale)`, clamped and normalized
+3. Generate rebalance orders if drift exceeds threshold
+
+#### Simulation Integration
+
+- Config fields: `num_pairs_traders` (50), `num_sector_rotators` (300)
+- PairsTrading: Tier 1 (runs every tick via `specified_tier1_agents()`)
+- SectorRotator: Special Tier 2 (counted in `tier2_count`, wakes on news)
+- TUI: Shows "PairsTrading" and "SectorRotator" names, Total P&L column
+
+#### Files Modified
+
+| File | Changes |
+|------|---------|
+| `crates/quant/src/stats.rs` | `CointegrationTracker`, `SectorSentimentAggregator`, `NewsEventLike` trait |
+| `crates/agents/src/tier1/strategies/pairs_trading.rs` | New: Tier 1 multi-symbol pairs strategy |
+| `crates/agents/src/tier2/sector_rotator.rs` | New: Tier 2 sentiment-driven rotation |
+| `crates/agents/src/state.rs` | Added `total_pnl()` method |
+| `crates/simulation/src/runner.rs` | `agent_summaries()` returns total P&L |
+| `crates/tui/src/widgets/update.rs` | `AgentInfo.total_pnl` field |
+| `crates/tui/src/widgets/agent_table.rs` | "Total P&L" column header |
+| `src/config.rs` | `num_pairs_traders`, `num_sector_rotators`, updated `total_agents()` |
+| `src/main.rs` | `spawn_sector_rotators()`, pairs trading spawn, tier counts |
+
+#### V3.3 Borrow-Checker Pitfalls
+
+| Pitfall | Scenario | Solution |
+|---------|----------|----------|
+| **Multi-symbol price reads** | Reading prices for 2+ symbols from `&Market` | Safe: `Market::mid_price()` returns owned `Price` |
+| **Sentiment aggregation during tick** | Aggregating from `ActiveNewsState` while tick runs | Safe: Read-only access via `&StrategyContext` |
+| **Position updates for multiple symbols** | PairsTrading adjusting both legs | Return both orders; simulation applies sequentially |
+| **Target allocation mutation** | SectorRotator updating `target_allocations` | `&mut self` — agent owns its targets |
+| **WakeCondition registration** | SectorRotator registering many conditions | Implement `initial_wake_conditions()` trait method |
+
+**Maps to Original:** Part of Phase 7 (Advanced Strategies)
+
+### V3.4: Tier 3 Background Pool (~4 days)
 - Statistical order generation (no individual agents)
 - `BackgroundAgentPool` struct
 - Configurable distributions (size, price, direction)
 - **Sentiment-driven:** Pool bias shifts with active `FundamentalEvent`s
 - Per-sector sentiment tracking
 
-### V3.4: Performance Tuning (~3 days)
+### V3.5: Performance Tuning (~3 days)
 - Benchmark 100k agents
 - Profile and optimize hot paths
 - Memory budget validation
 - Two-phase tick architecture (read phase parallel, write phase sequential)
 
-### V3.5: SQLite Storage (~4 days)
+### V3.6: SQLite Storage (~4 days)
 - Trade history persistence
 - Candle aggregation (1m, 5m, 1h)
 - Portfolio snapshots
@@ -323,23 +417,84 @@ V3 adds efficient event subscriptions for scale.
 - **Trade log** (append-only, for post-game analysis)
 - **API consideration:** Change `on_fill(Trade)` → `on_fill(Fill)` to expose per-order slippage metrics to agents (V2.2 infrastructure ready, deferred here to avoid early API churn)
 
-### V3.6: Hooks System (~2 days)
+### V3.7: Hooks System (~2 days)
 - `SimulationHook` trait
 - Metrics hook, persistence hook
 - TUI becomes a hook (optional observer)
 
+### V3.8: Simulation Containerization (~2 days)
+
+**Goal:** Containerized simulation for reproducible benchmarks, CI/CD, and V4 foundation.
+
+**Distroless deployment:**
+```dockerfile
+# dockerfile/Dockerfile.simulation
+FROM rust:1.75-slim AS builder
+WORKDIR /app
+COPY . .
+RUN cargo build --release --bin quant-trading-gym
+
+FROM gcr.io/distroless/cc-debian12:nonroot
+COPY --from=builder /app/target/release/quant-trading-gym /
+COPY --from=builder /app/config /config
+ENTRYPOINT ["/quant-trading-gym"]
+CMD ["--headless", "--config", "/config/default.toml"]
+```
+
+**Why distroless?**
+- No shell, no package manager → minimal attack surface
+- ~20MB image vs ~80MB slim, ~1GB full
+- Forces proper configuration (no SSH-in-and-fix)
+- `nonroot` user by default
+
+**Deliverables:**
+- Multi-stage Dockerfile with distroless runtime
+- `docker-compose.yaml` for local dev:
+  ```yaml
+  services:
+    simulation:
+      build: .
+      volumes:
+        - ./data:/data          # SQLite persistence
+        - ./config:/config      # Runtime config
+      environment:
+        - SIM_TICKS=100000
+        - SIM_AGENTS=1000
+  ```
+- `--headless` flag (disables TUI, requires V3.7)
+- Environment-based config override (`SIM_*` env vars)
+- Volume mounts for SQLite DB and config files
+- GitHub Actions workflow: build → test → push to GHCR
+- Health check endpoint (`/health` via minimal HTTP, or exit code)
+
+**File structure:**
+```
+dockerfile/
+  Dockerfile.simulation   # Distroless production image
+  Dockerfile.dev          # Full image with debug tools (optional)
+docker-compose.yaml       # Local development
+.github/
+  workflows/
+    docker.yaml           # CI/CD pipeline
+```
+
+**Declarative:** Config via TOML + env vars, not code changes.
+**Modular:** Base image reused by V4-Game service containers.
+**SoC:** Container = runtime concern, separate from simulation logic.
+
+**Maps to Original:** Part 16 (Containerization & Deployment)
+
 **Borrow-Checking Pitfalls to Address:**
 1. **Multi-symbol state updates (V3.1):** Use interior mutability or collect updates, apply sequentially
-2. **Parallel agent execution (V3.4):** Two-phase tick (immutable read → sequential write)
+2. **Parallel agent execution (V3.5):** Two-phase tick (immutable read → sequential write)
 3. **WakeConditionIndex updates (V3.2):** Collect `ConditionUpdate` during tick, apply after
-4. **Background pool accounting (V3.3):** Append-only fill recording
+4. **Background pool accounting (V3.4):** Append-only fill recording
+5. **Multi-symbol strategy reads (V3.3):** Return owned values from `Market` queries; no overlapping borrows
 
 **Maps to Original:** Phase 6 (Agent Scaling) + Phase 10 (Storage) + Phase 12 (Scale Testing)
 
 **Optional additions at V3:** 
 - `NewsReactiveTrader` (Tier 2 strategy that wakes on `FundamentalEvent`s, requires V3.2)
-- `PairsTrading` (multi-symbol Tier 1 agent exploiting cointegration, requires V3.1 + `quant/stats.rs`)
-- `SectorRotator` (shifts allocation based on sector sentiment, requires V3.1 + V3.2)
 
 **Strategy Refinements to Consider at V3:**
 - **VWAP Executor**: Currently configured as a buyer accumulating 1000 shares. This is an *execution algorithm*, not a *strategy*. In real markets, VWAP execution is used to fill large orders while minimizing impact. Options:
@@ -534,7 +689,7 @@ Game Service :8002  (/game/dashboard, /game/stream)
 
 #### Containerization (V4-Game)
 
-All services containerized for environment-agnostic deployment:
+Extends V3.8 base image for multi-service deployment:
 
 | Environment | Tooling | Use Case |
 |-------------|---------|----------|
@@ -543,12 +698,13 @@ All services containerized for environment-agnostic deployment:
 | Production | Kubernetes | Scalable cloud deployment |
 
 Key elements:
-- Multi-stage Dockerfiles (Rust builder → slim runtime)
+- **Reuses V3.8 distroless base** for simulation service
+- Per-service Dockerfiles (Data, Game, Storage, Chatbot)
 - Health checks on all services (`/health` endpoint)
 - Environment-based configuration (`.env` files)
 - CI/CD builds on push to main
 
-**See:** Part 16 (Containerization & Deployment) in full plan
+**See:** V3.8 for base simulation container, Part 16 (Containerization & Deployment) in full plan
 
 ---
 
@@ -620,14 +776,15 @@ pub struct ConditionUpdate {
 |---------|---------|----------|
 | V3.1 | Multi-symbol state mutation | Return owned `PositionEntry`, update sequentially after tick |
 | V3.2 | WakeConditionIndex updates during tick | Deferred `ConditionUpdate` buffer |
-| V3.3 | Background pool accounting | Append-only fill recording |
-| V3.4 | Parallel agent execution | Two-phase tick: read (parallel) → write (sequential) |
-| V3.6 | SimulationHook borrows | Sequential hook invocation |
-| V3.5 | Snapshot during active tick | Snapshots only at tick boundaries |
+| V3.3 | Multi-symbol strategy reads | Return owned values from `Market` queries; no overlapping borrows |
+| V3.4 | Background pool accounting | Append-only fill recording |
+| V3.5 | Parallel agent execution | Two-phase tick: read (parallel) → write (sequential) |
+| V3.6 | Snapshot during active tick | Snapshots only at tick boundaries |
+| V3.7 | SimulationHook borrows | Sequential hook invocation |
 | V4-RL | PyO3 GIL blocking | `py.allow_threads()` for Rust computation |
 | V4-Game | Async/sync boundary | Channel-based `SimulationBridge` |
 
-### Two-Phase Tick Architecture (V3.4)
+### Two-Phase Tick Architecture (V3.5)
 
 ```rust
 impl TieredOrchestrator {
@@ -721,7 +878,7 @@ agents/             agents/             agents/             agents/
                                                                 agent.rs
                                                                 wake_index.rs
                                                                 strategies.rs
-                                                              tier3/ (V3.3)
+                                                              tier3/ (V3.4)
                                                                 mod.rs
                                                                 pool.rs
 
@@ -730,7 +887,7 @@ simulation/         simulation/         simulation/         simulation/
   runner.rs           runner.rs           runner.rs           runner.rs
                                           config.rs           config.rs
                                                               orchestrator.rs (V3.2: TieredOrchestrator)
-                                                              hooks.rs (V3.6)
+                                                              hooks.rs (V3.7)
 
 tui/                tui/                tui/                tui/ (becomes hook)
   lib.rs              lib.rs              lib.rs              lib.rs
@@ -765,9 +922,12 @@ src/                src/                src/                src/
 - **V1→V2:** Added `news/` crate, `context.rs` moved to agents, multi-symbol `market.rs`, slippage, position limits
 - **V2→V3.1:** Refactor `AgentState` to multi-symbol `positions: HashMap<Symbol, PositionEntry>`
 - **V3.1→V3.2:** Add `tier2/`, `tiers.rs`, `orchestrator.rs`, `WakeConditionIndex`
-- **V3.2→V3.3:** Add `tier3/` with `BackgroundAgentPool`
-- **V3.3→V3.5:** Add `storage/` crate
-- **V3.5→V3.6:** Implement `SimulationHook` trait, TUI becomes hook
+- **V3.2→V3.3:** Add `tier1/strategies/pairs_trading.rs`, `tier2/strategies/sector_rotator.rs`, extend `quant/stats.rs`
+- **V3.3→V3.4:** Add `tier3/` with `BackgroundAgentPool`
+- **V3.4→V3.5:** Performance tuning, two-phase tick (no new files, optimization pass)
+- **V3.5→V3.6:** Add `storage/` crate
+- **V3.6→V3.7:** Implement `SimulationHook` trait, TUI becomes hook
+- **V3.7→V3.8:** Add `dockerfile/`, `docker-compose.yaml`, `--headless` flag, CI workflow
 
 ---
 
@@ -798,16 +958,16 @@ Explicitly deferred to keep V0-V2 lean:
 | **MACD Crossover** | V1 | ✅ | MACD/signal line crossover |
 | **Bollinger Reversion** | V1 | ✅ | Mean reversion at bands |
 | **VWAP Executor** | V1 | ✅ | Execution algo (accumulates shares); see V3 notes |
-| **Pairs Trading** | V3.1+ | 🔲 | Requires multi-symbol `AgentState` (V3.1) + cointegration |
-| **Factor Long-Short** | V3.1+ | 🔲 | Requires `quant/factors.rs` (value, momentum, quality) |
+| **Pairs Trading** | V3.3 | 🔲 | Tier 1 multi-symbol, cointegration-based spread trading |
+| **Sector Rotator** | V3.3 | 🔲 | Tier 2 multi-symbol, sentiment-driven allocation |
+| **Factor Long-Short** | V3.3+ | 🔲 | Requires `quant/factors.rs` (value, momentum, quality) |
 | **ThresholdBuyer/Seller** | V3.2 | 🔲 | Tier 2 reactive strategy |
 | **News Reactive** | V3.2 | 🔲 | Tier 2 wake on `FundamentalEvent` |
-| **Sector Rotator** | V3.2 | 🔲 | Tier 2 multi-symbol, sector sentiment |
 | **RL Agent** | V4 | 🔲 | Requires gym + ONNX |
 
 **Notes:**
 - Momentum/TrendFollower have low activity — realistic for tick-level mean-reverting markets
-- VWAP is an execution algorithm, not a strategy; consider restructuring in V3.4
+- VWAP is an execution algorithm, not a strategy; consider restructuring in V3.5
 
 ---
 
@@ -882,6 +1042,9 @@ cargo new crates/tui --lib
 **V3.x Migration Notes:**
 - **V3.1:** Refactor `state.rs` for multi-symbol positions; update trait in `traits.rs`
 - **V3.2:** Add `tiers.rs`, `tier2/` module with `agent.rs`, `wake_index.rs`, `strategies.rs`; add `orchestrator.rs` to simulation
-- **V3.3:** Add `tier3/` module with `pool.rs`
-- **V3.5:** Add `storage/` crate
-- **V3.6:** Add `hooks.rs` to simulation; refactor TUI to implement `SimulationHook`
+- **V3.3:** Add `tier1/strategies/pairs_trading.rs`, `tier2/strategies/sector_rotator.rs`, extend `quant/stats.rs`
+- **V3.4:** Add `tier3/` module with `pool.rs`
+- **V3.5:** Performance tuning pass (no new files)
+- **V3.6:** Add `storage/` crate
+- **V3.7:** Add `hooks.rs` to simulation; refactor TUI to implement `SimulationHook`
+- **V3.8:** Add `dockerfile/`, `docker-compose.yaml`, CI workflow
