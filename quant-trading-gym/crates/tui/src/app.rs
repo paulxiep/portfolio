@@ -549,6 +549,9 @@ impl TuiApp {
             .total_orders(self.state.total_orders)
             .tier1_count(self.state.tier1_count)
             .tier2_count(self.state.tier2_count)
+            .tier3_count(self.state.tier3_count)
+            .t3_orders(self.state.t3_orders)
+            .background_pnl(self.state.background_pnl)
             .agents_called(self.state.agents_called)
             .t2_triggered(self.state.t2_triggered)
             .spread(spread);

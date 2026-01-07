@@ -11,5 +11,6 @@ sim-core.workspace = true
 quant.workspace = true
 news.workspace = true
 rand.workspace = true
+rand_distr = "0.4"  # V3.4: Statistical distributions for background pool
 serde = { workspace = true, features = ["derive"] }
-smallvec = { version = "1.13", features = ["serde"] }
+smallvec = { version = "1.15", features = ["serde"] }

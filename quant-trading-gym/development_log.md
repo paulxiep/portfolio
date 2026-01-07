@@ -1,5 +1,137 @@
 # Development Log
 
+## 2026-01-07: V3.4 Background Agent Pool (Tier 3)
+
+### Summary
+Implemented Tier 3 Background Agent Pool for statistical order generation. A single pool instance trades all symbols, simulating 45,000+ background agents with ~2KB memory overhead. Orders go through the real matching engine and trade against T1/T2 agents and market makers.
+
+### Architecture
+
+**Single Pool, All Symbols:**
+- One `BackgroundAgentPool` instance trades ALL configured symbols
+- Randomly selects symbol per order based on activity
+- Per-symbol sentiment tracking (sector news affects correct symbols)
+- Aggregate P&L accounting via `BackgroundPoolAccounting`
+
+**Memory Budget:**
+- Config: ~200 bytes
+- Sentiments: ~100 bytes per symbol
+- Distributions: ~50 bytes
+- Accounting: ~500 bytes
+- RNG: ~200 bytes
+- **Total: ~2 KB** (vs 90K individual agents)
+
+### Module Structure (`crates/agents/src/tier3/`)
+
+| File | Purpose |
+|------|---------|
+| `config.rs` | `MarketRegime`, `RegimePreset`, `BackgroundPoolConfig` |
+| `distributions.rs` | `PriceDistribution`, `SizeDistribution` traits; `ExponentialPriceSpread`, `LogNormalSize` |
+| `accounting.rs` | `BackgroundPoolAccounting`, `SanityCheckResult`, per-symbol P&L tracking |
+| `pool.rs` | `BackgroundAgentPool`, `PoolContext`, `BACKGROUND_POOL_ID` sentinel |
+
+### Order Generation
+
+```rust
+// Each tick, pool generates orders based on:
+// 1. pool_size × base_activity (regime-dependent)
+// 2. ±20% random variance
+// 3. Sentiment-biased side selection
+// 4. Log-normal size distribution
+// 5. Exponential price spread from mid
+```
+
+**Market Regimes:**
+| Regime | base_activity | Description |
+|--------|---------------|-------------|
+| Calm | 0.1 | 10% of pool trades/tick |
+| Normal | 0.3 | 30% of pool trades/tick |
+| Volatile | 0.6 | 60% of pool trades/tick |
+| Crisis | 0.9 | 90% of pool trades/tick |
+
+### Config Integration (`src/config.rs`)
+
+```rust
+// New Tier 3 fields
+enable_background_pool: true,
+background_pool_size: 45_000,
+background_regime: MarketRegime::Normal,
+t3_mean_order_size: 15.0,
+t3_max_order_size: 100,
+t3_order_size_stddev: 10.0,
+t3_base_activity: Option<f64>,  // Override regime default
+t3_price_spread_lambda: 20.0,
+t3_max_price_deviation: 0.02,
+```
+
+### Simulation Integration (`runner.rs`)
+
+**Phase 4 in `step()`:**
+1. Build `PoolContext` with mid prices and active events
+2. Call `pool.generate(&ctx)` → `Vec<Order>`
+3. Process orders through existing `process_order()` (real matching)
+4. Update `BackgroundPoolAccounting` with fills
+5. Notify counterparty agents via `on_fill()`
+
+```rust
+// Declarative trade processing
+let t3_trades: Vec<_> = t3_orders
+    .into_iter()
+    .flat_map(|order| {
+        let (trades, _) = self.process_order(order);
+        trades
+    })
+    .collect();
+
+t3_trades.into_iter().for_each(|trade| {
+    // Update accounting and notify agents
+});
+```
+
+### TUI Updates
+
+**StatsPanel shows:**
+- `Agents: 12T1 + 3900T2 + 45000T3`
+- `T3 Orders: X` (orders generated this tick)
+- `Pool P&L: $Y` (realized P&L, green/red colored)
+
+**SimUpdate new fields:**
+- `tier3_count: usize`
+- `t3_orders: usize`
+- `background_pnl: f64`
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `crates/agents/src/tier3/*.rs` | New module: config, distributions, accounting, pool |
+| `crates/agents/src/lib.rs` | Export tier3 module |
+| `crates/agents/Cargo.toml` | Added `rand_distr = "0.4"` |
+| `crates/simulation/src/runner.rs` | `background_pool` field, Phase 4 integration, `t3_orders_this_tick` stat |
+| `crates/tui/src/widgets/update.rs` | `tier3_count`, `t3_orders`, `background_pnl` fields |
+| `crates/tui/src/widgets/stats_panel.rs` | T3 count display, T3 orders/P&L line |
+| `crates/tui/src/app.rs` | Wire T3 stats to StatsPanel |
+| `src/config.rs` | T3 config fields with defaults |
+| `src/main.rs` | Phase 5: BackgroundAgentPool creation, SimUpdate wiring |
+| `Cargo.toml` (workspace) | Downgraded rand to 0.8 (rand_distr compatibility) |
+
+### Key Design Decisions
+
+1. **Single pool trades all symbols** (not per-symbol pools) - simpler accounting
+2. **Real order matching** - T3 orders go through same engine as T1/T2
+3. **BACKGROUND_POOL_ID = AgentId(0)** sentinel for all pool orders
+4. **Append-only accounting** - fills recorded but never read during generation
+5. **rand 0.8 + rand_distr 0.4** - required `r#gen` escape for Rust 2024
+
+### Exit Criteria
+```
+cargo fmt              # ✅ No formatting issues
+cargo clippy           # ✅ No warnings
+cargo test --workspace # ✅ All tests pass (116 in agents crate)
+```
+
+---
+
 ## 2026-01-07: V3.3 Multi-Symbol Strategies
 
 ### Summary

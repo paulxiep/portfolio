@@ -23,14 +23,15 @@ use std::thread;
 use std::time::Duration;
 
 use agents::{
-    Agent, BollingerReversion, BollingerReversionConfig, MacdCrossover, MacdCrossoverConfig,
-    MarketMaker, MarketMakerConfig, MomentumConfig, MomentumTrader, NoiseTrader, NoiseTraderConfig,
-    PairsTrading, PairsTradingConfig, ReactiveAgent, ReactiveStrategyType, SectorRotator,
-    SectorRotatorConfig, TrendFollower, TrendFollowerConfig, VwapExecutor, VwapExecutorConfig,
+    Agent, BackgroundAgentPool, BackgroundPoolConfig, BollingerReversion, BollingerReversionConfig,
+    MacdCrossover, MacdCrossoverConfig, MarketMaker, MarketMakerConfig, MomentumConfig,
+    MomentumTrader, NoiseTrader, NoiseTraderConfig, PairsTrading, PairsTradingConfig,
+    ReactiveAgent, ReactiveStrategyType, SectorRotator, SectorRotatorConfig, TrendFollower,
+    TrendFollowerConfig, VwapExecutor, VwapExecutorConfig,
 };
 use crossbeam_channel::{Receiver, Sender, bounded};
 use rand::Rng;
-use rand::prelude::IndexedRandom;
+use rand::prelude::SliceRandom;
 use simulation::{Simulation, SimulationConfig};
 use tui::{AgentInfo, RiskInfo, SimCommand, SimUpdate, TuiApp};
 use types::{AgentId, Cash, Price, Quantity, Sector, ShortSellingConfig, Symbol, SymbolConfig};
@@ -155,10 +156,19 @@ fn build_update(
         agents,
         tier1_count,
         tier2_count,
+        tier3_count: sim
+            .background_pool()
+            .map(|p| p.config().pool_size)
+            .unwrap_or(0),
         total_trades: stats.total_trades,
         total_orders: stats.total_orders,
         agents_called: stats.agents_called_this_tick,
         t2_triggered: stats.t2_triggered_this_tick,
+        t3_orders: stats.t3_orders_this_tick,
+        background_pnl: sim
+            .background_pool()
+            .map(|p| p.accounting().realized_pnl().to_float())
+            .unwrap_or(0.0),
         finished,
         risk_metrics,
     }
@@ -304,12 +314,13 @@ fn spawn_tier2_agents(
     // Helper to create strategies for one agent
     let make_strategies = |rng: &mut rand::prelude::ThreadRng| -> Vec<ReactiveStrategyType> {
         let buy_dollars = config.t2_buy_threshold_min
-            + rng.random::<f64>() * (config.t2_buy_threshold_max - config.t2_buy_threshold_min);
+            + rng.r#gen::<f64>() * (config.t2_buy_threshold_max - config.t2_buy_threshold_min);
         let buy_price = Price((buy_dollars * PRICE_SCALE as f64) as i64);
-        let entry_size = 0.3 + rng.random::<f64>() * 0.4;
+        let entry_size = config.t2_order_size_min
+            + rng.r#gen::<f64>() * (config.t2_order_size_max - config.t2_order_size_min);
 
         let stop_pct = config.t2_stop_loss_min
-            + rng.random::<f64>() * (config.t2_stop_loss_max - config.t2_stop_loss_min);
+            + rng.r#gen::<f64>() * (config.t2_stop_loss_max - config.t2_stop_loss_min);
 
         let mut strategies = vec![
             ReactiveStrategyType::ThresholdBuyer {
@@ -320,13 +331,13 @@ fn spawn_tier2_agents(
         ];
 
         // TakeProfit or ThresholdSeller based on config probability
-        if rng.random::<f64>() < config.t2_take_profit_prob {
+        if rng.r#gen::<f64>() < config.t2_take_profit_prob {
             let target_pct = config.t2_take_profit_min
-                + rng.random::<f64>() * (config.t2_take_profit_max - config.t2_take_profit_min);
+                + rng.r#gen::<f64>() * (config.t2_take_profit_max - config.t2_take_profit_min);
             strategies.push(ReactiveStrategyType::TakeProfit { target_pct });
         } else {
             let sell_dollars = config.t2_sell_threshold_min
-                + rng.random::<f64>()
+                + rng.r#gen::<f64>()
                     * (config.t2_sell_threshold_max - config.t2_sell_threshold_min);
             strategies.push(ReactiveStrategyType::ThresholdSeller {
                 sell_price: Price((sell_dollars * PRICE_SCALE as f64) as i64),
@@ -335,10 +346,10 @@ fn spawn_tier2_agents(
         }
 
         // NewsReactor based on config probability
-        if rng.random::<f64>() < config.t2_news_reactor_prob {
+        if rng.r#gen::<f64>() < config.t2_news_reactor_prob {
             strategies.push(ReactiveStrategyType::NewsReactor {
-                min_magnitude: 0.3 + rng.random::<f64>() * 0.4,
-                sentiment_multiplier: 1.0 + rng.random::<f64>() * 2.0,
+                min_magnitude: 0.3 + rng.r#gen::<f64>() * 0.4,
+                sentiment_multiplier: 1.0 + rng.r#gen::<f64>() * 2.0,
             });
         }
 
@@ -471,7 +482,7 @@ fn run_simulation(tx: Sender<SimUpdate>, cmd_rx: Receiver<SimCommand>, config: S
     // then random for remainder)
     // ─────────────────────────────────────────────────────────────────────────
 
-    let mut rng = rand::rng();
+    let mut rng = rand::thread_rng();
 
     // Market Makers (infrastructure, distributed across symbols)
     let mm_per_symbol = config.num_market_makers / num_symbols;
@@ -659,6 +670,47 @@ fn run_simulation(tx: Sender<SimUpdate>, cmd_rx: Receiver<SimCommand>, config: S
     // ─────────────────────────────────────────────────────────────────────────
 
     spawn_sector_rotators(&mut sim, &mut next_id, &config, &all_symbols);
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Phase 5: Setup Tier 3 Background Pool (V3.4)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    if config.enable_background_pool {
+        // Build symbol list from config
+        let pool_symbols: Vec<String> = all_symbols.iter().map(|s| s.symbol.clone()).collect();
+
+        // Build symbol->sector mapping
+        let symbol_sectors: std::collections::HashMap<String, types::Sector> = all_symbols
+            .iter()
+            .map(|s| (s.symbol.clone(), s.sector))
+            .collect();
+
+        // Create pool config from SimConfig parameters
+        let pool_config = BackgroundPoolConfig {
+            pool_size: config.background_pool_size,
+            regime: config.background_regime,
+            symbols: pool_symbols,
+            mean_order_size: config.t3_mean_order_size,
+            order_size_stddev: config.t3_order_size_stddev,
+            max_order_size: config.t3_max_order_size,
+            min_order_size: 1,
+            price_spread_lambda: config.t3_price_spread_lambda,
+            max_price_deviation: config.t3_max_price_deviation,
+            sentiment_decay: 0.995,
+            max_sentiment: 0.8,
+            news_sentiment_scale: 0.5,
+            enable_sanity_check: true,
+            max_pnl_loss_fraction: 0.05,
+            base_activity_override: config.t3_base_activity,
+        };
+
+        // Create pool with reproducible seed
+        let mut pool = BackgroundAgentPool::new(pool_config, 42);
+        pool.init_sectors(&symbol_sectors);
+
+        // Add pool to simulation
+        sim.set_background_pool(pool);
+    }
 
     // Price history for chart (V2.3: per-symbol)
     let symbols: Vec<Symbol> = config

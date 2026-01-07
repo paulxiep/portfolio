@@ -101,8 +101,8 @@ impl MarketMaker {
         // This creates heterogeneous beliefs across market makers
         use rand::rngs::StdRng;
         use rand::{Rng, SeedableRng};
-        let mut rng = StdRng::from_os_rng();
-        let fair_value_bias = rng.random_range(-0.20..0.20);
+        let mut rng = StdRng::from_entropy();
+        let fair_value_bias = rng.r#gen_range(-0.20..0.20);
         Self {
             id,
             config,

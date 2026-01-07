@@ -84,8 +84,8 @@ impl NoiseTrader {
         state.set_position(&config.symbol, initial_position);
         // Each agent gets a random bias on fair value: ±30%
         // This creates heterogeneous beliefs - some bulls, some bears
-        let mut rng = StdRng::from_os_rng();
-        let fair_value_bias = rng.random_range(-0.30..0.30);
+        let mut rng = StdRng::from_entropy();
+        let fair_value_bias = rng.r#gen_range(-0.30..0.30);
         Self {
             id,
             config,
@@ -102,7 +102,7 @@ impl NoiseTrader {
         let mut state = AgentState::new(initial_cash, &[&config.symbol]);
         state.set_position(&config.symbol, initial_position);
         let mut rng = StdRng::seed_from_u64(seed);
-        let fair_value_bias = rng.random_range(-0.30..0.30);
+        let fair_value_bias = rng.r#gen_range(-0.30..0.30);
         Self {
             id,
             config,
@@ -153,7 +153,7 @@ impl NoiseTrader {
         let position = self.state.position_for(&self.config.symbol);
 
         // Determine side: can only sell if we have shares, then flip coin
-        let side = if position > 0 && self.rng.random_bool(0.5) {
+        let side = if position > 0 && self.rng.r#gen_bool(0.5) {
             OrderSide::Sell
         } else {
             OrderSide::Buy
@@ -161,7 +161,7 @@ impl NoiseTrader {
 
         // Random price within deviation range
         let deviation_range = self.config.price_deviation;
-        let deviation = self.rng.random_range(-deviation_range..deviation_range);
+        let deviation = self.rng.r#gen_range(-deviation_range..deviation_range);
         let price_float = reference_price.to_float() * (1.0 + deviation);
         let price = Price::from_float(price_float.max(0.01)); // Ensure positive
 
@@ -176,7 +176,7 @@ impl NoiseTrader {
             return None; // Not enough to trade
         }
 
-        let quantity = Quantity(self.rng.random_range(self.config.min_quantity..=max_qty));
+        let quantity = Quantity(self.rng.r#gen_range(self.config.min_quantity..=max_qty));
 
         Some(Order::limit(
             self.id,
@@ -195,7 +195,7 @@ impl Agent for NoiseTrader {
 
     fn on_tick(&mut self, ctx: &StrategyContext<'_>) -> AgentAction {
         // Randomly decide whether to place an order
-        if !self.rng.random_bool(self.config.order_probability) {
+        if !self.rng.r#gen_bool(self.config.order_probability) {
             return AgentAction::none();
         }
 

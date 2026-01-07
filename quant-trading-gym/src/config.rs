@@ -23,8 +23,9 @@
 //! - Production: Up to 10 symbols (performance depends on agent count per symbol)
 //! - Hard limit: None, but memory grows linearly with symbols × price history
 
+use agents::tier3::MarketRegime;
 use rand::Rng;
-use rand::prelude::IndexedRandom;
+use rand::prelude::SliceRandom;
 use types::{Cash, Price, Sector};
 
 /// Configuration for a single symbol.
@@ -133,6 +134,33 @@ pub struct SimConfig {
     pub t2_take_profit_prob: f64,
     /// Probability of having NewsReactor strategy (0.0 - 1.0).
     pub t2_news_reactor_prob: f64,
+    /// ThresholdBuyer: minimum order size fraction (0.0 - 1.0).
+    pub t2_order_size_min: f64,
+    /// ThresholdBuyer: maximum order size fraction (0.0 - 1.0).
+    pub t2_order_size_max: f64,
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Tier 3 Background Pool Parameters (V3.4)
+    // ─────────────────────────────────────────────────────────────────────────
+    /// Enable background pool (statistical order generation).
+    pub enable_background_pool: bool,
+    /// Number of simulated background agents (scales order rate).
+    pub background_pool_size: usize,
+    /// Market regime for background pool behavior.
+    pub background_regime: MarketRegime,
+    /// Mean order size for background pool.
+    pub t3_mean_order_size: f64,
+    /// Maximum order size for background pool.
+    pub t3_max_order_size: u64,
+    /// Order size standard deviation for background pool.
+    pub t3_order_size_stddev: f64,
+    /// Base activity rate override (None = use regime default).
+    /// Fraction of pool that trades each tick (0.0-1.0).
+    pub t3_base_activity: Option<f64>,
+    /// Price spread lambda (higher = tighter around mid price).
+    pub t3_price_spread_lambda: f64,
+    /// Maximum price deviation from mid (as fraction).
+    pub t3_max_price_deviation: f64,
 
     // ─────────────────────────────────────────────────────────────────────────
     // Market Maker Parameters
@@ -200,40 +228,53 @@ impl Default for SimConfig {
             verbose: false,
 
             // Tier 1 Agent Counts (minimums per type)
-            num_market_makers: 350,
+            num_market_makers: 100,
             num_noise_traders: 250,
             num_momentum_traders: 50,
             num_trend_followers: 50,
             num_macd_traders: 50,
             num_bollinger_traders: 50,
             num_vwap_executors: 50,
-            num_pairs_traders: 50,    // V3.3: multi-symbol pairs traders
-            num_sector_rotators: 100, // V3.3: sector rotation agents (special T2)
+            num_pairs_traders: 200,   // V3.3: multi-symbol pairs traders
+            num_sector_rotators: 200, // V3.3: sector rotation agents (special T2)
             // Tier Minimums
-            min_tier1_agents: 1000, // Random agents fill the gap
+            min_tier1_agents: 800, // Random agents fill the gap
 
             // Tier 2 Reactive Agents (V3.2)
-            num_tier2_agents: 3900,
+            num_tier2_agents: 4000,
 
             // Tier 2 Reactive Agent Parameters (V3.2)
             // Equal starting cash to noise traders for fair comparison
             t2_initial_cash: Cash::from_float(100_000.0),
-            t2_max_position: 500,
-            t2_buy_threshold_min: 60.0, // Buy when price drops to $50-75
-            t2_buy_threshold_max: 90.0,
-            t2_stop_loss_min: 0.15, // StopLoss 15-35% (wider to avoid noise)
+            t2_max_position: 1000,
+            t2_buy_threshold_min: 70.0, // Buy when price drops to $50-75
+            t2_buy_threshold_max: 100.0,
+            t2_stop_loss_min: 0.25, // StopLoss 25-50% (wider to avoid noise)
             t2_stop_loss_max: 0.5,
-            t2_take_profit_min: 0.15, // TakeProfit 15-50% (aggressive targets)
-            t2_take_profit_max: 0.50,
+            t2_take_profit_min: 0.25, // TakeProfit 25-50% (aggressive targets)
+            t2_take_profit_max: 0.5,
             t2_sell_threshold_min: 110.0, // ThresholdSeller $110-140
-            t2_sell_threshold_max: 140.0,
+            t2_sell_threshold_max: 150.0,
             t2_take_profit_prob: 0.5,  // 50% TakeProfit, 50% ThresholdSeller
-            t2_news_reactor_prob: 0.1, // 20% have NewsReactor
+            t2_news_reactor_prob: 0.1, // 10% have NewsReactor
+            t2_order_size_min: 0.2,    // Min 30% of max position per order
+            t2_order_size_max: 0.5,    // Max 70% of max position per order
+
+            // Tier 3 Background Pool (V3.4)
+            enable_background_pool: true,
+            background_pool_size: 45_000,
+            background_regime: MarketRegime::Normal,
+            t3_mean_order_size: 15.0,
+            t3_max_order_size: 100,
+            t3_order_size_stddev: 10.0,
+            t3_base_activity: Some(0.003), // Use regime default
+            t3_price_spread_lambda: 20.0,
+            t3_max_price_deviation: 0.02, // 2% from mid
 
             // Market Maker Parameters
             mm_initial_cash: Cash::from_float(1_000_000.0),
             mm_half_spread: 0.0025, // 0.25% half-spread = $0.25 on $100
-            mm_quote_size: 50,
+            mm_quote_size: 100,
             mm_refresh_interval: 1, // Quote every tick (required for IOC mode)
             mm_max_inventory: 200,
             mm_inventory_skew: 0.001,
@@ -699,7 +740,7 @@ mod tests {
 
     #[test]
     fn test_tier1_agent_type_random() {
-        let mut rng = rand::rng();
+        let mut rng = rand::thread_rng();
         // Just verify it doesn't panic and returns valid types
         for _ in 0..10 {
             let agent_type = Tier1AgentType::random(&mut rng);

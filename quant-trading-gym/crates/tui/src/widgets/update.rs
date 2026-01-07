@@ -87,6 +87,8 @@ pub struct SimUpdate {
     pub tier1_count: usize,
     /// Number of Tier 2 reactive agents (V3.2).
     pub tier2_count: usize,
+    /// Number of Tier 3 background pool agents (V3.4).
+    pub tier3_count: usize,
     /// Total trades executed.
     pub total_trades: u64,
     /// Total orders submitted.
@@ -95,6 +97,10 @@ pub struct SimUpdate {
     pub agents_called: usize,
     /// T2 agents triggered this tick (V3.2 debug).
     pub t2_triggered: usize,
+    /// T3 background pool orders this tick (V3.4).
+    pub t3_orders: usize,
+    /// Background pool P&L (V3.4).
+    pub background_pnl: f64,
     /// Simulation is complete.
     pub finished: bool,
     /// Per-agent risk metrics.

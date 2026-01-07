@@ -28,7 +28,8 @@
 use std::collections::HashMap;
 
 use agents::{
-    Agent, AgentAction, BorrowLedger, PositionValidator, StrategyContext, WakeConditionIndex,
+    Agent, AgentAction, BACKGROUND_POOL_ID, BackgroundAgentPool, BorrowLedger, PoolContext,
+    PositionValidator, StrategyContext, WakeConditionIndex,
 };
 use quant::{
     AgentRiskSnapshot, AgentRiskTracker, IndicatorCache, IndicatorEngine, IndicatorSnapshot,
@@ -77,6 +78,9 @@ pub struct SimulationStats {
 
     /// T2 agents triggered this tick (V3.2 debug).
     pub t2_triggered_this_tick: usize,
+
+    /// T3 background pool orders generated this tick (V3.4).
+    pub t3_orders_this_tick: usize,
 }
 
 /// The main simulation runner.
@@ -165,6 +169,9 @@ pub struct Simulation {
 
     /// Wake condition index for Tier 2 reactive agents (V3.2).
     wake_index: WakeConditionIndex,
+
+    /// Optional Tier 3 background pool for statistical order generation (V3.4).
+    background_pool: Option<BackgroundAgentPool>,
 }
 
 /// Helper for building candles incrementally.
@@ -297,6 +304,7 @@ impl Simulation {
             active_events: Vec::new(),
             fundamentals,
             wake_index,
+            background_pool: None,
             config,
         }
     }
@@ -304,6 +312,24 @@ impl Simulation {
     /// Create a simulation with default configuration.
     pub fn with_defaults() -> Self {
         Self::new(SimulationConfig::default())
+    }
+
+    /// Set the Tier 3 background pool for statistical order generation (V3.4).
+    ///
+    /// The pool generates orders each tick based on statistical distributions,
+    /// simulating 90k+ background agents without individual instances.
+    pub fn set_background_pool(&mut self, pool: BackgroundAgentPool) {
+        self.background_pool = Some(pool);
+    }
+
+    /// Get a reference to the background pool (if configured).
+    pub fn background_pool(&self) -> Option<&BackgroundAgentPool> {
+        self.background_pool.as_ref()
+    }
+
+    /// Get a mutable reference to the background pool (if configured).
+    pub fn background_pool_mut(&mut self) -> Option<&mut BackgroundAgentPool> {
+        self.background_pool.as_mut()
     }
 
     /// Add an agent to the simulation.
@@ -802,7 +828,7 @@ impl Simulation {
         );
 
         // Shuffle only the agents we're actually calling
-        indices_to_call.shuffle(&mut rand::rng());
+        indices_to_call.shuffle(&mut rand::thread_rng());
 
         // Phase 2: Collect agent actions with their current state for validation.
         // V3.2: Only call T1 agents every tick; T2 agents only when triggered.
@@ -923,6 +949,86 @@ impl Simulation {
                     tick_trades.push(trade);
                 }
             }
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Phase 4 (V3.4): Generate and process Tier 3 background pool orders
+        // ─────────────────────────────────────────────────────────────────────
+        if self.background_pool.is_some() {
+            // Build mid prices map for pool context
+            let mid_prices: HashMap<Symbol, Price> = self
+                .config
+                .get_symbol_configs()
+                .iter()
+                .filter_map(|sc| {
+                    self.market
+                        .mid_price(&sc.symbol)
+                        .map(|p| (sc.symbol.clone(), p))
+                })
+                .collect();
+
+            // Build symbol->sector mapping
+            let symbol_sectors: HashMap<Symbol, types::Sector> = self
+                .config
+                .get_symbol_configs()
+                .iter()
+                .map(|sc| (sc.symbol.clone(), sc.sector))
+                .collect();
+
+            // Create pool context
+            let pool_ctx = PoolContext {
+                tick: self.tick,
+                mid_prices: &mid_prices,
+                active_events: &self.active_events,
+                symbol_sectors: &symbol_sectors,
+            };
+
+            // Generate orders from pool (takes &mut self indirectly through Option)
+            let pool = self.background_pool.as_mut().unwrap();
+            let t3_orders = pool.generate(&pool_ctx);
+            self.stats.t3_orders_this_tick = t3_orders.len();
+
+            // Process each T3 order and collect all resulting trades
+            // Note: Can't use flat_map due to &mut self borrow in process_order
+            let t3_trades: Vec<_> = t3_orders
+                .into_iter()
+                .flat_map(|order| {
+                    let (trades, _resting) = self.process_order(order);
+                    trades
+                })
+                .collect();
+
+            // Update accounting and notify agents for each trade
+            t3_trades.into_iter().for_each(|trade| {
+                // Record in pool accounting (pool is always one side)
+                let pool = self.background_pool.as_mut().unwrap();
+                if trade.buyer_id == BACKGROUND_POOL_ID {
+                    pool.accounting_mut().record_trade_as_buyer(
+                        &trade.symbol,
+                        trade.price,
+                        trade.quantity,
+                    );
+                } else if trade.seller_id == BACKGROUND_POOL_ID {
+                    pool.accounting_mut().record_trade_as_seller(
+                        &trade.symbol,
+                        trade.price,
+                        trade.quantity,
+                    );
+                }
+
+                // Notify the other agent (not the pool) of the fill
+                let other_agent_id = if trade.buyer_id == BACKGROUND_POOL_ID {
+                    trade.seller_id
+                } else {
+                    trade.buyer_id
+                };
+
+                if let Some(agent) = self.agents.iter_mut().find(|a| a.id() == other_agent_id) {
+                    agent.on_fill(&trade);
+                }
+
+                tick_trades.push(trade);
+            });
         }
 
         // Add trades to recent trades per symbol (newest first)

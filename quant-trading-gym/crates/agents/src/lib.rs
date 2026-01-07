@@ -24,6 +24,12 @@
 //! - **Long positions**: Limited by cash available and shares_outstanding
 //! - **Short positions**: Require borrows from `BorrowLedger`, limited by max_short_per_agent
 //!
+//! # Tiered Agent Architecture (V3.2+)
+//!
+//! - **Tier 1**: Smart agents running full strategy every tick
+//! - **Tier 2**: Reactive agents waking on conditions (price cross, news, interval)
+//! - **Tier 3**: Background pool for statistical order generation (V3.4)
+//!
 //! # Available Strategies
 //!
 //! ## Market Infrastructure (Phase 5)
@@ -66,9 +72,10 @@ mod state;
 pub mod tiers;
 mod traits;
 
-// Tiered agent architecture (V3.2)
+// Tiered agent architecture (V3.2+)
 pub mod tier1;
 pub mod tier2;
+pub mod tier3;
 
 pub use borrow_ledger::{BorrowLedger, BorrowPosition};
 pub use context::StrategyContext;
@@ -85,6 +92,11 @@ pub use tier1::{
 pub use tier2::{
     ReactiveAgent, ReactivePortfolio, ReactiveStrategyType, SectorRotator, SectorRotatorConfig,
     WakeConditionIndex,
+};
+// Re-export Tier 3 types for V3.4
+pub use tier3::{
+    BACKGROUND_POOL_ID, BackgroundAgentPool, BackgroundPoolAccounting, BackgroundPoolConfig,
+    MarketRegime, PoolContext, SanityCheckResult,
 };
 pub use tiers::{
     ConditionUpdate, CrossDirection, OrderedPrice, PriceReference, TickFrequency, WakeCondition,

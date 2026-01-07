@@ -23,6 +23,12 @@ pub struct StatsPanel {
     pub tier1_count: usize,
     /// Number of Tier 2 agents.
     pub tier2_count: usize,
+    /// Number of Tier 3 background pool agents.
+    pub tier3_count: usize,
+    /// T3 orders generated this tick.
+    pub t3_orders: usize,
+    /// Background pool P&L.
+    pub background_pnl: f64,
     /// Agents called this tick.
     pub agents_called: usize,
     /// T2 agents triggered this tick.
@@ -41,6 +47,9 @@ impl StatsPanel {
             total_orders: 0,
             tier1_count: 0,
             tier2_count: 0,
+            tier3_count: 0,
+            t3_orders: 0,
+            background_pnl: 0.0,
             agents_called: 0,
             t2_triggered: 0,
             spread: None,
@@ -80,6 +89,24 @@ impl StatsPanel {
     /// Set Tier 2 agent count.
     pub fn tier2_count(mut self, count: usize) -> Self {
         self.tier2_count = count;
+        self
+    }
+
+    /// Set Tier 3 agent count.
+    pub fn tier3_count(mut self, count: usize) -> Self {
+        self.tier3_count = count;
+        self
+    }
+
+    /// Set T3 orders this tick.
+    pub fn t3_orders(mut self, count: usize) -> Self {
+        self.t3_orders = count;
+        self
+    }
+
+    /// Set background pool P&L.
+    pub fn background_pnl(mut self, pnl: f64) -> Self {
+        self.background_pnl = pnl;
         self
     }
 
@@ -147,7 +174,10 @@ impl Widget for StatsPanel {
             Line::from(vec![
                 Span::styled("Agents: ", Style::default().fg(Color::Gray)),
                 Span::styled(
-                    format!("{}T1 + {}T2", self.tier1_count, self.tier2_count),
+                    format!(
+                        "{}T1 + {}T2 + {}T3",
+                        self.tier1_count, self.tier2_count, self.tier3_count
+                    ),
                     Style::default().fg(Color::Magenta),
                 ),
             ]),
@@ -162,6 +192,23 @@ impl Widget for StatsPanel {
                 Span::styled(
                     format!("{}", self.t2_triggered),
                     Style::default().fg(Color::Yellow),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("T3 Orders: ", Style::default().fg(Color::Gray)),
+                Span::styled(
+                    format!("{}", self.t3_orders),
+                    Style::default().fg(Color::Blue),
+                ),
+                Span::raw("  "),
+                Span::styled("Pool P&L: ", Style::default().fg(Color::Gray)),
+                Span::styled(
+                    format!("${:.0}", self.background_pnl),
+                    if self.background_pnl >= 0.0 {
+                        Style::default().fg(Color::Green)
+                    } else {
+                        Style::default().fg(Color::Red)
+                    },
                 ),
             ]),
         ];
