@@ -1,5 +1,58 @@
 # Development Log
 
+## 2026-01-07: V3.5 Parallel Execution & Batch Auction
+
+### Summary
+Implemented parallel agent execution with rayon and switched order matching from continuous to batch auction. The `parallel` module provides declarative helpers that abstract over `par_iter`/`iter` with cfg logic in ONE place. Batch auction enables full parallelism across symbols by computing a single clearing price per symbol.
+
+### Architecture
+
+**Two-Phase Tick:**
+1. **Collection Phase**: All agents run `on_tick()` in parallel, collecting orders
+2. **Auction Phase**: Per-symbol batch auction computes clearing price, matches all crossing orders
+
+**Key Insight**: Since we clear the book every tick anyway, batch auction semantics are natural. All agents see the same market state and compete in a single auction per tick.
+
+### `parallel` Module (`crates/simulation/src/parallel.rs`)
+
+Declarative helpers that keep `#[cfg(feature = "parallel")]` in ONE place:
+- `map_slice()`, `filter_map_slice()` — parallel iteration over slices
+- `map_indices()`, `filter_map_indices()` — index-based iteration
+- `map_mutex_slice()`, `map_mutex_slice_ref()` — safe parallel access to `Mutex<T>` slices
+
+### Batch Auction (`crates/sim-core/src/batch_auction.rs`)
+
+**Clearing Price Algorithm:**
+1. Collect all unique limit prices + reference price (fair_value or last_price)
+2. For each candidate, compute executable volume (min of supply/demand)
+3. Return price with maximum volume (prefer reference price on ties for stability)
+
+**Price Stability Fix:** Reference price from `fundamentals.fair_value()` anchors clearing price, preventing wild oscillations when market orders dominate.
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `crates/simulation/src/parallel.rs` | New module: declarative parallel helpers |
+| `crates/simulation/src/runner.rs` | Batch auction integration, reference price from fair_value |
+| `crates/sim-core/src/batch_auction.rs` | New module: clearing price & matching with reference anchor |
+| `crates/sim-core/Cargo.toml` | Added `rayon` optional dependency |
+
+### Key Design Decisions
+
+1. **Batch auction over continuous**: Enables full parallelism, natural fit for "clear book each tick"
+2. **`parallel::` helpers**: Single source of truth for cfg logic, clean call sites
+3. **Reference price anchor**: Uses `fair_value` (from fundamentals) to stabilize clearing price after events
+4. **T3 retains continuous matching**: Background pool orders still use `process_order()` for different semantics
+
+### Exit Criteria
+```
+cargo clippy           # ✅ No warnings
+cargo test --workspace # ✅ All tests pass (parallel and sequential)
+```
+
+---
+
 ## 2026-01-07: V3.4 Background Agent Pool (Tier 3)
 
 ### Summary

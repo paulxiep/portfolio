@@ -440,12 +440,12 @@ fn spawn_sector_rotators(
     }
 }
 
-/// Run the simulation, sending updates to the TUI via channel.
-///
-/// The simulation starts **paused** and waits for a Start or Toggle command.
-/// Use the command receiver to control start/stop/quit.
-fn run_simulation(tx: Sender<SimUpdate>, cmd_rx: Receiver<SimCommand>, config: SimConfig) {
-    // Build symbol configs from SimConfig symbols (V2.3)
+// ─────────────────────────────────────────────────────────────────────────────
+// Simulation Setup Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Build simulation configuration from SimConfig.
+fn build_simulation_config(config: &SimConfig) -> SimulationConfig {
     let symbol_configs: Vec<SymbolConfig> = config
         .get_symbols()
         .iter()
@@ -461,36 +461,16 @@ fn run_simulation(tx: Sender<SimUpdate>, cmd_rx: Receiver<SimCommand>, config: S
         .collect();
 
     // Enable short selling with tight limits matching agent configs
-    // Most agents have max_position of 200, MMs have max_inventory of 200
-    let short_config = ShortSellingConfig::enabled_default().with_max_short(Quantity(500)); // Max 500 short per agent
+    let short_config = ShortSellingConfig::enabled_default().with_max_short(Quantity(500));
 
-    // Create simulation with position limits and short selling enabled (V2.3: multi-symbol)
-    let sim_config = SimulationConfig::with_symbols(symbol_configs)
+    SimulationConfig::with_symbols(symbol_configs)
         .with_short_selling(short_config)
-        .with_verbose(config.verbose);
+        .with_verbose(config.verbose)
+}
 
-    let mut sim = Simulation::new(sim_config);
-    let mut next_id: u64 = 1;
-
-    // Get all symbols for multi-symbol agent spawning
-    let all_symbols: Vec<_> = config.get_symbols().to_vec();
-    let num_symbols = all_symbols.len();
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Phase 1: Spawn specified minimum agents for each type
-    // Agents are distributed across symbols (round-robin for guaranteed coverage,
-    // then random for remainder)
-    // ─────────────────────────────────────────────────────────────────────────
-
-    let mut rng = rand::thread_rng();
-
-    // Market Makers (infrastructure, distributed across symbols)
-    let mm_per_symbol = config.num_market_makers / num_symbols;
-    let mm_remainder = config.num_market_makers % num_symbols;
-    let mm_distributed_count = mm_per_symbol * num_symbols;
-
-    // Helper to create MM config
-    let make_mm_config = |spec: &SymbolSpec| MarketMakerConfig {
+/// Create a MarketMakerConfig for a given symbol spec.
+fn make_mm_config(spec: &SymbolSpec, config: &SimConfig) -> MarketMakerConfig {
+    MarketMakerConfig {
         symbol: spec.symbol.clone(),
         initial_price: spec.initial_price,
         half_spread: config.mm_half_spread,
@@ -501,329 +481,436 @@ fn run_simulation(tx: Sender<SimUpdate>, cmd_rx: Receiver<SimCommand>, config: S
         initial_cash: config.mm_initial_cash,
         initial_position: 500,
         fair_value_weight: 0.3,
-    };
+    }
+}
 
-    // Distributed MMs across all symbols
-    let distributed_mms: Vec<_> = all_symbols
+// ─────────────────────────────────────────────────────────────────────────────
+// Agent Spawning Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Spawn market makers distributed across symbols.
+/// Returns (agents, next_id).
+fn spawn_market_makers(
+    config: &SimConfig,
+    symbols: &[SymbolSpec],
+    start_id: u64,
+    rng: &mut rand::prelude::ThreadRng,
+) -> (Vec<Box<dyn Agent>>, u64) {
+    let num_symbols = symbols.len();
+    let per_symbol = config.num_market_makers / num_symbols;
+    let remainder = config.num_market_makers % num_symbols;
+
+    let mut next_id = start_id;
+
+    // Distributed evenly across symbols
+    let distributed: Vec<_> = symbols
         .iter()
-        .flat_map(|spec| std::iter::repeat_n(spec, mm_per_symbol))
-        .zip(next_id..next_id + mm_distributed_count as u64)
+        .flat_map(|spec| std::iter::repeat_n(spec, per_symbol))
+        .zip(next_id..)
         .map(|(spec, id)| {
-            Box::new(MarketMaker::new(AgentId(id), make_mm_config(spec))) as Box<dyn Agent>
+            Box::new(MarketMaker::new(AgentId(id), make_mm_config(spec, config))) as Box<dyn Agent>
         })
         .collect();
-    next_id += mm_distributed_count as u64;
+    next_id += distributed.len() as u64;
 
-    // Remainder MMs (randomly assigned)
-    let remainder_mm_specs: Vec<_> = (0..mm_remainder)
-        .map(|_| all_symbols.choose(&mut rng).unwrap())
-        .collect();
-    let remainder_mms: Vec<_> = remainder_mm_specs
-        .iter()
-        .zip(next_id..next_id + mm_remainder as u64)
+    // Remainder randomly assigned
+    let remainder_agents: Vec<_> = (0..remainder)
+        .map(|_| symbols.choose(rng).unwrap())
+        .zip(next_id..)
         .map(|(spec, id)| {
-            Box::new(MarketMaker::new(AgentId(id), make_mm_config(spec))) as Box<dyn Agent>
+            Box::new(MarketMaker::new(AgentId(id), make_mm_config(spec, config))) as Box<dyn Agent>
         })
         .collect();
-    next_id += mm_remainder as u64;
+    next_id += remainder_agents.len() as u64;
 
-    // Noise Traders (distributed across symbols)
-    let nt_per_symbol = config.num_noise_traders / num_symbols;
-    let nt_remainder = config.num_noise_traders % num_symbols;
-    let nt_distributed_count = nt_per_symbol * num_symbols;
+    let agents = distributed.into_iter().chain(remainder_agents).collect();
+    (agents, next_id)
+}
 
-    let distributed_nts: Vec<_> = all_symbols
+/// Spawn noise traders distributed across symbols.
+/// Returns (agents, next_id).
+fn spawn_noise_traders(
+    config: &SimConfig,
+    symbols: &[SymbolSpec],
+    start_id: u64,
+    rng: &mut rand::prelude::ThreadRng,
+) -> (Vec<Box<dyn Agent>>, u64) {
+    let num_symbols = symbols.len();
+    let per_symbol = config.num_noise_traders / num_symbols;
+    let remainder = config.num_noise_traders % num_symbols;
+
+    let mut next_id = start_id;
+
+    // Distributed evenly
+    let distributed: Vec<_> = symbols
         .iter()
-        .flat_map(|spec| std::iter::repeat_n(spec, nt_per_symbol))
-        .zip(next_id..next_id + nt_distributed_count as u64)
+        .flat_map(|spec| std::iter::repeat_n(spec, per_symbol))
+        .zip(next_id..)
         .map(|(spec, id)| {
             create_agent(
                 Tier1AgentType::NoiseTrader,
                 id,
-                &config,
+                config,
                 &spec.symbol,
                 spec.initial_price,
             )
         })
         .collect();
-    next_id += nt_distributed_count as u64;
+    next_id += distributed.len() as u64;
 
-    // Remainder noise traders
-    let remainder_nt_specs: Vec<_> = (0..nt_remainder)
-        .map(|_| all_symbols.choose(&mut rng).unwrap())
-        .collect();
-    let remainder_nts: Vec<_> = remainder_nt_specs
-        .iter()
-        .zip(next_id..next_id + nt_remainder as u64)
+    // Remainder randomly assigned
+    let remainder_agents: Vec<_> = (0..remainder)
+        .map(|_| symbols.choose(rng).unwrap())
+        .zip(next_id..)
         .map(|(spec, id)| {
             create_agent(
                 Tier1AgentType::NoiseTrader,
                 id,
-                &config,
+                config,
                 &spec.symbol,
                 spec.initial_price,
             )
         })
         .collect();
-    next_id += nt_remainder as u64;
+    next_id += remainder_agents.len() as u64;
 
-    // Quant strategies: randomly assigned to symbols
-    let quant_agent_counts = [
+    let agents = distributed.into_iter().chain(remainder_agents).collect();
+    (agents, next_id)
+}
+
+/// Spawn quant strategy agents (momentum, trend, MACD, etc.) randomly across symbols.
+/// Returns (agents, next_id).
+fn spawn_quant_agents(
+    config: &SimConfig,
+    symbols: &[SymbolSpec],
+    start_id: u64,
+    rng: &mut rand::prelude::ThreadRng,
+) -> (Vec<Box<dyn Agent>>, u64) {
+    let agent_counts = [
         (Tier1AgentType::MomentumTrader, config.num_momentum_traders),
         (Tier1AgentType::TrendFollower, config.num_trend_followers),
         (Tier1AgentType::MacdTrader, config.num_macd_traders),
-        (
-            Tier1AgentType::BollingerTrader,
-            config.num_bollinger_traders,
-        ),
+        (Tier1AgentType::BollingerTrader, config.num_bollinger_traders),
         (Tier1AgentType::VwapExecutor, config.num_vwap_executors),
     ];
 
-    let quant_specs: Vec<_> = quant_agent_counts
+    let specs: Vec<_> = agent_counts
         .iter()
         .flat_map(|(agent_type, count)| std::iter::repeat_n(*agent_type, *count))
-        .map(|agent_type| (agent_type, all_symbols.choose(&mut rng).unwrap()))
+        .map(|agent_type| (agent_type, symbols.choose(rng).unwrap()))
         .collect();
 
-    let quant_agents: Vec<_> = quant_specs
+    let agents: Vec<_> = specs
         .iter()
-        .zip(next_id..next_id + quant_specs.len() as u64)
+        .zip(start_id..)
         .map(|((agent_type, spec), id)| {
-            create_agent(*agent_type, id, &config, &spec.symbol, spec.initial_price)
+            create_agent(*agent_type, id, config, &spec.symbol, spec.initial_price)
         })
         .collect();
-    next_id += quant_specs.len() as u64;
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // V3.3: Pairs Trading Agents (multi-symbol Tier 1)
-    // ─────────────────────────────────────────────────────────────────────────
+    let next_id = start_id + agents.len() as u64;
+    (agents, next_id)
+}
 
-    // PairsTrading requires at least 2 symbols
-    let pairs_agents: Vec<_> = if num_symbols >= 2 {
-        (0..config.num_pairs_traders)
-            .zip(next_id..next_id + config.num_pairs_traders as u64)
-            .map(|(i, id)| {
-                // Pick two different symbols for each pair
-                let idx_a = i % num_symbols;
-                let idx_b = (i + 1) % num_symbols;
-                let spec_a = &all_symbols[idx_a];
-                let spec_b = &all_symbols[idx_b];
+/// Spawn pairs trading agents (requires at least 2 symbols).
+/// Returns (agents, next_id).
+fn spawn_pairs_traders(
+    config: &SimConfig,
+    symbols: &[SymbolSpec],
+    start_id: u64,
+) -> (Vec<Box<dyn Agent>>, u64) {
+    if symbols.len() < 2 {
+        return (Vec::new(), start_id);
+    }
 
-                let pairs_config = PairsTradingConfig::new(&spec_a.symbol, &spec_b.symbol)
-                    .with_initial_cash(config.quant_initial_cash)
-                    .with_max_position(config.quant_max_position);
+    let num_symbols = symbols.len();
+    let agents: Vec<_> = (0..config.num_pairs_traders)
+        .zip(start_id..)
+        .map(|(i, id)| {
+            let idx_a = i % num_symbols;
+            let idx_b = (i + 1) % num_symbols;
+            let spec_a = &symbols[idx_a];
+            let spec_b = &symbols[idx_b];
 
-                Box::new(PairsTrading::new(AgentId(id), pairs_config)) as Box<dyn Agent>
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
-    next_id += pairs_agents.len() as u64;
+            let pairs_config = PairsTradingConfig::new(&spec_a.symbol, &spec_b.symbol)
+                .with_initial_cash(config.quant_initial_cash)
+                .with_max_position(config.quant_max_position);
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Phase 2: Fill to Tier 1 minimum with random agents (random symbol)
-    // ─────────────────────────────────────────────────────────────────────────
+            Box::new(PairsTrading::new(AgentId(id), pairs_config)) as Box<dyn Agent>
+        })
+        .collect();
 
-    let random_count = config.random_tier1_count();
-    let random_specs: Vec<_> = (0..random_count)
+    let next_id = start_id + agents.len() as u64;
+    (agents, next_id)
+}
+
+/// Spawn random Tier 1 agents to fill to minimum count.
+/// Returns (agents, next_id).
+fn spawn_random_tier1_agents(
+    config: &SimConfig,
+    symbols: &[SymbolSpec],
+    start_id: u64,
+    rng: &mut rand::prelude::ThreadRng,
+) -> (Vec<Box<dyn Agent>>, u64) {
+    let count = config.random_tier1_count();
+    let agents: Vec<_> = (0..count)
         .map(|_| {
             (
-                Tier1AgentType::random(&mut rng),
-                all_symbols.choose(&mut rng).unwrap(),
+                Tier1AgentType::random(rng),
+                symbols.choose(rng).unwrap(),
             )
         })
-        .collect();
-
-    let random_agents: Vec<_> = random_specs
-        .iter()
-        .zip(next_id..next_id + random_count as u64)
+        .zip(start_id..)
         .map(|((agent_type, spec), id)| {
-            create_agent(*agent_type, id, &config, &spec.symbol, spec.initial_price)
+            create_agent(agent_type, id, config, &spec.symbol, spec.initial_price)
         })
         .collect();
-    next_id += random_count as u64;
 
-    // Add all Tier 1 agents to simulation (imperative: sim.add_agent is side-effectful)
-    let all_tier1_agents: Vec<_> = distributed_mms
+    let next_id = start_id + agents.len() as u64;
+    (agents, next_id)
+}
+
+/// Spawn all Tier 1 agents and add them to the simulation.
+/// Returns next available agent ID.
+fn spawn_all_tier1_agents(
+    sim: &mut Simulation,
+    config: &SimConfig,
+    symbols: &[SymbolSpec],
+    rng: &mut rand::prelude::ThreadRng,
+) -> u64 {
+    let mut next_id = 1u64;
+
+    let (mm_agents, id) = spawn_market_makers(config, symbols, next_id, rng);
+    next_id = id;
+
+    let (nt_agents, id) = spawn_noise_traders(config, symbols, next_id, rng);
+    next_id = id;
+
+    let (quant_agents, id) = spawn_quant_agents(config, symbols, next_id, rng);
+    next_id = id;
+
+    let (pairs_agents, id) = spawn_pairs_traders(config, symbols, next_id);
+    next_id = id;
+
+    let (random_agents, id) = spawn_random_tier1_agents(config, symbols, next_id, rng);
+    next_id = id;
+
+    // Add all agents to simulation
+    for agent in mm_agents
         .into_iter()
-        .chain(remainder_mms)
-        .chain(distributed_nts)
-        .chain(remainder_nts)
+        .chain(nt_agents)
         .chain(quant_agents)
         .chain(pairs_agents)
         .chain(random_agents)
-        .collect();
-
-    for agent in all_tier1_agents {
+    {
         sim.add_agent(agent);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Phase 3: Spawn Tier 2 Reactive Agents (V3.2)
-    // ─────────────────────────────────────────────────────────────────────────
+    next_id
+}
 
-    spawn_tier2_agents(&mut sim, &mut next_id, &config, &all_symbols, &mut rng);
+// ─────────────────────────────────────────────────────────────────────────────
+// Background Pool Setup
+// ─────────────────────────────────────────────────────────────────────────────
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Phase 4: Spawn Sector Rotator Agents (V3.3 - special Tier 2)
-    // ─────────────────────────────────────────────────────────────────────────
-
-    spawn_sector_rotators(&mut sim, &mut next_id, &config, &all_symbols);
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Phase 5: Setup Tier 3 Background Pool (V3.4)
-    // ─────────────────────────────────────────────────────────────────────────
-
-    if config.enable_background_pool {
-        // Build symbol list from config
-        let pool_symbols: Vec<String> = all_symbols.iter().map(|s| s.symbol.clone()).collect();
-
-        // Build symbol->sector mapping
-        let symbol_sectors: std::collections::HashMap<String, types::Sector> = all_symbols
-            .iter()
-            .map(|s| (s.symbol.clone(), s.sector))
-            .collect();
-
-        // Create pool config from SimConfig parameters
-        let pool_config = BackgroundPoolConfig {
-            pool_size: config.background_pool_size,
-            regime: config.background_regime,
-            symbols: pool_symbols,
-            mean_order_size: config.t3_mean_order_size,
-            order_size_stddev: config.t3_order_size_stddev,
-            max_order_size: config.t3_max_order_size,
-            min_order_size: 1,
-            price_spread_lambda: config.t3_price_spread_lambda,
-            max_price_deviation: config.t3_max_price_deviation,
-            sentiment_decay: 0.995,
-            max_sentiment: 0.8,
-            news_sentiment_scale: 0.5,
-            enable_sanity_check: true,
-            max_pnl_loss_fraction: 0.05,
-            base_activity_override: config.t3_base_activity,
-        };
-
-        // Create pool with reproducible seed
-        let mut pool = BackgroundAgentPool::new(pool_config, 42);
-        pool.init_sectors(&symbol_sectors);
-
-        // Add pool to simulation
-        sim.set_background_pool(pool);
+/// Setup the Tier 3 background pool if enabled.
+fn setup_background_pool(sim: &mut Simulation, config: &SimConfig, symbols: &[SymbolSpec]) {
+    if !config.enable_background_pool {
+        return;
     }
 
-    // Price history for chart (V2.3: per-symbol)
-    let symbols: Vec<Symbol> = config
-        .get_symbols()
+    let pool_symbols: Vec<String> = symbols.iter().map(|s| s.symbol.clone()).collect();
+    let symbol_sectors: std::collections::HashMap<String, types::Sector> = symbols
         .iter()
-        .map(|s| s.symbol.clone())
+        .map(|s| (s.symbol.clone(), s.sector))
         .collect();
 
-    // Initialize price history with initial prices
-    let mut price_history: HashMap<Symbol, Vec<f64>> = config
-        .get_symbols()
-        .iter()
-        .map(|spec| {
-            let mut history = Vec::with_capacity(config.max_price_history);
-            history.push(spec.initial_price.to_float());
-            (spec.symbol.clone(), history)
-        })
-        .collect();
+    let pool_config = BackgroundPoolConfig {
+        pool_size: config.background_pool_size,
+        regime: config.background_regime,
+        symbols: pool_symbols,
+        mean_order_size: config.t3_mean_order_size,
+        order_size_stddev: config.t3_order_size_stddev,
+        max_order_size: config.t3_max_order_size,
+        min_order_size: 1,
+        price_spread_lambda: config.t3_price_spread_lambda,
+        max_price_deviation: config.t3_max_price_deviation,
+        sentiment_decay: 0.995,
+        max_sentiment: 0.8,
+        news_sentiment_scale: 0.5,
+        enable_sanity_check: true,
+        max_pnl_loss_fraction: 0.05,
+        base_activity_override: config.t3_base_activity,
+    };
 
-    // Tier counts for TUI display
-    // Note: SectorRotators are special Tier 2 agents (reactive, wake on news events)
-    let tier1_count = config.total_tier1_agents();
-    let tier2_count = config.num_tier2_agents + config.num_sector_rotators;
+    let mut pool = BackgroundAgentPool::new(pool_config, 42);
+    pool.init_sectors(&symbol_sectors);
+    sim.set_background_pool(pool);
+}
 
-    // Send initial state before starting (so TUI has something to display)
-    let _ = tx.send(build_update(
-        &sim,
-        &price_history,
-        false,
-        tier1_count,
-        tier2_count,
-    ));
+// ─────────────────────────────────────────────────────────────────────────────
+// Simulation Loop Helpers
+// ─────────────────────────────────────────────────────────────────────────────
 
-    // Simulation control state - starts paused, press Space to run
-    let mut running = false;
-    let mut tick = 0u64;
-    let total_ticks = config.total_ticks;
+/// State for the simulation event loop.
+struct SimulationLoopState {
+    running: bool,
+    tick: u64,
+    total_ticks: u64,
+    tier1_count: usize,
+    tier2_count: usize,
+    symbols: Vec<Symbol>,
+    price_history: HashMap<Symbol, Vec<f64>>,
+    max_price_history: usize,
+    tick_delay_ms: u64,
+}
 
-    // Main simulation loop with start/stop control
-    loop {
-        // Check for commands (non-blocking)
-        while let Ok(cmd) = cmd_rx.try_recv() {
-            match cmd {
-                SimCommand::Start => running = true,
-                SimCommand::Pause => running = false,
-                SimCommand::Toggle => running = !running,
-                SimCommand::Quit => {
-                    // Send final update and exit
-                    let _ = tx.send(build_update(
-                        &sim,
-                        &price_history,
-                        true,
-                        tier1_count,
-                        tier2_count,
-                    ));
-                    return;
-                }
-            }
+impl SimulationLoopState {
+    fn new(config: &SimConfig) -> Self {
+        let symbols: Vec<Symbol> = config
+            .get_symbols()
+            .iter()
+            .map(|s| s.symbol.clone())
+            .collect();
+
+        let price_history: HashMap<Symbol, Vec<f64>> = config
+            .get_symbols()
+            .iter()
+            .map(|spec| {
+                let mut history = Vec::with_capacity(config.max_price_history);
+                history.push(spec.initial_price.to_float());
+                (spec.symbol.clone(), history)
+            })
+            .collect();
+
+        Self {
+            running: false,
+            tick: 0,
+            total_ticks: config.total_ticks,
+            tier1_count: config.total_tier1_agents(),
+            tier2_count: config.num_tier2_agents + config.num_sector_rotators,
+            symbols,
+            price_history,
+            max_price_history: config.max_price_history,
+            tick_delay_ms: config.tick_delay_ms,
         }
+    }
 
-        // If paused, sleep briefly and continue (don't burn CPU)
-        if !running {
-            thread::sleep(Duration::from_millis(10));
-            continue;
-        }
-
-        // Check if we've reached max ticks
-        if tick >= total_ticks {
-            // Send final update
-            let _ = tx.send(build_update(
-                &sim,
-                &price_history,
-                true,
-                tier1_count,
-                tier2_count,
-            ));
-            // Keep checking for quit command
-            loop {
-                match cmd_rx.recv() {
-                    Ok(SimCommand::Quit) | Err(_) => return,
-                    _ => {}
-                }
-            }
-        }
-
-        // Step simulation
-        sim.step();
-        tick += 1;
-
-        // Update price history for each symbol (V2.3)
-        // (imperative: complex conditional mutation of price_history)
-        for symbol in &symbols {
+    /// Update price history from current simulation state.
+    fn update_price_history(&mut self, sim: &Simulation) {
+        for symbol in &self.symbols {
             if let Some(book) = sim.get_book(symbol)
                 && let Some(price) = book.last_price()
             {
-                let history = price_history.entry(symbol.clone()).or_default();
+                let history = self.price_history.entry(symbol.clone()).or_default();
                 history.push(price.to_float());
-                if history.len() > config.max_price_history {
+                if history.len() > self.max_price_history {
                     history.remove(0);
                 }
             }
         }
+    }
 
-        // Send update to TUI
-        let update = build_update(&sim, &price_history, false, tier1_count, tier2_count);
-        if tx.send(update).is_err() {
-            // TUI closed, exit
+    /// Build a SimUpdate from current state.
+    fn build_update(&self, sim: &Simulation, finished: bool) -> SimUpdate {
+        build_update(
+            sim,
+            &self.price_history,
+            finished,
+            self.tier1_count,
+            self.tier2_count,
+        )
+    }
+}
+
+/// Process incoming commands, returning whether to continue the loop.
+fn process_commands(
+    cmd_rx: &Receiver<SimCommand>,
+    state: &mut SimulationLoopState,
+    sim: &Simulation,
+    tx: &Sender<SimUpdate>,
+) -> bool {
+    while let Ok(cmd) = cmd_rx.try_recv() {
+        match cmd {
+            SimCommand::Start => state.running = true,
+            SimCommand::Pause => state.running = false,
+            SimCommand::Toggle => state.running = !state.running,
+            SimCommand::Quit => {
+                let _ = tx.send(state.build_update(sim, true));
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Wait for quit command after simulation finishes.
+fn wait_for_quit(cmd_rx: &Receiver<SimCommand>) {
+    loop {
+        match cmd_rx.recv() {
+            Ok(SimCommand::Quit) | Err(_) => return,
+            _ => {}
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Main Simulation Entry Point
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Run the simulation, sending updates to the TUI via channel.
+///
+/// The simulation starts **paused** and waits for a Start or Toggle command.
+/// Use the command receiver to control start/stop/quit.
+fn run_simulation(tx: Sender<SimUpdate>, cmd_rx: Receiver<SimCommand>, config: SimConfig) {
+    // Phase 1: Build simulation
+    let sim_config = build_simulation_config(&config);
+    let mut sim = Simulation::new(sim_config);
+
+    let all_symbols: Vec<_> = config.get_symbols().to_vec();
+    let mut rng = rand::thread_rng();
+
+    // Phase 2: Spawn Tier 1 agents
+    let mut next_id = spawn_all_tier1_agents(&mut sim, &config, &all_symbols, &mut rng);
+
+    // Phase 3: Spawn Tier 2 agents
+    spawn_tier2_agents(&mut sim, &mut next_id, &config, &all_symbols, &mut rng);
+    spawn_sector_rotators(&mut sim, &mut next_id, &config, &all_symbols);
+
+    // Phase 4: Setup background pool
+    setup_background_pool(&mut sim, &config, &all_symbols);
+
+    // Phase 5: Initialize loop state and send initial update
+    let mut state = SimulationLoopState::new(&config);
+    let _ = tx.send(state.build_update(&sim, false));
+
+    // Phase 6: Main event loop
+    loop {
+        if !process_commands(&cmd_rx, &mut state, &sim, &tx) {
+            return;
+        }
+
+        if !state.running {
+            thread::sleep(Duration::from_millis(10));
+            continue;
+        }
+
+        if state.tick >= state.total_ticks {
+            let _ = tx.send(state.build_update(&sim, true));
+            wait_for_quit(&cmd_rx);
+            return;
+        }
+
+        sim.step();
+        state.tick += 1;
+        state.update_price_history(&sim);
+
+        if tx.send(state.build_update(&sim, false)).is_err() {
             break;
         }
 
-        // Delay for visualization
-        if config.tick_delay_ms > 0 {
-            thread::sleep(Duration::from_millis(config.tick_delay_ms));
+        if state.tick_delay_ms > 0 {
+            thread::sleep(Duration::from_millis(state.tick_delay_ms));
         }
     }
 }

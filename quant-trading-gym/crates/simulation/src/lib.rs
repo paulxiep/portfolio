@@ -17,12 +17,22 @@
 //! │  1. Build MarketData snapshot           │
 //! │  2. Call agent.on_tick() for each agent │
 //! │  3. Collect AgentActions (orders)       │
-//! │  4. Process orders through MatchingEngine│
+//! │  4. Batch auction per symbol (parallel) │
 //! │  5. Notify agents of fills via on_fill()│
 //! │  6. Advance tick counter                │
 //! │                                         │
 //! └─────────────────────────────────────────┘
 //! ```
+//!
+//! # Parallel Execution (V3.6)
+//!
+//! With the `parallel` feature, the simulation parallelizes:
+//! - Agent `on_tick()` collection via rayon
+//! - Batch auction matching per symbol (independent symbols run in parallel)
+//! - Fill notification processing
+//!
+//! The `parallel` module provides declarative helpers that abstract over
+//! `par_iter` vs `iter` based on the feature flag.
 //!
 //! # Example
 //!
@@ -46,6 +56,7 @@
 //! ```
 
 mod config;
+pub mod parallel;
 mod runner;
 
 pub use config::SimulationConfig;

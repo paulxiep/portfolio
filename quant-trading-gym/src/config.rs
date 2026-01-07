@@ -227,21 +227,22 @@ impl Default for SimConfig {
             tick_delay_ms: 0, // ~100 ticks/sec for watchable visualization
             verbose: false,
 
+            // V3.5: Doubled agent counts for parallel execution benchmarking
             // Tier 1 Agent Counts (minimums per type)
-            num_market_makers: 100,
-            num_noise_traders: 250,
-            num_momentum_traders: 50,
-            num_trend_followers: 50,
-            num_macd_traders: 50,
-            num_bollinger_traders: 50,
-            num_vwap_executors: 50,
-            num_pairs_traders: 200,   // V3.3: multi-symbol pairs traders
-            num_sector_rotators: 200, // V3.3: sector rotation agents (special T2)
+            num_market_makers: 150,
+            num_noise_traders: 500,
+            num_momentum_traders: 100,
+            num_trend_followers: 100,
+            num_macd_traders: 100,
+            num_bollinger_traders: 100,
+            num_vwap_executors: 100,
+            num_pairs_traders: 450,   // V3.3: multi-symbol pairs traders
+            num_sector_rotators: 400, // V3.3: sector rotation agents (special T2)
             // Tier Minimums
-            min_tier1_agents: 800, // Random agents fill the gap
+            min_tier1_agents: 1600, // Random agents fill the gap
 
             // Tier 2 Reactive Agents (V3.2)
-            num_tier2_agents: 4000,
+            num_tier2_agents: 8000,
 
             // Tier 2 Reactive Agent Parameters (V3.2)
             // Equal starting cash to noise traders for fair comparison
@@ -261,8 +262,9 @@ impl Default for SimConfig {
             t2_order_size_max: 0.5,    // Max 70% of max position per order
 
             // Tier 3 Background Pool (V3.4)
+            // V3.5: Doubled pool size for parallel execution benchmarking
             enable_background_pool: true,
-            background_pool_size: 45_000,
+            background_pool_size: 90_000,
             background_regime: MarketRegime::Normal,
             t3_mean_order_size: 15.0,
             t3_max_order_size: 100,

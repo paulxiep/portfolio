@@ -408,21 +408,17 @@ pub struct SectorRotatorConfig {
 - Profile and optimize hot paths
 - Memory budget validation
 - Two-phase tick architecture (read phase parallel, write phase sequential)
+- **Rayon integration:**
+  - Cargo feature flag: `parallel` (default on, disabled in debug builds for faster compilation)
+  - Runtime toggle: `SimConfig.parallel_execution: bool` — parallel by default, sequential for deterministic runs
+  - Sequential mode required for reproducible simulations (e.g., RL training, CI assertions)
 
-### V3.6: SQLite Storage (~4 days)
-- Trade history persistence
-- Candle aggregation (1m, 5m, 1h)
-- Portfolio snapshots
-- **Game snapshots for save/resume** (`GameSnapshot`, `AgentSnapshot`)
-- **Trade log** (append-only, for post-game analysis)
-- **API consideration:** Change `on_fill(Trade)` → `on_fill(Fill)` to expose per-order slippage metrics to agents (V2.2 infrastructure ready, deferred here to avoid early API churn)
-
-### V3.7: Hooks System (~2 days)
+### V3.6: Hooks System (~2 days)
 - `SimulationHook` trait
 - Metrics hook, persistence hook
 - TUI becomes a hook (optional observer)
 
-### V3.8: Simulation Containerization (~2 days)
+### V3.7: Simulation Containerization (~2 days)
 
 **Goal:** Containerized simulation for reproducible benchmarks, CI/CD, and V4 foundation.
 
@@ -455,15 +451,14 @@ CMD ["--headless", "--config", "/config/default.toml"]
     simulation:
       build: .
       volumes:
-        - ./data:/data          # SQLite persistence
         - ./config:/config      # Runtime config
       environment:
         - SIM_TICKS=100000
         - SIM_AGENTS=1000
   ```
-- `--headless` flag (disables TUI, requires V3.7)
+- `--headless` flag (disables TUI, requires V3.6)
 - Environment-based config override (`SIM_*` env vars)
-- Volume mounts for SQLite DB and config files
+- Volume mounts for config files (SQLite persistence added in V3.8)
 - GitHub Actions workflow: build → test → push to GHCR
 - Health check endpoint (`/health` via minimal HTTP, or exit code)
 
@@ -483,6 +478,17 @@ docker-compose.yaml       # Local development
 **SoC:** Container = runtime concern, separate from simulation logic.
 
 **Maps to Original:** Part 16 (Containerization & Deployment)
+
+### V3.8: SQLite Storage (~4 days)
+- Trade history persistence
+- Candle aggregation (1m, 5m, 1h)
+- Portfolio snapshots
+- **Game snapshots for save/resume** (`GameSnapshot`, `AgentSnapshot`)
+- **Trade log** (append-only, for post-game analysis)
+- **API consideration:** Change `on_fill(Trade)` → `on_fill(Fill)` to expose per-order slippage metrics to agents (V2.2 infrastructure ready, deferred here to avoid early API churn)
+- **Docker integration:** Add `./data:/data` volume mount to `docker-compose.yaml`
+
+**Maps to Original:** Phase 10 (Storage)
 
 **Borrow-Checking Pitfalls to Address:**
 1. **Multi-symbol state updates (V3.1):** Use interior mutability or collect updates, apply sequentially
@@ -689,7 +695,7 @@ Game Service :8002  (/game/dashboard, /game/stream)
 
 #### Containerization (V4-Game)
 
-Extends V3.8 base image for multi-service deployment:
+Extends V3.7 base image for multi-service deployment:
 
 | Environment | Tooling | Use Case |
 |-------------|---------|----------|
@@ -698,13 +704,13 @@ Extends V3.8 base image for multi-service deployment:
 | Production | Kubernetes | Scalable cloud deployment |
 
 Key elements:
-- **Reuses V3.8 distroless base** for simulation service
+- **Reuses V3.7 distroless base** for simulation service
 - Per-service Dockerfiles (Data, Game, Storage, Chatbot)
 - Health checks on all services (`/health` endpoint)
 - Environment-based configuration (`.env` files)
 - CI/CD builds on push to main
 
-**See:** V3.8 for base simulation container, Part 16 (Containerization & Deployment) in full plan
+**See:** V3.7 for base simulation container, Part 16 (Containerization & Deployment) in full plan
 
 ---
 
@@ -779,8 +785,8 @@ pub struct ConditionUpdate {
 | V3.3 | Multi-symbol strategy reads | Return owned values from `Market` queries; no overlapping borrows |
 | V3.4 | Background pool accounting | Append-only fill recording |
 | V3.5 | Parallel agent execution | Two-phase tick: read (parallel) → write (sequential) |
-| V3.6 | Snapshot during active tick | Snapshots only at tick boundaries |
-| V3.7 | SimulationHook borrows | Sequential hook invocation |
+| V3.6 | SimulationHook borrows | Sequential hook invocation |
+| V3.8 | Snapshot during active tick | Snapshots only at tick boundaries |
 | V4-RL | PyO3 GIL blocking | `py.allow_threads()` for Rust computation |
 | V4-Game | Async/sync boundary | Channel-based `SimulationBridge` |
 
@@ -887,7 +893,7 @@ simulation/         simulation/         simulation/         simulation/
   runner.rs           runner.rs           runner.rs           runner.rs
                                           config.rs           config.rs
                                                               orchestrator.rs (V3.2: TieredOrchestrator)
-                                                              hooks.rs (V3.7)
+                                                              hooks.rs (V3.6)
 
 tui/                tui/                tui/                tui/ (becomes hook)
   lib.rs              lib.rs              lib.rs              lib.rs
@@ -925,9 +931,9 @@ src/                src/                src/                src/
 - **V3.2→V3.3:** Add `tier1/strategies/pairs_trading.rs`, `tier2/strategies/sector_rotator.rs`, extend `quant/stats.rs`
 - **V3.3→V3.4:** Add `tier3/` with `BackgroundAgentPool`
 - **V3.4→V3.5:** Performance tuning, two-phase tick (no new files, optimization pass)
-- **V3.5→V3.6:** Add `storage/` crate
-- **V3.6→V3.7:** Implement `SimulationHook` trait, TUI becomes hook
-- **V3.7→V3.8:** Add `dockerfile/`, `docker-compose.yaml`, `--headless` flag, CI workflow
+- **V3.5→V3.6:** Implement `SimulationHook` trait, TUI becomes hook
+- **V3.6→V3.7:** Add `dockerfile/`, `docker-compose.yaml`, `--headless` flag, CI workflow
+- **V3.7→V3.8:** Add `storage/` crate
 
 ---
 
@@ -1045,6 +1051,6 @@ cargo new crates/tui --lib
 - **V3.3:** Add `tier1/strategies/pairs_trading.rs`, `tier2/strategies/sector_rotator.rs`, extend `quant/stats.rs`
 - **V3.4:** Add `tier3/` module with `pool.rs`
 - **V3.5:** Performance tuning pass (no new files)
-- **V3.6:** Add `storage/` crate
-- **V3.7:** Add `hooks.rs` to simulation; refactor TUI to implement `SimulationHook`
-- **V3.8:** Add `dockerfile/`, `docker-compose.yaml`, CI workflow
+- **V3.6:** Add `hooks.rs` to simulation; refactor TUI to implement `SimulationHook`
+- **V3.7:** Add `dockerfile/`, `docker-compose.yaml`, CI workflow
+- **V3.8:** Add `storage/` crate

@@ -5,9 +5,14 @@ edition.workspace = true
 authors.workspace = true
 description = "Core market mechanics for the quant-trading-gym simulation"
 
+[features]
+default = ["parallel"]
+parallel = ["rayon"]
+
 [dependencies]
 types.workspace = true
 serde.workspace = true
+rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
 rand.workspace = true
