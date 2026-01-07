@@ -1,5 +1,51 @@
 # Development Log
 
+## 2026-01-07: V3.7 Containerization & CLI
+
+### Summary
+Added Docker support with ttyd for browser-accessible TUI. `--headless` flag enables benchmarks/CI without terminal. Environment variables (`SIM_*`) override config.
+
+### Files
+
+| File | Changes |
+|------|---------|
+| `src/main.rs` | `Args` struct with clap, `run_headless()`, env var support |
+| `Cargo.toml` | Added `clap` dependency |
+| `dockerfile/Dockerfile.simulation` | Distroless image for headless benchmarks |
+| `dockerfile/Dockerfile.tui` | Debian + ttyd for browser TUI |
+| `docker-compose.yaml` | Local dev setup with both services |
+
+### Usage
+
+```bash
+# Local headless benchmark
+cargo run --release -- --headless --ticks 10000
+
+# Docker TUI (browser at http://localhost:7681)
+docker compose up tui
+
+# Docker headless benchmark
+docker compose up simulation
+```
+
+### CLI Args
+
+| Flag | Env Var | Description |
+|------|---------|-------------|
+| `--headless` | `SIM_HEADLESS` | Disable TUI |
+| `--ticks N` | `SIM_TICKS` | Total simulation ticks |
+| `--tier1 N` | `SIM_TIER1` | Tier 1 agent count |
+| `--tier2 N` | `SIM_TIER2` | Tier 2 agent count |
+| `--pool-size N` | `SIM_POOL_SIZE` | Background pool size |
+| `--tick-delay N` | `SIM_TICK_DELAY` | Delay between ticks (ms) |
+
+### Notes
+- ttyd installed from GitHub releases (not in Debian repos)
+- Distroless runtime for headless (~20MB image)
+- Debian slim for TUI (ttyd requires libc)
+
+---
+
 ## 2026-01-07: V3.6 Hooks System
 
 ### Summary

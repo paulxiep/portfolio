@@ -211,6 +211,28 @@ pub struct SimConfig {
     pub max_price_history: usize,
     /// TUI frame rate (frames per second).
     pub tui_frame_rate: u64,
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Event/News Generation Parameters (V2.4)
+    // ─────────────────────────────────────────────────────────────────────────
+    /// Enable event/news generation.
+    pub events_enabled: bool,
+    /// Earnings event probability per tick (e.g., 0.002 = ~1 per 500 ticks).
+    pub event_earnings_prob: f64,
+    /// Minimum ticks between earnings events.
+    pub event_earnings_interval: u64,
+    /// Guidance event probability per tick (e.g., 0.001 = ~1 per 1000 ticks).
+    pub event_guidance_prob: f64,
+    /// Minimum ticks between guidance events.
+    pub event_guidance_interval: u64,
+    /// Rate decision probability per tick (e.g., 0.0005 = ~1 per 2000 ticks).
+    pub event_rate_decision_prob: f64,
+    /// Minimum ticks between rate decisions.
+    pub event_rate_decision_interval: u64,
+    /// Sector news probability per tick (e.g., 0.003 = ~1 per 333 ticks).
+    pub event_sector_news_prob: f64,
+    /// Minimum ticks between sector news.
+    pub event_sector_news_interval: u64,
 }
 
 impl Default for SimConfig {
@@ -222,8 +244,10 @@ impl Default for SimConfig {
                 SymbolSpec::with_sector("Zephyr Zap", 100.0, Sector::Utilities),
                 SymbolSpec::with_sector("Vraiment Villa", 100.0, Sector::RealEstate),
                 SymbolSpec::with_sector("Quant Quotation", 100.0, Sector::Finance),
+                SymbolSpec::with_sector("Hello Handy", 100.0, Sector::Communications),
+                SymbolSpec::with_sector("Pflege Pharma", 100.0, Sector::Healthcare),
             ],
-            total_ticks: 5000,
+            total_ticks: 10000,
             tick_delay_ms: 0, // ~100 ticks/sec for watchable visualization
             verbose: false,
 
@@ -231,31 +255,31 @@ impl Default for SimConfig {
             // Tier 1 Agent Counts (minimums per type)
             num_market_makers: 150,
             num_noise_traders: 500,
-            num_momentum_traders: 100,
-            num_trend_followers: 100,
-            num_macd_traders: 100,
-            num_bollinger_traders: 100,
-            num_vwap_executors: 100,
+            num_momentum_traders: 150,
+            num_trend_followers: 150,
+            num_macd_traders: 150,
+            num_bollinger_traders: 150,
+            num_vwap_executors: 150,
             num_pairs_traders: 450,   // V3.3: multi-symbol pairs traders
-            num_sector_rotators: 400, // V3.3: sector rotation agents (special T2)
+            num_sector_rotators: 500, // V3.3: sector rotation agents (special T2)
             // Tier Minimums
-            min_tier1_agents: 1600, // Random agents fill the gap
+            min_tier1_agents: 2500, // Random agents fill the gap
 
             // Tier 2 Reactive Agents (V3.2)
-            num_tier2_agents: 8000,
+            num_tier2_agents: 7000,
 
             // Tier 2 Reactive Agent Parameters (V3.2)
             // Equal starting cash to noise traders for fair comparison
             t2_initial_cash: Cash::from_float(100_000.0),
             t2_max_position: 1000,
-            t2_buy_threshold_min: 70.0, // Buy when price drops to $50-75
-            t2_buy_threshold_max: 100.0,
+            t2_buy_threshold_min: 60.0, // Buy when price drops to $50-75
+            t2_buy_threshold_max: 90.0,
             t2_stop_loss_min: 0.25, // StopLoss 25-50% (wider to avoid noise)
             t2_stop_loss_max: 0.5,
             t2_take_profit_min: 0.25, // TakeProfit 25-50% (aggressive targets)
             t2_take_profit_max: 0.5,
-            t2_sell_threshold_min: 110.0, // ThresholdSeller $110-140
-            t2_sell_threshold_max: 150.0,
+            t2_sell_threshold_min: 105.0, // ThresholdSeller $110-140
+            t2_sell_threshold_max: 130.0,
             t2_take_profit_prob: 0.5,  // 50% TakeProfit, 50% ThresholdSeller
             t2_news_reactor_prob: 0.1, // 10% have NewsReactor
             t2_order_size_min: 0.2,    // Min 30% of max position per order
@@ -266,16 +290,16 @@ impl Default for SimConfig {
             enable_background_pool: true,
             background_pool_size: 90_000,
             background_regime: MarketRegime::Normal,
-            t3_mean_order_size: 15.0,
+            t3_mean_order_size: 25.0,
             t3_max_order_size: 100,
             t3_order_size_stddev: 10.0,
             t3_base_activity: Some(0.003), // Use regime default
-            t3_price_spread_lambda: 20.0,
-            t3_max_price_deviation: 0.02, // 2% from mid
+            t3_price_spread_lambda: 10.0,
+            t3_max_price_deviation: 0.05, // 5% from mid
 
             // Market Maker Parameters
             mm_initial_cash: Cash::from_float(1_000_000.0),
-            mm_half_spread: 0.0025, // 0.25% half-spread = $0.25 on $100
+            mm_half_spread: 0.005, // 0.25% half-spread = $0.25 on $100
             mm_quote_size: 100,
             mm_refresh_interval: 1, // Quote every tick (required for IOC mode)
             mm_max_inventory: 200,
@@ -287,18 +311,30 @@ impl Default for SimConfig {
             nt_initial_cash: Cash::from_float(100_000.0),
             nt_initial_position: 0,
             nt_order_probability: 0.3, // 30% chance each tick
-            nt_price_deviation: 0.01,  // 1% from mid price
-            nt_min_quantity: 5,
-            nt_max_quantity: 30,
+            nt_price_deviation: 0.02,  // 1% from mid price
+            nt_min_quantity: 15,
+            nt_max_quantity: 50,
 
             // Quant Strategy Parameters
             quant_initial_cash: Cash::from_float(100_000.0),
-            quant_order_size: 25,
+            quant_order_size: 35,
             quant_max_position: 200,
 
             // TUI Parameters
-            max_price_history: 200,
-            tui_frame_rate: 30,
+            max_price_history: 500,
+            tui_frame_rate: 100,
+
+            // Event/News Generation Parameters (V2.4)
+            // Defaults match crates/news/src/config.rs
+            events_enabled: true,
+            event_earnings_prob: 0.006,        // ~1 per 500 ticks per symbol
+            event_earnings_interval: 25,
+            event_guidance_prob: 0.003,        // ~1 per 1000 ticks
+            event_guidance_interval: 50,
+            event_rate_decision_prob: 0.0015,  // ~1 per 2000 ticks (rare)
+            event_rate_decision_interval: 125,
+            event_sector_news_prob: 0.009,     // ~1 per 333 ticks
+            event_sector_news_interval: 12,
         }
     }
 }

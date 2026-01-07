@@ -562,8 +562,9 @@ impl TuiApp {
         if self.overlay_mode && self.state.symbols.len() > 1 {
             // Overlay mode: show all symbols
             let title = "Price (Overlay)".to_string();
-            let chart =
-                PriceChart::multi(&self.state.price_history, &self.state.symbols).title(&title);
+            let chart = PriceChart::multi(&self.state.price_history, &self.state.symbols)
+                .title(&title)
+                .tick(self.state.tick);
             frame.render_widget(chart, area);
         } else {
             // Single symbol mode
@@ -572,7 +573,9 @@ impl TuiApp {
                 Some(p) => format!("Price: ${:.2}", p.to_float()),
                 None => "Price".to_string(),
             };
-            let chart = PriceChart::new(price_history).title(&title);
+            let chart = PriceChart::new(price_history)
+                .title(&title)
+                .tick(self.state.tick);
             frame.render_widget(chart, area);
         }
     }

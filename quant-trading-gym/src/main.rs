@@ -15,6 +15,11 @@
 //! ```
 //!
 //! The TUI starts paused. Press Space to start/stop the simulation.
+//!
+//! # Headless Mode (V3.7)
+//!
+//! Run `--headless` to disable TUI and run simulation to completion.
+//! Useful for benchmarks, CI, and Docker containers.
 
 mod config;
 
@@ -29,7 +34,9 @@ use agents::{
     ReactiveAgent, ReactiveStrategyType, SectorRotator, SectorRotatorConfig, TrendFollower,
     TrendFollowerConfig, VwapExecutor, VwapExecutorConfig,
 };
+use clap::Parser;
 use crossbeam_channel::{Receiver, Sender, bounded};
+use news::config::{EarningsConfig, EventFrequency, GuidanceConfig, NewsGeneratorConfig, RateDecisionConfig, SectorNewsConfig};
 use rand::Rng;
 use rand::prelude::SliceRandom;
 use simulation::{Simulation, SimulationConfig};
@@ -37,6 +44,37 @@ use tui::{AgentInfo, RiskInfo, SimCommand, SimUpdate, TuiApp};
 use types::{AgentId, Cash, Price, Quantity, Sector, ShortSellingConfig, Symbol, SymbolConfig};
 
 pub use config::{SimConfig, SymbolSpec, Tier1AgentType};
+
+/// Quant Trading Gym - Market simulation with TUI visualization
+#[derive(Parser, Debug)]
+#[command(name = "quant-trading-gym")]
+#[command(about = "A quantitative trading simulation with TUI visualization")]
+#[command(version)]
+struct Args {
+    /// Run without TUI (headless mode for benchmarks/CI/Docker)
+    #[arg(long, env = "SIM_HEADLESS")]
+    headless: bool,
+
+    /// Total ticks to run (0 = infinite in TUI mode)
+    #[arg(long, env = "SIM_TICKS")]
+    ticks: Option<u64>,
+
+    /// Number of Tier 1 agents
+    #[arg(long, env = "SIM_TIER1")]
+    tier1: Option<usize>,
+
+    /// Number of Tier 2 agents
+    #[arg(long, env = "SIM_TIER2")]
+    tier2: Option<usize>,
+
+    /// Background pool size (Tier 3)
+    #[arg(long, env = "SIM_POOL_SIZE")]
+    pool_size: Option<usize>,
+
+    /// Tick delay in milliseconds
+    #[arg(long, env = "SIM_TICK_DELAY")]
+    tick_delay: Option<u64>,
+}
 
 /// Calculate the number of digits needed to display a number.
 fn digit_width(n: usize) -> usize {
@@ -463,9 +501,46 @@ fn build_simulation_config(config: &SimConfig) -> SimulationConfig {
     // Enable short selling with tight limits matching agent configs
     let short_config = ShortSellingConfig::enabled_default().with_max_short(Quantity(500));
 
+    // Build news/event config from SimConfig settings
+    let news_config = if config.events_enabled {
+        NewsGeneratorConfig {
+            earnings: EarningsConfig {
+                frequency: EventFrequency::new(
+                    config.event_earnings_prob,
+                    config.event_earnings_interval,
+                ),
+                ..Default::default()
+            },
+            guidance: GuidanceConfig {
+                frequency: EventFrequency::new(
+                    config.event_guidance_prob,
+                    config.event_guidance_interval,
+                ),
+                ..Default::default()
+            },
+            rate_decision: RateDecisionConfig {
+                frequency: EventFrequency::new(
+                    config.event_rate_decision_prob,
+                    config.event_rate_decision_interval,
+                ),
+                ..Default::default()
+            },
+            sector_news: SectorNewsConfig {
+                frequency: EventFrequency::new(
+                    config.event_sector_news_prob,
+                    config.event_sector_news_interval,
+                ),
+                ..Default::default()
+            },
+        }
+    } else {
+        NewsGeneratorConfig::disabled()
+    };
+
     SimulationConfig::with_symbols(symbol_configs)
         .with_short_selling(short_config)
         .with_verbose(config.verbose)
+        .with_news_config(news_config)
 }
 
 /// Create a MarketMakerConfig for a given symbol spec.
@@ -915,31 +990,44 @@ fn run_simulation(tx: Sender<SimUpdate>, cmd_rx: Receiver<SimCommand>, config: S
 
 fn main() {
     // ─────────────────────────────────────────────────────────────────────────
-    // Configuration - Edit here or use presets!
+    // Parse CLI arguments (V3.7)
     // ─────────────────────────────────────────────────────────────────────────
+    let args = Args::parse();
 
-    // Default configuration
-    let config = SimConfig::default();
+    // Build config with CLI/env overrides
+    let mut config = SimConfig::default();
 
-    // Or use a preset:
-    // let config = SimConfig::demo();           // Quick 1000-tick demo
-    // let config = SimConfig::stress_test();    // 100K ticks, 55 agents
-    // let config = SimConfig::low_activity();   // Calm market
-    // let config = SimConfig::high_volatility(); // Wild swings
+    if let Some(ticks) = args.ticks {
+        config.total_ticks = ticks;
+    }
+    if let Some(tier1) = args.tier1 {
+        config.min_tier1_agents = tier1;
+    }
+    if let Some(tier2) = args.tier2 {
+        config.num_tier2_agents = tier2;
+    }
+    if let Some(pool_size) = args.pool_size {
+        config.background_pool_size = pool_size;
+    }
+    if let Some(delay) = args.tick_delay {
+        config.tick_delay_ms = delay;
+    }
 
-    // Or customize with builder pattern:
-    // let config = SimConfig::new()
-    //     .symbol("GOOG")
-    //     .initial_price(150.0)
-    //     .total_ticks(10_000)
-    //     .market_makers(3)
-    //     .noise_traders(30)
-    //     .mm_cash(2_000_000.0)
-    //     .nt_cash(25_000.0);
+    // In headless mode, ensure we have a finite tick count
+    if args.headless && config.total_ticks == 0 {
+        config.total_ticks = 10_000; // Default for headless
+    }
 
     // Print config summary
     eprintln!("╔═══════════════════════════════════════════════════════════════════════╗");
-    eprintln!("║  Quant Trading Gym - Simulation Config                                ║");
+    eprintln!(
+        "║  Quant Trading Gym - {}                          ║",
+        if args.headless {
+            "Headless Mode"
+        } else {
+            "TUI Mode     "
+        }
+    );
     eprintln!("╠═══════════════════════════════════════════════════════════════════════╣");
     eprintln!(
         "║  Symbol: {:6}  │  Initial Price: ${:<8.2}                      ║",
@@ -986,9 +1074,81 @@ fn main() {
     );
     eprintln!("╚═══════════════════════════════════════════════════════════════════════╝");
     eprintln!();
-    eprintln!("  Press Space to start simulation...");
-    eprintln!();
 
+    if args.headless {
+        // ─────────────────────────────────────────────────────────────────────
+        // Headless mode: run simulation without TUI
+        // ─────────────────────────────────────────────────────────────────────
+        run_headless(config);
+    } else {
+        // ─────────────────────────────────────────────────────────────────────
+        // TUI mode: interactive visualization
+        // ─────────────────────────────────────────────────────────────────────
+        eprintln!("  Press Space to start simulation...");
+        eprintln!();
+        run_with_tui(config);
+    }
+}
+
+/// Run simulation in headless mode (no TUI).
+fn run_headless(config: SimConfig) {
+    use std::time::Instant;
+
+    let total_ticks = config.total_ticks;
+    let tick_delay_ms = config.tick_delay_ms;
+
+    // Build simulation (same as run_simulation)
+    let sim_config = build_simulation_config(&config);
+    let mut sim = Simulation::new(sim_config);
+
+    let all_symbols: Vec<_> = config.get_symbols().to_vec();
+    let mut rng = rand::thread_rng();
+
+    // Spawn all agents (same as run_simulation)
+    let mut next_id = spawn_all_tier1_agents(&mut sim, &config, &all_symbols, &mut rng);
+    spawn_tier2_agents(&mut sim, &mut next_id, &config, &all_symbols, &mut rng);
+    spawn_sector_rotators(&mut sim, &mut next_id, &config, &all_symbols);
+    setup_background_pool(&mut sim, &config, &all_symbols);
+
+    eprintln!("Running {} ticks...", total_ticks);
+    let start = Instant::now();
+
+    for tick in 0..total_ticks {
+        sim.step();
+
+        if tick_delay_ms > 0 {
+            thread::sleep(Duration::from_millis(tick_delay_ms));
+        }
+
+        // Progress every 10%
+        if tick > 0 && tick % (total_ticks / 10).max(1) == 0 {
+            let pct = (tick * 100) / total_ticks;
+            eprintln!("  {}% ({}/{} ticks)", pct, tick, total_ticks);
+        }
+    }
+
+    let elapsed = start.elapsed();
+    let stats = sim.stats();
+
+    eprintln!();
+    eprintln!("╔═══════════════════════════════════════════════════════════════════════╗");
+    eprintln!("║  Simulation Complete                                                  ║");
+    eprintln!("╠═══════════════════════════════════════════════════════════════════════╣");
+    eprintln!(
+        "║  Ticks: {:8}  │  Elapsed: {:6.2}s  │  Rate: {:8.0} ticks/s     ║",
+        total_ticks,
+        elapsed.as_secs_f64(),
+        total_ticks as f64 / elapsed.as_secs_f64()
+    );
+    eprintln!(
+        "║  Total Orders: {:8}  │  Total Trades: {:8}                   ║",
+        stats.total_orders, stats.total_trades
+    );
+    eprintln!("╚═══════════════════════════════════════════════════════════════════════╝");
+}
+
+/// Run simulation with TUI visualization.
+fn run_with_tui(config: SimConfig) {
     // Create bounded channel for updates (backpressure if TUI falls behind)
     let (tx, rx) = bounded::<SimUpdate>(100);
 
