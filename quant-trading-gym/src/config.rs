@@ -245,7 +245,7 @@ impl Default for SimConfig {
                 SymbolSpec::with_sector("Vraiment Villa", 100.0, Sector::RealEstate),
                 SymbolSpec::with_sector("Quant Quotation", 100.0, Sector::Finance),
                 SymbolSpec::with_sector("Hello Handy", 100.0, Sector::Communications),
-                SymbolSpec::with_sector("Pflege Pharma", 100.0, Sector::Healthcare),
+                SymbolSpec::with_sector("Nubes Nexus", 100.0, Sector::Tech),
             ],
             total_ticks: 10000,
             tick_delay_ms: 0, // ~100 ticks/sec for watchable visualization
@@ -253,20 +253,20 @@ impl Default for SimConfig {
 
             // V3.5: Doubled agent counts for parallel execution benchmarking
             // Tier 1 Agent Counts (minimums per type)
-            num_market_makers: 150,
-            num_noise_traders: 500,
-            num_momentum_traders: 150,
-            num_trend_followers: 150,
-            num_macd_traders: 150,
-            num_bollinger_traders: 150,
-            num_vwap_executors: 150,
-            num_pairs_traders: 450,   // V3.3: multi-symbol pairs traders
-            num_sector_rotators: 500, // V3.3: sector rotation agents (special T2)
+            num_market_makers: 300,
+            num_noise_traders: 1500,
+            num_momentum_traders: 400,
+            num_trend_followers: 400,
+            num_macd_traders: 400,
+            num_bollinger_traders: 400,
+            num_vwap_executors: 400,
+            num_pairs_traders: 1200,   // V3.3: multi-symbol pairs traders
+            num_sector_rotators: 2000, // V3.3: sector rotation agents (special T2)
             // Tier Minimums
-            min_tier1_agents: 2500, // Random agents fill the gap
+            min_tier1_agents: 5000, // Random agents fill the gap
 
             // Tier 2 Reactive Agents (V3.2)
-            num_tier2_agents: 7000,
+            num_tier2_agents: 18000,
 
             // Tier 2 Reactive Agent Parameters (V3.2)
             // Equal starting cash to noise traders for fair comparison
@@ -288,7 +288,7 @@ impl Default for SimConfig {
             // Tier 3 Background Pool (V3.4)
             // V3.5: Doubled pool size for parallel execution benchmarking
             enable_background_pool: true,
-            background_pool_size: 90_000,
+            background_pool_size: 75000,
             background_regime: MarketRegime::Normal,
             t3_mean_order_size: 25.0,
             t3_max_order_size: 100,

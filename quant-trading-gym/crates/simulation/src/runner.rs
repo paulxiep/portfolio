@@ -53,7 +53,8 @@ use quant::{
 use rand::seq::SliceRandom;
 use sim_core::{Market, MarketView, MatchingEngine, OrderBook, run_parallel_auctions};
 use types::{
-    AgentId, Candle, Order, OrderId, Price, Quantity, RiskViolation, Symbol, Tick, Timestamp, Trade,
+    AgentId, Candle, Order, OrderId, OrderSide, Price, Quantity, RiskViolation, Symbol, Tick,
+    Timestamp, Trade,
 };
 
 use crate::config::SimulationConfig;
@@ -1001,23 +1002,86 @@ impl Simulation {
 
     /// Build reference prices for batch auction clearing.
     ///
-    /// Priority: fair_value (fundamentals) > last_price (order book).
-    fn build_reference_prices<'a>(
+    /// Uses volume-weighted equilibrium pricing based on order imbalance:
+    /// - Compute WAP (weighted avg price) for bids and asks separately
+    /// - Anchor at reverse-volume-weighted price: scarce side pulls price toward it
+    /// - Formula: `(wap_bid × ask_vol + wap_ask × bid_vol) / (bid_vol + ask_vol)`
+    ///
+    /// Fallback chain: order-derived anchor → last_price → initial_price
+    ///
+    /// Parallelized across symbols when `parallel` feature is enabled.
+    fn build_reference_prices(
         &self,
-        symbols: impl Iterator<Item = &'a Symbol>,
+        orders_by_symbol: &HashMap<Symbol, Vec<Order>>,
     ) -> HashMap<String, Price> {
-        symbols
-            .filter_map(|symbol| {
-                self.fundamentals
-                    .fair_value(symbol)
-                    .or_else(|| {
-                        self.market
-                            .get_book(symbol)
-                            .and_then(|book| book.last_price())
-                    })
-                    .map(|price| (symbol.clone(), price))
-            })
-            .collect()
+        let symbols: Vec<_> = orders_by_symbol.keys().collect();
+
+        parallel::filter_map_slice(&symbols, |symbol| {
+            let price = Self::compute_order_derived_anchor(orders_by_symbol.get(*symbol))
+                .or_else(|| {
+                    self.market
+                        .get_book(*symbol)
+                        .and_then(|book| book.last_price())
+                })
+                .or_else(|| {
+                    self.config
+                        .get_symbol_configs()
+                        .iter()
+                        .find(|sc| &sc.symbol == *symbol)
+                        .map(|sc| sc.initial_price)
+                });
+            price.map(|p| ((*symbol).clone(), p))
+        })
+        .into_iter()
+        .collect()
+    }
+
+    /// Compute order-derived anchor price from submitted orders.
+    ///
+    /// Uses reverse volume weighting to reflect supply/demand imbalance:
+    /// when supply exceeds demand, price gravitates toward buyers.
+    fn compute_order_derived_anchor(orders: Option<&Vec<Order>>) -> Option<Price> {
+        let orders = orders?;
+        if orders.is_empty() {
+            return None;
+        }
+
+        // Compute WAP and total volume for each side
+        let (bid_wap, bid_vol) = Self::compute_side_wap(orders, OrderSide::Buy);
+        let (ask_wap, ask_vol) = Self::compute_side_wap(orders, OrderSide::Sell);
+
+        match (bid_wap, ask_wap) {
+            // Both sides present: reverse volume weighting
+            (Some(b_wap), Some(a_wap)) => {
+                let b_val = b_wap.to_float() * ask_vol as f64;
+                let a_val = a_wap.to_float() * bid_vol as f64;
+                let total_vol = bid_vol + ask_vol;
+                Some(Price::from_float((b_val + a_val) / total_vol as f64))
+            }
+            // Only bids: anchor at bid WAP
+            (Some(b_wap), None) => Some(b_wap),
+            // Only asks: anchor at ask WAP
+            (None, Some(a_wap)) => Some(a_wap),
+            // No limit orders
+            (None, None) => None,
+        }
+    }
+
+    /// Compute weighted average price and total volume for one side.
+    fn compute_side_wap(orders: &[Order], side: OrderSide) -> (Option<Price>, u64) {
+        let (price_x_qty_sum, qty_sum) = orders
+            .iter()
+            .filter(|o| o.side == side)
+            .filter_map(|o| o.limit_price().map(|p| (p, o.quantity.raw())))
+            .fold((0.0, 0u64), |(pq_sum, q_sum), (price, qty)| {
+                (pq_sum + price.to_float() * qty as f64, q_sum + qty)
+            });
+
+        if qty_sum == 0 {
+            (None, 0)
+        } else {
+            (Some(Price::from_float(price_x_qty_sum / qty_sum as f64)), qty_sum)
+        }
     }
 
     /// Process batch auction results into trades.
@@ -1305,7 +1369,7 @@ impl Simulation {
             self.hooks.on_orders_collected(&all_orders, &hook_ctx);
         }
 
-        let reference_prices = self.build_reference_prices(orders_by_symbol.keys());
+        let reference_prices = self.build_reference_prices(&orders_by_symbol);
         let auction_results = run_parallel_auctions(
             orders_by_symbol,
             &reference_prices,

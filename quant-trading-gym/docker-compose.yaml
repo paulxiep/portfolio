@@ -12,10 +12,10 @@ services:
     ports:
       - "7681:7681"  # ttyd web interface
     environment:
-      - SIM_TICKS=5000
-      - SIM_TIER1=100
-      - SIM_TIER2=500
-      - SIM_POOL_SIZE=5000
+      - SIM_TICKS=10000
+      - SIM_TIER1=2500
+      - SIM_TIER2=7500
+      - SIM_POOL_SIZE=90000
       - SIM_TICK_DELAY=0  # 20 ticks/sec for smooth viewing
     # Uncomment for smaller demo:
     # environment:
@@ -34,8 +34,8 @@ services:
     environment:
       - SIM_HEADLESS=true
       - SIM_TICKS=10000
-      - SIM_TIER1=100
-      - SIM_TIER2=1000
-      - SIM_POOL_SIZE=10000
+      - SIM_TIER1=2500
+      - SIM_TIER2=7000
+      - SIM_POOL_SIZE=90000
     # Override for stress test:
     # command: ["--ticks", "100000", "--tier1", "500", "--pool-size", "50000"]
