@@ -36,7 +36,10 @@ use agents::{
 };
 use clap::Parser;
 use crossbeam_channel::{Receiver, Sender, bounded};
-use news::config::{EarningsConfig, EventFrequency, GuidanceConfig, NewsGeneratorConfig, RateDecisionConfig, SectorNewsConfig};
+use news::config::{
+    EarningsConfig, EventFrequency, GuidanceConfig, NewsGeneratorConfig, RateDecisionConfig,
+    SectorNewsConfig,
+};
 use rand::Rng;
 use rand::prelude::SliceRandom;
 use simulation::{Simulation, SimulationConfig};
@@ -74,6 +77,42 @@ struct Args {
     /// Tick delay in milliseconds
     #[arg(long, env = "SIM_TICK_DELAY")]
     tick_delay: Option<u64>,
+
+    /// Disable parallel agent collection (V3.7 profiling)
+    #[arg(long, env = "PAR_AGENT_COLLECTION")]
+    par_agent_collection: Option<bool>,
+
+    /// Disable parallel indicators (V3.7 profiling)
+    #[arg(long, env = "PAR_INDICATORS")]
+    par_indicators: Option<bool>,
+
+    /// Disable parallel order validation (V3.7 profiling)
+    #[arg(long, env = "PAR_ORDER_VALIDATION")]
+    par_order_validation: Option<bool>,
+
+    /// Disable parallel auctions (V3.7 profiling)
+    #[arg(long, env = "PAR_AUCTIONS")]
+    par_auctions: Option<bool>,
+
+    /// Disable parallel candle updates (V3.7 profiling)
+    #[arg(long, env = "PAR_CANDLE_UPDATES")]
+    par_candle_updates: Option<bool>,
+
+    /// Disable parallel trade updates (V3.7 profiling)
+    #[arg(long, env = "PAR_TRADE_UPDATES")]
+    par_trade_updates: Option<bool>,
+
+    /// Disable parallel fill notifications (V3.7 profiling)
+    #[arg(long, env = "PAR_FILL_NOTIFICATIONS")]
+    par_fill_notifications: Option<bool>,
+
+    /// Disable parallel wake conditions (V3.7 profiling)
+    #[arg(long, env = "PAR_WAKE_CONDITIONS")]
+    par_wake_conditions: Option<bool>,
+
+    /// Disable parallel risk tracking (V3.7 profiling)
+    #[arg(long, env = "PAR_RISK_TRACKING")]
+    par_risk_tracking: Option<bool>,
 }
 
 /// Calculate the number of digits needed to display a number.
@@ -483,7 +522,7 @@ fn spawn_sector_rotators(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Build simulation configuration from SimConfig.
-fn build_simulation_config(config: &SimConfig) -> SimulationConfig {
+fn build_simulation_config(config: &SimConfig, args: &Args) -> SimulationConfig {
     let symbol_configs: Vec<SymbolConfig> = config
         .get_symbols()
         .iter()
@@ -537,10 +576,41 @@ fn build_simulation_config(config: &SimConfig) -> SimulationConfig {
         NewsGeneratorConfig::disabled()
     };
 
+    // Build parallelization config from args (V3.7)
+    let mut par_config = simulation::ParallelizationConfig::default();
+    if let Some(val) = args.par_agent_collection {
+        par_config.parallel_agent_collection = val;
+    }
+    if let Some(val) = args.par_indicators {
+        par_config.parallel_indicators = val;
+    }
+    if let Some(val) = args.par_order_validation {
+        par_config.parallel_order_validation = val;
+    }
+    if let Some(val) = args.par_auctions {
+        par_config.parallel_auctions = val;
+    }
+    if let Some(val) = args.par_candle_updates {
+        par_config.parallel_candle_updates = val;
+    }
+    if let Some(val) = args.par_trade_updates {
+        par_config.parallel_trade_updates = val;
+    }
+    if let Some(val) = args.par_fill_notifications {
+        par_config.parallel_fill_notifications = val;
+    }
+    if let Some(val) = args.par_wake_conditions {
+        par_config.parallel_wake_conditions = val;
+    }
+    if let Some(val) = args.par_risk_tracking {
+        par_config.parallel_risk_tracking = val;
+    }
+
     SimulationConfig::with_symbols(symbol_configs)
         .with_short_selling(short_config)
         .with_verbose(config.verbose)
         .with_news_config(news_config)
+        .with_parallelization(par_config)
 }
 
 /// Create a MarketMakerConfig for a given symbol spec.
@@ -935,9 +1005,14 @@ fn wait_for_quit(cmd_rx: &Receiver<SimCommand>) {
 ///
 /// The simulation starts **paused** and waits for a Start or Toggle command.
 /// Use the command receiver to control start/stop/quit.
-fn run_simulation(tx: Sender<SimUpdate>, cmd_rx: Receiver<SimCommand>, config: SimConfig) {
+fn run_simulation(
+    tx: Sender<SimUpdate>,
+    cmd_rx: Receiver<SimCommand>,
+    config: SimConfig,
+    args: Args,
+) {
     // Phase 1: Build simulation
-    let sim_config = build_simulation_config(&config);
+    let sim_config = build_simulation_config(&config, &args);
     let mut sim = Simulation::new(sim_config);
 
     let all_symbols: Vec<_> = config.get_symbols().to_vec();
@@ -1067,6 +1142,12 @@ fn main() {
         "║  Tier 2 Agents: {:4}                                                 ║",
         config.num_tier2_agents
     );
+    if config.enable_background_pool {
+        eprintln!(
+            "║  Tier 3 Background Pool: {:5} (statistical)                           ║",
+            config.background_pool_size
+        );
+    }
     eprintln!(
         "║  Total Agents: {:5}  │  Total Cash: ${:>14.2}          ║",
         config.total_agents(),
@@ -1079,26 +1160,26 @@ fn main() {
         // ─────────────────────────────────────────────────────────────────────
         // Headless mode: run simulation without TUI
         // ─────────────────────────────────────────────────────────────────────
-        run_headless(config);
+        run_headless(config, args);
     } else {
         // ─────────────────────────────────────────────────────────────────────
         // TUI mode: interactive visualization
         // ─────────────────────────────────────────────────────────────────────
         eprintln!("  Press Space to start simulation...");
         eprintln!();
-        run_with_tui(config);
+        run_with_tui(config, args);
     }
 }
 
 /// Run simulation in headless mode (no TUI).
-fn run_headless(config: SimConfig) {
+fn run_headless(config: SimConfig, args: Args) {
     use std::time::Instant;
 
     let total_ticks = config.total_ticks;
     let tick_delay_ms = config.tick_delay_ms;
 
     // Build simulation (same as run_simulation)
-    let sim_config = build_simulation_config(&config);
+    let sim_config = build_simulation_config(&config, &args);
     let mut sim = Simulation::new(sim_config);
 
     let all_symbols: Vec<_> = config.get_symbols().to_vec();
@@ -1148,7 +1229,7 @@ fn run_headless(config: SimConfig) {
 }
 
 /// Run simulation with TUI visualization.
-fn run_with_tui(config: SimConfig) {
+fn run_with_tui(config: SimConfig, args: Args) {
     // Create bounded channel for updates (backpressure if TUI falls behind)
     let (tx, rx) = bounded::<SimUpdate>(100);
 
@@ -1158,7 +1239,7 @@ fn run_with_tui(config: SimConfig) {
     // Spawn simulation thread
     let tui_frame_rate = config.tui_frame_rate;
     let sim_handle = thread::spawn(move || {
-        run_simulation(tx, cmd_rx, config);
+        run_simulation(tx, cmd_rx, config, args);
     });
 
     // Run TUI in main thread (required for terminal control)

@@ -77,13 +77,13 @@
 //! println!("Executed {} trades over 1000 ticks", trades.len());
 //! ```
 
-mod config;
+pub mod config;
 mod hooks;
 mod metrics;
 pub mod parallel;
 mod runner;
 
-pub use config::SimulationConfig;
+pub use config::{ParallelizationConfig, SimulationConfig};
 pub use runner::{Simulation, SimulationStats};
 
 // Re-export hook types

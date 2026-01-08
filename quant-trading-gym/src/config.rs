@@ -327,13 +327,13 @@ impl Default for SimConfig {
             // Event/News Generation Parameters (V2.4)
             // Defaults match crates/news/src/config.rs
             events_enabled: true,
-            event_earnings_prob: 0.006,        // ~1 per 500 ticks per symbol
+            event_earnings_prob: 0.006, // ~1 per 500 ticks per symbol
             event_earnings_interval: 25,
-            event_guidance_prob: 0.003,        // ~1 per 1000 ticks
+            event_guidance_prob: 0.003, // ~1 per 1000 ticks
             event_guidance_interval: 50,
-            event_rate_decision_prob: 0.0015,  // ~1 per 2000 ticks (rare)
+            event_rate_decision_prob: 0.0015, // ~1 per 2000 ticks (rare)
             event_rate_decision_interval: 125,
-            event_sector_news_prob: 0.009,     // ~1 per 333 ticks
+            event_sector_news_prob: 0.009, // ~1 per 333 ticks
             event_sector_news_interval: 12,
         }
     }

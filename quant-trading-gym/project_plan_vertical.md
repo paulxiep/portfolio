@@ -458,7 +458,7 @@ CMD ["--headless", "--config", "/config/default.toml"]
   ```
 - `--headless` flag (disables TUI, requires V3.6)
 - Environment-based config override (`SIM_*` env vars)
-- Volume mounts for config files (SQLite persistence added in V3.8)
+- Volume mounts for config files (SQLite persistence added in V3.9)
 - GitHub Actions workflow: build → test → push to GHCR
 - Health check endpoint (`/health` via minimal HTTP, or exit code)
 
@@ -479,7 +479,54 @@ docker-compose.yaml       # Local development
 
 **Maps to Original:** Part 16 (Containerization & Deployment)
 
-### V3.8: SQLite Storage (~4 days)
+### V3.8: Performance Profiling (~2 days)
+
+**Goal:** Identify which parallelization strategies provide optimal performance.
+
+**Runtime Parallelization Control:**
+- All parallel functions accept `force_sequential: bool` parameter
+- `ParallelizationConfig` with 9 independently controllable phases:
+  - Agent collection, indicators, order validation, auctions
+  - Candle updates, trade updates, fill notifications
+  - Wake conditions, risk tracking
+- CLI/environment variables for runtime control (no recompilation)
+
+**Profiling Infrastructure:**
+- PowerShell script (`run_profiling.ps1`) for automated benchmarking
+- Tests 11 configurations (all-parallel, 9 individual sequential, all-sequential)
+- 3 trials per config, outputs CSV with timing/throughput data
+- Uses full production agent configuration for realistic results
+
+**Deliverables:**
+```rust
+// crates/simulation/src/config.rs
+pub struct ParallelizationConfig {
+    pub parallel_agent_collection: bool,
+    pub parallel_indicators: bool,
+    pub parallel_order_validation: bool,
+    pub parallel_auctions: bool,
+    pub parallel_candle_updates: bool,
+    pub parallel_trade_updates: bool,
+    pub parallel_fill_notifications: bool,
+    pub parallel_wake_conditions: bool,
+    pub parallel_risk_tracking: bool,
+}
+```
+
+**Usage:**
+```bash
+# Single phase sequential
+PAR_AUCTIONS=false cargo run --release --all-features -- --headless --ticks 1000
+
+# Automated profiling
+.\run_profiling.ps1  # Outputs profiling_results.csv
+```
+
+**Analysis:** 2^9 = 512 total permutations; script tests 11 key configurations to identify high-impact vs low-impact parallelization phases.
+
+**Maps to Original:** Part 12 (Performance Tuning) extension
+
+### V3.9: SQLite Storage (~4 days)
 - Trade history persistence
 - Candle aggregation (1m, 5m, 1h)
 - Portfolio snapshots
@@ -933,7 +980,8 @@ src/                src/                src/                src/
 - **V3.4→V3.5:** Performance tuning, two-phase tick (no new files, optimization pass)
 - **V3.5→V3.6:** Implement `SimulationHook` trait, TUI becomes hook
 - **V3.6→V3.7:** Add `dockerfile/`, `docker-compose.yaml`, `--headless` flag, CI workflow
-- **V3.7→V3.8:** Add `storage/` crate
+- **V3.7→V3.8:** Add `ParallelizationConfig`, runtime parallelization control, profiling script
+- **V3.8→V3.9:** Add `storage/` crate
 
 ---
 

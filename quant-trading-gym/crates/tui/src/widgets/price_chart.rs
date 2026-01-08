@@ -24,7 +24,7 @@ use ratatui::{
 use types::Symbol;
 
 /// Default smoothing window size (number of ticks to average).
-const DEFAULT_SMOOTHING_WINDOW: usize = 5;
+const DEFAULT_SMOOTHING_WINDOW: usize = 3;
 
 /// Colors for multi-symbol overlay mode.
 const OVERLAY_COLORS: &[Color] = &[
@@ -189,7 +189,9 @@ impl PriceChart<'_> {
 
         // X axis tick labels showing actual tick numbers
         let history_len = smoothed.len() as u64;
-        let start_tick = self.current_tick.saturating_sub(history_len.saturating_sub(1));
+        let start_tick = self
+            .current_tick
+            .saturating_sub(history_len.saturating_sub(1));
         let mid_tick = (start_tick + self.current_tick) / 2;
         let x_labels: Vec<Line> = vec![
             Line::from(format!("{}", start_tick)),
@@ -307,7 +309,9 @@ impl PriceChart<'_> {
 
         // X axis tick labels showing actual tick numbers
         let history_len = (x_max as u64) + 1;
-        let start_tick = self.current_tick.saturating_sub(history_len.saturating_sub(1));
+        let start_tick = self
+            .current_tick
+            .saturating_sub(history_len.saturating_sub(1));
         let mid_tick = (start_tick + self.current_tick) / 2;
         let x_labels: Vec<Line> = vec![
             Line::from(format!("{}", start_tick)),

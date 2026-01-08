@@ -21,8 +21,7 @@ use std::collections::HashMap;
 use rayon::prelude::*;
 
 use types::{
-    AgentId, Order, OrderId, OrderSide, OrderType, Price, Quantity, Tick, Timestamp, Trade,
-    TradeId,
+    AgentId, Order, OrderId, OrderSide, OrderType, Price, Quantity, Tick, Timestamp, Trade, TradeId,
 };
 
 /// Result of a batch auction for a single symbol.
@@ -313,6 +312,9 @@ impl BatchAuction {
 /// Run reference-price auctions for multiple symbols in parallel.
 ///
 /// Each symbol is processed independently with its own orders.
+///
+/// # Parameters
+/// - `force_sequential`: When true, forces sequential execution even if parallel feature is enabled (V3.7)
 #[cfg(feature = "parallel")]
 pub fn run_parallel_auctions(
     orders_by_symbol: HashMap<String, Vec<Order>>,
@@ -320,6 +322,7 @@ pub fn run_parallel_auctions(
     timestamp: Timestamp,
     tick: Tick,
     starting_trade_id: u64,
+    force_sequential: bool,
 ) -> HashMap<String, BatchAuctionResult> {
     let symbols: Vec<_> = orders_by_symbol.keys().cloned().collect();
     let max_orders_per_symbol = orders_by_symbol
@@ -328,18 +331,33 @@ pub fn run_parallel_auctions(
         .max()
         .unwrap_or(0);
 
-    symbols
-        .into_par_iter()
-        .enumerate()
-        .map(|(idx, symbol)| {
-            let orders = orders_by_symbol.get(&symbol).cloned().unwrap_or_default();
-            let ref_price = reference_prices.get(&symbol).copied();
-            let symbol_start_id = starting_trade_id + (idx as u64 * max_orders_per_symbol);
-            let mut auction = BatchAuction::with_starting_id(symbol_start_id);
-            let result = auction.run(&symbol, orders, timestamp, tick, ref_price);
-            (symbol, result)
-        })
-        .collect()
+    if force_sequential {
+        symbols
+            .into_iter()
+            .enumerate()
+            .map(|(idx, symbol)| {
+                let orders = orders_by_symbol.get(&symbol).cloned().unwrap_or_default();
+                let ref_price = reference_prices.get(&symbol).copied();
+                let symbol_start_id = starting_trade_id + (idx as u64 * max_orders_per_symbol);
+                let mut auction = BatchAuction::with_starting_id(symbol_start_id);
+                let result = auction.run(&symbol, orders, timestamp, tick, ref_price);
+                (symbol, result)
+            })
+            .collect()
+    } else {
+        symbols
+            .into_par_iter()
+            .enumerate()
+            .map(|(idx, symbol)| {
+                let orders = orders_by_symbol.get(&symbol).cloned().unwrap_or_default();
+                let ref_price = reference_prices.get(&symbol).copied();
+                let symbol_start_id = starting_trade_id + (idx as u64 * max_orders_per_symbol);
+                let mut auction = BatchAuction::with_starting_id(symbol_start_id);
+                let result = auction.run(&symbol, orders, timestamp, tick, ref_price);
+                (symbol, result)
+            })
+            .collect()
+    }
 }
 
 /// Sequential version of multi-symbol auctions.
@@ -350,7 +368,9 @@ pub fn run_parallel_auctions(
     timestamp: Timestamp,
     tick: Tick,
     starting_trade_id: u64,
+    force_sequential: bool,
 ) -> HashMap<String, BatchAuctionResult> {
+    let _ = force_sequential; // Suppress unused warning
     let mut results = HashMap::new();
     let mut auction = BatchAuction::with_starting_id(starting_trade_id);
 
@@ -495,10 +515,7 @@ mod tests {
     #[test]
     fn test_trades_have_correct_buyer_seller() {
         let mut auction = BatchAuction::new();
-        let orders = vec![
-            make_bid(1, 10, 101.0, 50),
-            make_ask(2, 20, 99.0, 50),
-        ];
+        let orders = vec![make_bid(1, 10, 101.0, 50), make_ask(2, 20, 99.0, 50)];
 
         let result = auction.run("TEST", orders, 0, 0, Some(Price::from_float(100.0)));
 

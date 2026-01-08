@@ -51,7 +51,7 @@ use quant::{
     AgentRiskSnapshot, AgentRiskTracker, IndicatorCache, IndicatorEngine, IndicatorSnapshot,
 };
 use rand::seq::SliceRandom;
-use sim_core::{Market, MarketView, MatchingEngine, OrderBook, run_parallel_auctions};
+use sim_core::{Market, MarketView, OrderBook, run_parallel_auctions};
 use types::{
     AgentId, Candle, Order, OrderId, OrderSide, Price, Quantity, RiskViolation, Symbol, Tick,
     Timestamp, Trade,
@@ -124,9 +124,6 @@ pub struct Simulation {
 
     /// Multi-symbol market container (V2.3).
     market: Market,
-
-    /// The matching engine (used for T3 background pool orders).
-    engine: MatchingEngine,
 
     /// Trading agents wrapped in Mutex for parallel access (V3.5).
     /// Each agent is accessed by exactly one thread during parallel collection.
@@ -201,6 +198,10 @@ pub struct Simulation {
 
     /// Hook runner for simulation observers (V3.6).
     hooks: HookRunner,
+
+    /// Cached symbol-to-sector mapping (V3.8 optimization).
+    /// Built once at initialization since it never changes.
+    symbol_sectors: HashMap<Symbol, types::Sector>,
 }
 
 /// Helper for building candles incrementally.
@@ -309,9 +310,15 @@ impl Simulation {
         // V3.2: Initialize wake index for T2 agent conditions
         let wake_index = WakeConditionIndex::new();
 
+        // V3.8: Cache symbol->sector mapping (never changes, compute once)
+        let symbol_sectors: HashMap<Symbol, types::Sector> = config
+            .get_symbol_configs()
+            .iter()
+            .map(|sc| (sc.symbol.clone(), sc.sector))
+            .collect();
+
         Self {
             market,
-            engine: MatchingEngine::new(),
             agents: Vec::new(),
             t1_indices: Vec::new(),
             t2_indices: Vec::new(),
@@ -335,6 +342,7 @@ impl Simulation {
             wake_index,
             background_pool: None,
             hooks: HookRunner::new(),
+            symbol_sectors,
             config,
         }
     }
@@ -799,8 +807,8 @@ impl Simulation {
     /// Returns the trades that occurred and optionally the order if it's resting on the book
     /// (with its assigned OrderId).
     ///
-    /// Note: Main agent orders now go through batch auction. This is retained for
-    /// T3 background pool orders which need continuous matching semantics.
+    /// **Deprecated in V3.8**: T3 now uses batch auction. This method remains only for tests.
+    #[cfg(test)]
     fn process_order(&mut self, mut order: Order) -> (Vec<Trade>, Option<Order>) {
         // Assign order ID and timestamp
         order.id = self.next_order_id();
@@ -815,10 +823,9 @@ impl Simulation {
             return (Vec::new(), None);
         };
 
-        // Try to match the order
-        let result = self
-            .engine
-            .match_order(book, &mut order, self.timestamp, self.tick);
+        // Try to match the order (create engine locally for test-only use)
+        let mut engine = sim_core::MatchingEngine::new();
+        let result = engine.match_order(book, &mut order, self.timestamp, self.tick);
 
         let mut resting_order = None;
 
@@ -855,31 +862,39 @@ impl Simulation {
         indices: &[usize],
         ctx: &StrategyContext<'_>,
     ) -> Vec<AgentActionWithState> {
-        parallel::map_indices(indices, |i| {
-            let mut agent = self.agents[i].lock();
-            let agent_id = agent.id();
-            let action = agent.on_tick(ctx);
-            let positions: HashMap<Symbol, i64> = agent
-                .positions()
-                .iter()
-                .map(|(sym, entry)| (sym.clone(), entry.quantity))
-                .collect();
-            let cash = agent.cash();
-            let is_mm = agent.is_market_maker();
-            (agent_id, action, positions, cash, is_mm)
-        })
+        parallel::map_indices(
+            indices,
+            |i| {
+                let mut agent = self.agents[i].lock();
+                let agent_id = agent.id();
+                let action = agent.on_tick(ctx);
+                let positions: HashMap<Symbol, i64> = agent
+                    .positions()
+                    .iter()
+                    .map(|(sym, entry)| (sym.clone(), entry.quantity))
+                    .collect();
+                let cash = agent.cash();
+                let is_mm = agent.is_market_maker();
+                (agent_id, action, positions, cash, is_mm)
+            },
+            !self.config.parallelization.parallel_agent_collection,
+        )
     }
 
     /// Build position cache for all agents (for counterparty lookup during trade processing).
     fn build_position_cache(&self) -> HashMap<AgentId, HashMap<Symbol, i64>> {
-        parallel::map_mutex_slice_ref(&self.agents, |agent| {
-            let positions: HashMap<Symbol, i64> = agent
-                .positions()
-                .iter()
-                .map(|(sym, entry)| (sym.clone(), entry.quantity))
-                .collect();
-            (agent.id(), positions)
-        })
+        parallel::map_mutex_slice_ref(
+            &self.agents,
+            |agent| {
+                let positions: HashMap<Symbol, i64> = agent
+                    .positions()
+                    .iter()
+                    .map(|(sym, entry)| (sym.clone(), entry.quantity))
+                    .collect();
+                (agent.id(), positions)
+            },
+            !self.config.parallelization.parallel_agent_collection,
+        )
         .into_iter()
         .collect()
     }
@@ -1016,22 +1031,26 @@ impl Simulation {
     ) -> HashMap<String, Price> {
         let symbols: Vec<_> = orders_by_symbol.keys().collect();
 
-        parallel::filter_map_slice(&symbols, |symbol| {
-            let price = Self::compute_order_derived_anchor(orders_by_symbol.get(*symbol))
-                .or_else(|| {
-                    self.market
-                        .get_book(*symbol)
-                        .and_then(|book| book.last_price())
-                })
-                .or_else(|| {
-                    self.config
-                        .get_symbol_configs()
-                        .iter()
-                        .find(|sc| &sc.symbol == *symbol)
-                        .map(|sc| sc.initial_price)
-                });
-            price.map(|p| ((*symbol).clone(), p))
-        })
+        parallel::filter_map_slice(
+            &symbols,
+            |symbol| {
+                let price = Self::compute_order_derived_anchor(orders_by_symbol.get(*symbol))
+                    .or_else(|| {
+                        self.market
+                            .get_book(symbol)
+                            .and_then(|book| book.last_price())
+                    })
+                    .or_else(|| {
+                        self.config
+                            .get_symbol_configs()
+                            .iter()
+                            .find(|sc| &sc.symbol == *symbol)
+                            .map(|sc| sc.initial_price)
+                    });
+                price.map(|p| ((*symbol).clone(), p))
+            },
+            !self.config.parallelization.parallel_order_validation,
+        )
         .into_iter()
         .collect()
     }
@@ -1080,7 +1099,10 @@ impl Simulation {
         if qty_sum == 0 {
             (None, 0)
         } else {
-            (Some(Price::from_float(price_x_qty_sum / qty_sum as f64)), qty_sum)
+            (
+                Some(Price::from_float(price_x_qty_sum / qty_sum as f64)),
+                qty_sum,
+            )
         }
     }
 
@@ -1130,12 +1152,13 @@ impl Simulation {
         (tick_trades, fill_notifications)
     }
 
-    /// Process Tier 3 background pool orders.
+    /// Generate Tier 3 background pool orders for batch auction (V3.8).
     ///
-    /// Generates orders from the statistical pool and matches them via continuous matching.
-    fn process_background_pool(&mut self, tick_trades: &mut Vec<Trade>) {
-        let Some(_) = self.background_pool.as_ref() else {
-            return;
+    /// Returns orders to be included in the main batch auction alongside T1/T2 orders.
+    /// This is more efficient than continuous matching and ensures consistent semantics.
+    fn generate_background_pool_orders(&mut self) -> Vec<Order> {
+        let Some(pool) = self.background_pool.as_mut() else {
+            return Vec::new();
         };
 
         // Build mid prices map
@@ -1150,37 +1173,31 @@ impl Simulation {
             })
             .collect();
 
-        // Build symbol->sector mapping
-        let symbol_sectors: HashMap<Symbol, types::Sector> = self
-            .config
-            .get_symbol_configs()
-            .iter()
-            .map(|sc| (sc.symbol.clone(), sc.sector))
-            .collect();
-
+        // Build pool context (V3.8: use cached symbol_sectors)
         let pool_ctx = PoolContext {
             tick: self.tick,
             mid_prices: &mid_prices,
             active_events: &self.active_events,
-            symbol_sectors: &symbol_sectors,
+            symbol_sectors: &self.symbol_sectors,
         };
 
-        let pool = self.background_pool.as_mut().unwrap();
+        // Generate orders
         let t3_orders = pool.generate(&pool_ctx);
         self.stats.t3_orders_this_tick = t3_orders.len();
 
-        // Process each T3 order via continuous matching
-        let t3_trades: Vec<_> = t3_orders
-            .into_iter()
-            .flat_map(|order| {
-                let (trades, _resting) = self.process_order(order);
-                trades
-            })
-            .collect();
+        t3_orders
+    }
 
-        // Update pool accounting and notify counterparty agents
-        for trade in t3_trades {
-            let pool = self.background_pool.as_mut().unwrap();
+    /// Update T3 pool accounting from batch auction results (V3.8).
+    ///
+    /// Called after auction completes to record T3 trades and notify counterparty agents.
+    fn update_background_pool_accounting(&mut self, trades: &[Trade]) {
+        let Some(pool) = self.background_pool.as_mut() else {
+            return;
+        };
+
+        for trade in trades {
+            // Only process trades involving the background pool
             if trade.buyer_id == BACKGROUND_POOL_ID {
                 pool.accounting_mut().record_trade_as_buyer(
                     &trade.symbol,
@@ -1194,19 +1211,6 @@ impl Simulation {
                     trade.quantity,
                 );
             }
-
-            // Notify the counterparty agent (not the pool)
-            let other_agent_id = if trade.buyer_id == BACKGROUND_POOL_ID {
-                trade.seller_id
-            } else {
-                trade.buyer_id
-            };
-
-            if let Some(&idx) = self.agent_id_to_index.get(&other_agent_id) {
-                self.agents[idx].lock().on_fill(&trade);
-            }
-
-            tick_trades.push(trade);
         }
     }
 
@@ -1228,8 +1232,9 @@ impl Simulation {
 
     /// Notify agents of fills and update wake conditions.
     fn process_fill_notifications(&mut self, fill_notifications: Vec<(AgentId, Trade, i64)>) {
-        let condition_updates =
-            parallel::filter_map_slice(&fill_notifications, |(agent_id, trade, pos_before)| {
+        let condition_updates = parallel::filter_map_slice(
+            &fill_notifications,
+            |(agent_id, trade, pos_before)| {
                 self.agent_id_to_index.get(agent_id).and_then(|&idx| {
                     let mut agent = self.agents[idx].lock();
                     agent.on_fill(trade);
@@ -1238,7 +1243,9 @@ impl Simulation {
                         .then(|| agent.post_fill_condition_update(*pos_before))
                         .flatten()
                 })
-            });
+            },
+            !self.config.parallelization.parallel_fill_notifications,
+        );
 
         self.wake_index.apply_updates(condition_updates);
     }
@@ -1251,14 +1258,18 @@ impl Simulation {
         triggered_t2: &HashMap<AgentId, smallvec::SmallVec<[agents::WakeCondition; 2]>>,
     ) {
         let triggered_keys: Vec<_> = triggered_t2.keys().copied().collect();
-        let t2_conditions = parallel::filter_map_slice(&triggered_keys, |agent_id| {
-            self.agent_id_to_index.get(agent_id).and_then(|&idx| {
-                let agent = self.agents[idx].lock();
-                agent
-                    .is_reactive()
-                    .then(|| (*agent_id, agent.current_wake_conditions().to_vec()))
-            })
-        });
+        let t2_conditions = parallel::filter_map_slice(
+            &triggered_keys,
+            |agent_id| {
+                self.agent_id_to_index.get(agent_id).and_then(|&idx| {
+                    let agent = self.agents[idx].lock();
+                    agent
+                        .is_reactive()
+                        .then(|| (*agent_id, agent.current_wake_conditions().to_vec()))
+                })
+            },
+            !self.config.parallelization.parallel_wake_conditions,
+        );
 
         for (agent_id, conditions) in t2_conditions {
             for condition in conditions {
@@ -1282,9 +1293,11 @@ impl Simulation {
             })
             .collect();
 
-        let equities = parallel::map_mutex_slice_ref(&self.agents, |agent| {
-            (agent.id(), agent.equity(&prices).to_float())
-        });
+        let equities = parallel::map_mutex_slice_ref(
+            &self.agents,
+            |agent| (agent.id(), agent.equity(&prices).to_float()),
+            !self.config.parallelization.parallel_risk_tracking,
+        );
 
         for (agent_id, equity) in equities {
             self.risk_tracker.record_equity(agent_id, equity);
@@ -1315,15 +1328,16 @@ impl Simulation {
     /// 2. Determine which agents to call (T1 always, T2 when triggered)
     /// 3. Build strategy context for agents
     /// 4. Collect agent actions (orders and cancellations)
-    /// 5. Hook: on_orders_collected (V3.6)
-    /// 6. Run batch auction for agent orders
-    /// 7. Process Tier 3 background pool orders
-    /// 8. Hook: on_trades (V3.6)
-    /// 9. Update market data (recent trades, candles)
-    /// 10. Notify agents of fills and update wake conditions
-    /// 11. Update risk tracking
-    /// 12. Hook: on_tick_end (V3.6)
-    /// 13. Finalize tick (clear books, advance time)
+    /// 5. Generate Tier 3 background pool orders (V3.8)
+    /// 6. Hook: on_orders_collected (V3.6)
+    /// 7. Run batch auction for ALL orders (T1/T2/T3) (V3.8)
+    /// 8. Update T3 pool accounting (V3.8)
+    /// 9. Hook: on_trades (V3.6)
+    /// 10. Update market data (recent trades, candles)
+    /// 11. Notify agents of fills and update wake conditions
+    /// 12. Update risk tracking
+    /// 13. Hook: on_tick_end (V3.6)
+    /// 14. Finalize tick (clear books, advance time)
     pub fn step(&mut self) -> Vec<Trade> {
         // Phase 0: Process news events
         self.process_news_events();
@@ -1358,17 +1372,33 @@ impl Simulation {
         let actions_with_state = self.collect_agent_actions(&indices_to_call, &ctx);
         self.stats.agents_called_this_tick = actions_with_state.len();
 
-        // Phase 5: Run batch auction for agent orders
+        // Phase 5: Collect orders from T1/T2 agents
         let position_cache = self.build_position_cache();
-        let orders_by_symbol = self.collect_orders_for_auction(actions_with_state);
+        let mut orders_by_symbol = self.collect_orders_for_auction(actions_with_state);
 
-        // Phase 5b (V3.6): Hook - orders collected (before matching)
+        // Phase 5b: Generate Tier 3 background pool orders (V3.8)
+        let t3_orders = self.generate_background_pool_orders();
+
+        // Add T3 orders to batch auction (V3.8 optimization)
+        for mut order in t3_orders {
+            order.id = self.next_order_id();
+            order.timestamp = self.timestamp;
+            self.stats.total_orders += 1;
+
+            orders_by_symbol
+                .entry(order.symbol.clone())
+                .or_default()
+                .push(order);
+        }
+
+        // Phase 6 (V3.6): Hook - orders collected (before matching)
         if !self.hooks.is_empty() {
             let all_orders: Vec<Order> = orders_by_symbol.values().flatten().cloned().collect();
             let hook_ctx = self.build_hook_context();
             self.hooks.on_orders_collected(&all_orders, &hook_ctx);
         }
 
+        // Phase 7: Run batch auction for ALL orders (T1/T2/T3) (V3.8)
         let reference_prices = self.build_reference_prices(&orders_by_symbol);
         let auction_results = run_parallel_auctions(
             orders_by_symbol,
@@ -1376,37 +1406,38 @@ impl Simulation {
             self.timestamp,
             self.tick,
             self.next_order_id,
+            !self.config.parallelization.parallel_auctions,
         );
-        let (mut tick_trades, fill_notifications) =
+        let (tick_trades, fill_notifications) =
             self.process_auction_results(auction_results, &position_cache);
 
-        // Phase 7: Process Tier 3 background pool orders
-        self.process_background_pool(&mut tick_trades);
+        // Phase 8: Update T3 pool accounting (V3.8)
+        self.update_background_pool_accounting(&tick_trades);
 
-        // Phase 8 (V3.6): Hook - trades produced
+        // Phase 9 (V3.6): Hook - trades produced
         if !self.hooks.is_empty() {
             let hook_ctx = self.build_hook_context();
             self.hooks.on_trades(&tick_trades, &hook_ctx);
         }
 
-        // Phase 9: Update market data
+        // Phase 10: Update market data
         self.update_recent_trades(&tick_trades);
         self.update_candles(&tick_trades);
 
-        // Phase 10: Notify agents and update wake conditions
+        // Phase 11: Notify agents and update wake conditions
         self.process_fill_notifications(fill_notifications);
         self.restore_t2_wake_conditions(&triggered_t2);
 
-        // Phase 11: Update risk tracking
+        // Phase 12: Update risk tracking
         self.update_risk_tracking();
 
-        // Phase 12 (V3.6): Hook - tick end
+        // Phase 13 (V3.6): Hook - tick end
         if !self.hooks.is_empty() {
             let hook_ctx = self.build_hook_context();
             self.hooks.on_tick_end(&self.stats, &hook_ctx);
         }
 
-        // Phase 13: Finalize tick
+        // Phase 14: Finalize tick
         self.finalize_tick();
 
         tick_trades

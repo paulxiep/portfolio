@@ -1,5 +1,55 @@
 # Development Log
 
+## 2026-01-08: V3.8 Performance Profiling
+
+### Summary
+Added fine-grained parallelization control for profiling. All parallel functions accept runtime `force_sequential` override via `ParallelizationConfig`. CLI/environment variables control 9 phases independently. PowerShell script automates benchmarking.
+
+### Files
+
+| File | Changes |
+|------|---------|
+| `crates/simulation/src/parallel.rs` | Added `force_sequential: bool` parameter to all 10 functions |
+| `crates/simulation/src/config.rs` | `ParallelizationConfig` struct with 9 boolean fields |
+| `crates/simulation/src/runner.rs` | Updated 7 parallel call sites to use config flags |
+| `crates/sim-core/src/batch_auction.rs` | Added `force_sequential` to `run_parallel_auctions` |
+| `src/main.rs` | 9 CLI args (env var support): `PAR_AGENT_COLLECTION`, `PAR_INDICATORS`, etc. |
+| `run_profiling.ps1` | Automated profiling script (11 configs × 3 trials) |
+
+### Parallelization Control
+
+9 independently controllable phases:
+
+| Phase | Config Field | Description |
+|-------|-------------|-------------|
+| 3 | `parallel_indicators` | Build indicator snapshot per-symbol |
+| 4 | `parallel_agent_collection` | Collect agent actions |
+| 5 | `parallel_order_validation` | Validate orders |
+| 6 | `parallel_auctions` | Batch auctions across symbols |
+| 9 | `parallel_candle_updates` | Update candles per-symbol |
+| 9 | `parallel_trade_updates` | Update recent trades per-symbol |
+| 10 | `parallel_fill_notifications` | Process fill notifications |
+| 10 | `parallel_wake_conditions` | Restore T2 wake conditions |
+| 11 | `parallel_risk_tracking` | Update risk tracking |
+
+### Usage
+
+```bash
+# Disable specific phase
+PAR_AUCTIONS=false cargo run --release --all-features -- --headless --ticks 1000
+
+# Automated profiling (Windows)
+.\run_profiling.ps1
+# Outputs: profiling_results.csv (config_name, trial, elapsed_ms, ticks_per_sec, total_trades)
+```
+
+### Notes
+- 2^9 = 512 total permutations; script tests 11 meaningful configs
+- Uses exact same agent configuration as default run (not minimal agents)
+- Runtime control avoids recompilation
+
+---
+
 ## 2026-01-07: V3.7 Containerization & CLI
 
 ### Summary

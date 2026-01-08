@@ -2,6 +2,71 @@
 
 use types::{Price, Quantity, ShortSellingConfig, Symbol, SymbolConfig};
 
+/// Configuration for parallelization behavior (V3.7).
+///
+/// Allows fine-grained control over which phases of the simulation
+/// run in parallel vs sequential. Useful for profiling and performance tuning.
+#[derive(Debug, Clone)]
+pub struct ParallelizationConfig {
+    /// Phase 4: Collect agent actions in parallel
+    pub parallel_agent_collection: bool,
+    /// Phase 3: Build indicator snapshot in parallel per-symbol
+    pub parallel_indicators: bool,
+    /// Phase 5: Validate orders in parallel
+    pub parallel_order_validation: bool,
+    /// Phase 6: Run batch auctions in parallel across symbols
+    pub parallel_auctions: bool,
+    /// Phase 9: Update candles in parallel per-symbol
+    pub parallel_candle_updates: bool,
+    /// Phase 9: Update recent trades in parallel per-symbol
+    pub parallel_trade_updates: bool,
+    /// Phase 10: Process fill notifications in parallel
+    pub parallel_fill_notifications: bool,
+    /// Phase 10: Restore T2 wake conditions in parallel
+    pub parallel_wake_conditions: bool,
+    /// Phase 11: Update risk tracking in parallel
+    pub parallel_risk_tracking: bool,
+}
+
+impl Default for ParallelizationConfig {
+    fn default() -> Self {
+        Self {
+            // Enable all parallel phases by default
+            parallel_agent_collection: true,
+            parallel_indicators: false,
+            parallel_order_validation: false,
+            parallel_auctions: false,
+            parallel_candle_updates: false,
+            parallel_trade_updates: false,
+            parallel_fill_notifications: true,
+            parallel_wake_conditions: false,
+            parallel_risk_tracking: true,
+        }
+    }
+}
+
+impl ParallelizationConfig {
+    /// All phases run sequentially (for benchmarking baseline)
+    pub fn all_sequential() -> Self {
+        Self {
+            parallel_agent_collection: false,
+            parallel_indicators: false,
+            parallel_order_validation: false,
+            parallel_auctions: false,
+            parallel_candle_updates: false,
+            parallel_trade_updates: false,
+            parallel_fill_notifications: false,
+            parallel_wake_conditions: false,
+            parallel_risk_tracking: false,
+        }
+    }
+
+    /// All phases run in parallel (default)
+    pub fn all_parallel() -> Self {
+        Self::default()
+    }
+}
+
 /// Configuration for the simulation.
 #[derive(Debug, Clone)]
 pub struct SimulationConfig {
@@ -35,6 +100,9 @@ pub struct SimulationConfig {
 
     /// Random seed for deterministic simulation.
     pub seed: u64,
+
+    /// Parallelization configuration (V3.7).
+    pub parallelization: ParallelizationConfig,
 }
 
 impl Default for SimulationConfig {
@@ -50,6 +118,7 @@ impl Default for SimulationConfig {
             verbose: false,
             news: news::NewsGeneratorConfig::default(),
             seed: 42,
+            parallelization: ParallelizationConfig::default(),
         }
     }
 }
@@ -194,6 +263,12 @@ impl SimulationConfig {
     /// Set random seed for deterministic simulation.
     pub fn with_seed(mut self, seed: u64) -> Self {
         self.seed = seed;
+        self
+    }
+
+    /// Set parallelization configuration (V3.7).
+    pub fn with_parallelization(mut self, config: ParallelizationConfig) -> Self {
+        self.parallelization = config;
         self
     }
 }
