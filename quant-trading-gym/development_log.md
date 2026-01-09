@@ -1,5 +1,111 @@
 # Development Log
 
+## 2026-01-09: V3.9 Minimal Storage Infrastructure
+
+### Summary
+Implemented minimal storage layer as foundation for V4+ features. Storage crate provides trade history (append-only), candle aggregation (OHLCV), and portfolio snapshots via `SimulationHook` trait. Designed for headless simulation mode to generate data for future versions: V4 (Web Frontend queries storage), V5 (Feature Engineering ML), V6 (RL training on historical data), and V7 (Portfolio Manager Game replay/leaderboards).
+
+### Files
+
+| File | Changes |
+|------|---------|
+| `crates/storage/src/lib.rs` | Storage crate with declarative, modular, SoC philosophy |
+| `crates/storage/src/schema.rs` | SQLite schema: trades, candles, portfolio_snapshots tables |
+| `crates/storage/src/candles.rs` | `CandleAggregator` with in-memory buffering, flush on period end |
+| `crates/storage/src/hook.rs` | `StorageHook` implementing `SimulationHook` trait |
+| `crates/storage/src/tests.rs` | Integration test placeholder |
+| `crates/storage/Cargo.toml` | Dependencies: rusqlite 0.38, serde_json, parking_lot |
+| `Cargo.toml` (workspace) | Added storage crate, rusqlite with bundled feature |
+| `docker-compose.yaml` | Added `./data:/data` volume mounts, `STORAGE_PATH` env var |
+| `.gitignore` | Ignore `/data/`, `*.db` files |
+| `src/main.rs` | Added `--storage-path` CLI flag, StorageHook integration (headless mode only) |
+
+### Storage Architecture
+
+**Philosophy:** V3.9 provides shared infrastructure for all future versions (V4-V7).
+
+**Three Data Streams:**
+
+1. **Trade History (Append-Only Event Log)**
+   - Schema: `(tick, symbol, price, quantity, buyer_id, seller_id)`
+   - Purpose: V4 (charting), V5 (features), V6 (RL rewards), V7 (game replay)
+   - No updates or deletes
+
+2. **Candle Aggregation (Time-Series OLAP)**
+   - Schema: `(symbol, timeframe, tick_start, open, high, low, close, volume)`
+   - Timeframes: 1m, 5m, 1h (configurable via `StorageConfig`)
+   - In-memory buffer with periodic flush (on candle period completion)
+   - Used by: V4 (frontend charts), V5/V6 (RL observations)
+
+3. **Portfolio Snapshots (Analysis Checkpoints)**
+   - Schema: `(tick, agent_id, cash, positions_json, realized_pnl, equity)`
+   - Frequency: Every 1000 ticks (configurable)
+   - Purpose: V4 (analytics), V6 (episode evaluation), V7 (leaderboards)
+
+### Implementation Details
+
+**StorageHook Pattern:**
+- Implements `SimulationHook` trait (V3.6 hook system)
+- Interior mutability via `Mutex<Connection>` (trait requires `&self`)
+- Hooks: `on_trades()` for trade persistence, `on_tick_end()` for candle flush
+
+**CandleAggregator:**
+- Tracks current candles per symbol: `HashMap<Symbol, (tick_start, Candle)>`
+- Buffered completed candles: `Vec<(Symbol, tick_start, Candle)>`
+- Flush pattern: `std::mem::take(&mut self.completed)`
+
+**Type Conversions:**
+- `Price` (i64) → SQLite i64 (direct)
+- `Quantity` (u64) → SQLite i64 (via `i64::try_from()`)
+- `AgentId` (u64) → SQLite i64 (via `i64::try_from()`)
+- `positions` (HashMap) → JSON string (via `serde_json::json!()`)
+
+### Docker Integration
+
+**Volume Mounts:**
+```yaml
+volumes:
+  - ./data:/data  # V3.9: Persistent storage
+environment:
+  - STORAGE_PATH=/data/sim.db
+```
+
+**Use Cases:**
+- TUI mode: Ephemeral (no storage needed)
+- Headless mode: Persistent storage for V4+ data pipelines
+
+### Deferred Features
+
+**Deferred to Later Versions:**
+- ❌ REST APIs for real-time queries → V4 (Web Frontend)
+- ❌ Fill-level events (finer granularity) → V5/V6 (if RL training demands it)
+- ❌ Game save/resume functionality → V7 (Portfolio Manager Game)
+- ❌ Agent-level trade attribution → V7 (leaderboards)
+
+**Why Minimal Scope:**
+- V3.9 provides data persistence only
+- V4 will add query APIs (Axum endpoints reading from storage)
+- V5/V6 will consume stored data for training
+- V7 will add game-specific persistence features
+
+### Exit Criteria
+```
+cargo fmt              # ✅ No formatting issues
+cargo clippy --all-targets -- -D warnings  # ✅ No warnings
+cargo test --package storage  # ✅ 8 tests pass
+cargo run --headless --ticks 100 --storage-path ./test.db  # ✅ Storage integration works
+```
+
+### Notes
+- ✅ Storage integration with main.rs completed (headless mode only)
+- ✅ CLI flag `--storage-path` added with env var support `STORAGE_PATH`
+- ✅ Graceful error handling if storage initialization fails
+- `persist_snapshots()` method ready but needs agent summary access (future enhancement)
+- Clippy satisfied with `i64::try_from()` for u64→i64 conversions
+- `is_multiple_of()` used for snapshot interval checks (clippy suggestion)
+
+---
+
 ## 2026-01-08: V3.8 Performance Profiling
 
 ### Summary

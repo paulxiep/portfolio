@@ -24,6 +24,7 @@
 mod config;
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -43,6 +44,7 @@ use news::config::{
 use rand::Rng;
 use rand::prelude::SliceRandom;
 use simulation::{Simulation, SimulationConfig};
+use storage::{StorageConfig, StorageHook};
 use tui::{AgentInfo, RiskInfo, SimCommand, SimUpdate, TuiApp};
 use types::{AgentId, Cash, Price, Quantity, Sector, ShortSellingConfig, Symbol, SymbolConfig};
 
@@ -113,6 +115,10 @@ struct Args {
     /// Disable parallel risk tracking (V3.7 profiling)
     #[arg(long, env = "PAR_RISK_TRACKING")]
     par_risk_tracking: Option<bool>,
+
+    /// Storage database path (V3.9, headless mode only, default: :memory:)
+    #[arg(long, env = "STORAGE_PATH")]
+    storage_path: Option<String>,
 }
 
 /// Calculate the number of digits needed to display a number.
@@ -1209,6 +1215,21 @@ fn run_headless(config: SimConfig, args: Args) {
     spawn_sector_rotators(&mut sim, &mut next_id, &config, &all_symbols);
     setup_background_pool(&mut sim, &config, &all_symbols);
 
+    // V3.9: Register storage hook in headless mode
+    if let Some(ref storage_path) = args.storage_path {
+        let storage_config = StorageConfig::from_path(storage_path);
+        match StorageHook::new(storage_config) {
+            Ok(hook) => {
+                eprintln!("Storage enabled: {}", storage_path);
+                sim.add_hook(Arc::new(hook));
+            }
+            Err(e) => {
+                eprintln!("Failed to initialize storage at {}: {}", storage_path, e);
+                eprintln!("Continuing without storage...");
+            }
+        }
+    }
+
     eprintln!("Running {} ticks...", total_ticks);
     let start = Instant::now();
     let mut segment_start = Instant::now();
@@ -1225,7 +1246,7 @@ fn run_headless(config: SimConfig, args: Args) {
             let pct = (tick * 100) / total_ticks;
             let segment_elapsed = segment_start.elapsed();
             eprintln!(
-                "  {}% ({}/{} ticks) - segment: {:.2}s",
+                "  {}% ({}/{} ticks): {:.2}s",
                 pct,
                 tick,
                 total_ticks,

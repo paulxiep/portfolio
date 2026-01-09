@@ -7,6 +7,7 @@ members = [
     "crates/simulation",
     "crates/tui",
     "crates/news",
+    "crates/storage",
 ]
 resolver = "2"
 
@@ -31,6 +32,10 @@ agents = { path = "crates/agents" }
 simulation = { path = "crates/simulation" }
 tui = { path = "crates/tui" }
 news = { path = "crates/news" }
+storage = { path = "crates/storage" }
+
+# Storage (V3.9)
+rusqlite = { version = "0.38", features = ["bundled"] }
 
 # TUI dependencies
 ratatui = "0.30"
@@ -60,6 +65,7 @@ agents.workspace = true
 simulation.workspace = true
 news.workspace = true
 tui.workspace = true
+storage.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 crossbeam-channel.workspace = true
