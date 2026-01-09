@@ -16,20 +16,60 @@
 //!
 //! The simulation supports multiple symbols via `Market` (HashMap<Symbol, OrderBook>).
 //! Each symbol has independent candles, trades, and indicators.
+//!
+//! # Tiered Agent Architecture (V3.2)
+//!
+//! Agents are split into two tiers:
+//! - **Tier 1**: Called every tick via `on_tick()` (market makers, technical traders)
+//! - **Tier 2**: Reactive agents woken only when conditions trigger (via WakeConditionIndex)
+//!
+//! This reduces per-tick overhead from O(n) to O(k) where k << n triggered agents.
+//!
+//! # Parallel Execution & Batch Auction (V3.5)
+//!
+//! With the `parallel` feature enabled:
+//! - T1 and triggered T2 agents execute `on_tick()` in parallel via rayon
+//! - Orders are grouped by symbol and processed via **batch auction**
+//! - Each symbol's auction runs independently (fully parallel across symbols)
+//!
+//! Batch auction semantics:
+//! 1. **Collection phase**: All agents run `on_tick()` in parallel, collecting orders
+//! 2. **Auction phase**: Per-symbol clearing price computed, all crossing orders matched
+//!
+//! This differs from continuous matching: all agents see the same market state and
+//! compete in a single auction per tick, rather than sequential price-time priority.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use agents::{Agent, AgentAction, BorrowLedger, PositionValidator, StrategyContext};
+use agents::{
+    Agent, AgentAction, BACKGROUND_POOL_ID, BackgroundAgentPool, BorrowLedger, PoolContext,
+    PositionValidator, StrategyContext, WakeConditionIndex,
+};
+use parking_lot::Mutex;
 use quant::{
     AgentRiskSnapshot, AgentRiskTracker, IndicatorCache, IndicatorEngine, IndicatorSnapshot,
 };
 use rand::seq::SliceRandom;
-use sim_core::{Market, MatchingEngine, OrderBook};
+use sim_core::{Market, MarketView, OrderBook, run_parallel_auctions};
 use types::{
-    AgentId, Candle, Order, OrderId, Price, Quantity, RiskViolation, Symbol, Tick, Timestamp, Trade,
+    AgentId, Candle, Order, OrderId, OrderSide, Price, Quantity, RiskViolation, Symbol, Tick,
+    Timestamp, Trade,
 };
 
 use crate::config::SimulationConfig;
+use crate::hooks::{BookSnapshot, HookContext, HookRunner, MarketSnapshot, SimulationHook};
+use crate::parallel;
+
+/// Agent action with captured state for order validation.
+/// (agent_id, action, per-symbol positions, cash, is_market_maker)
+type AgentActionWithState = (
+    AgentId,
+    AgentAction,
+    HashMap<Symbol, i64>,
+    types::Cash,
+    bool,
+);
 
 /// Statistics about the simulation state.
 #[derive(Debug, Clone, Default)]
@@ -51,6 +91,15 @@ pub struct SimulationStats {
 
     /// Total orders rejected due to position limit violations (V2.1).
     pub rejected_orders: u64,
+
+    /// Agents called this tick (V3.2 debug).
+    pub agents_called_this_tick: usize,
+
+    /// T2 agents triggered this tick (V3.2 debug).
+    pub t2_triggered_this_tick: usize,
+
+    /// T3 background pool orders generated this tick (V3.4).
+    pub t3_orders_this_tick: usize,
 }
 
 /// The main simulation runner.
@@ -59,10 +108,16 @@ pub struct SimulationStats {
 /// 1. Build market data snapshot
 /// 2. Call each agent's `on_tick` to get their orders
 /// 3. Validate orders against position limits (V2.1)
-/// 4. Process valid orders through the matching engine
+/// 4. Run batch auction per symbol (V3.5 - parallel across symbols)
 /// 5. Update borrow ledger on short trades (V2.1)
 /// 6. Notify agents of fills
 /// 7. Advance tick counter
+///
+/// # V3.5 Parallel Execution & Batch Auction
+///
+/// Agents are wrapped in `Mutex` to enable parallel `on_tick()` execution.
+/// Orders are processed via batch auction (single clearing price per symbol),
+/// enabling full parallelism across symbols.
 pub struct Simulation {
     /// Configuration for this simulation.
     config: SimulationConfig,
@@ -70,11 +125,18 @@ pub struct Simulation {
     /// Multi-symbol market container (V2.3).
     market: Market,
 
-    /// The matching engine.
-    engine: MatchingEngine,
+    /// Trading agents wrapped in Mutex for parallel access (V3.5).
+    /// Each agent is accessed by exactly one thread during parallel collection.
+    agents: Vec<Mutex<Box<dyn Agent>>>,
 
-    /// Trading agents.
-    agents: Vec<Box<dyn Agent>>,
+    /// Indices of Tier 1 agents (called every tick).
+    t1_indices: Vec<usize>,
+
+    /// Indices of Tier 2 agents (called only when triggered).
+    t2_indices: Vec<usize>,
+
+    /// Map from AgentId to index in agents vec (for T2 lookup).
+    agent_id_to_index: HashMap<AgentId, usize>,
 
     /// Current tick.
     tick: Tick,
@@ -127,6 +189,19 @@ pub struct Simulation {
 
     /// Symbol fundamentals for fair value calculation (V2.4).
     fundamentals: news::SymbolFundamentals,
+
+    /// Wake condition index for Tier 2 reactive agents (V3.2).
+    wake_index: WakeConditionIndex,
+
+    /// Optional Tier 3 background pool for statistical order generation (V3.4).
+    background_pool: Option<BackgroundAgentPool>,
+
+    /// Hook runner for simulation observers (V3.6).
+    hooks: HookRunner,
+
+    /// Cached symbol-to-sector mapping (V3.8 optimization).
+    /// Built once at initialization since it never changes.
+    symbol_sectors: HashMap<Symbol, types::Sector>,
 }
 
 /// Helper for building candles incrementally.
@@ -198,9 +273,9 @@ impl Simulation {
             .map(|c| c.symbol.clone())
             .collect();
 
-        // Initialize each symbol
+        // Initialize each symbol with initial price for chart display
         for symbol_config in config.get_symbol_configs() {
-            market.add_symbol(&symbol_config.symbol);
+            market.add_symbol_with_price(&symbol_config.symbol, symbol_config.initial_price);
             borrow_ledger.init_symbol(&symbol_config.symbol, symbol_config.borrow_pool_size());
             total_shares_held.insert(symbol_config.symbol.clone(), Quantity::ZERO);
             candles.insert(symbol_config.symbol.clone(), Vec::new());
@@ -232,10 +307,22 @@ impl Simulation {
         let position_validator =
             PositionValidator::new(primary_config, config.short_selling.clone());
 
+        // V3.2: Initialize wake index for T2 agent conditions
+        let wake_index = WakeConditionIndex::new();
+
+        // V3.8: Cache symbol->sector mapping (never changes, compute once)
+        let symbol_sectors: HashMap<Symbol, types::Sector> = config
+            .get_symbol_configs()
+            .iter()
+            .map(|sc| (sc.symbol.clone(), sc.sector))
+            .collect();
+
         Self {
             market,
-            engine: MatchingEngine::new(),
             agents: Vec::new(),
+            t1_indices: Vec::new(),
+            t2_indices: Vec::new(),
+            agent_id_to_index: HashMap::new(),
             tick: 0,
             timestamp: 0,
             recent_trades,
@@ -252,6 +339,10 @@ impl Simulation {
             news_generator,
             active_events: Vec::new(),
             fundamentals,
+            wake_index,
+            background_pool: None,
+            hooks: HookRunner::new(),
+            symbol_sectors,
             config,
         }
     }
@@ -261,9 +352,108 @@ impl Simulation {
         Self::new(SimulationConfig::default())
     }
 
+    // =========================================================================
+    // Hooks (V3.6)
+    // =========================================================================
+
+    /// Register a simulation hook.
+    ///
+    /// Hooks are called in registration order at each lifecycle point.
+    /// Use `Arc` to share hooks between multiple simulations or retain access.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use simulation::hooks::MetricsHook;
+    /// use std::sync::Arc;
+    ///
+    /// let metrics = Arc::new(MetricsHook::new());
+    /// sim.add_hook(metrics.clone());
+    /// sim.run(1000);
+    /// println!("Avg trades/tick: {:.2}", metrics.snapshot().avg_trades_per_tick);
+    /// ```
+    pub fn add_hook(&mut self, hook: Arc<dyn SimulationHook>) {
+        self.hooks.add(hook);
+    }
+
+    /// Get the number of registered hooks.
+    pub fn hook_count(&self) -> usize {
+        self.hooks.len()
+    }
+
+    /// Build hook context with current market state.
+    ///
+    /// Creates owned snapshots to avoid borrow conflicts.
+    fn build_hook_context(&self) -> HookContext {
+        let mut market_snapshot = MarketSnapshot::new();
+
+        for symbol in self.market.symbols() {
+            if let Some(book) = self.market.get_book(symbol) {
+                let snapshot = BookSnapshot {
+                    best_bid: book.best_bid().map(|(price, _)| price),
+                    best_ask: book.best_ask().map(|(price, _)| price),
+                    bid_depth: book.bid_depth(5),
+                    ask_depth: book.ask_depth(5),
+                    last_price: book.last_price(),
+                };
+                market_snapshot.add_book(symbol.clone(), snapshot);
+            }
+        }
+
+        let t3_count = self
+            .background_pool
+            .as_ref()
+            .map(|p| p.config().pool_size)
+            .unwrap_or(0);
+
+        HookContext::new(self.tick, self.timestamp)
+            .with_market(market_snapshot)
+            .with_tiers(self.t1_indices.len(), self.t2_indices.len(), t3_count)
+    }
+
+    /// Set the Tier 3 background pool for statistical order generation (V3.4).
+    ///
+    /// The pool generates orders each tick based on statistical distributions,
+    /// simulating 90k+ background agents without individual instances.
+    pub fn set_background_pool(&mut self, pool: BackgroundAgentPool) {
+        self.background_pool = Some(pool);
+    }
+
+    /// Get a reference to the background pool (if configured).
+    pub fn background_pool(&self) -> Option<&BackgroundAgentPool> {
+        self.background_pool.as_ref()
+    }
+
+    /// Get a mutable reference to the background pool (if configured).
+    pub fn background_pool_mut(&mut self) -> Option<&mut BackgroundAgentPool> {
+        self.background_pool.as_mut()
+    }
+
     /// Add an agent to the simulation.
+    ///
+    /// For reactive (T2) agents, registers their initial wake conditions.
     pub fn add_agent(&mut self, agent: Box<dyn Agent>) {
-        self.agents.push(agent);
+        let agent_id = agent.id();
+        let is_reactive = agent.is_reactive();
+        let index = self.agents.len();
+
+        // Track index by tier
+        if is_reactive {
+            self.t2_indices.push(index);
+            // Register initial wake conditions for reactive agents
+            // (imperative: wake_index.register is side-effectful)
+            for condition in agent.initial_wake_conditions(self.tick) {
+                self.wake_index.register(agent_id, condition);
+            }
+        } else {
+            self.t1_indices.push(index);
+        }
+
+        // Map agent ID to index for triggered T2 lookup
+        self.agent_id_to_index.insert(agent_id, index);
+
+        // V3.5: Wrap agent in Mutex for parallel access
+        self.agents.push(Mutex::new(agent));
     }
 
     /// Get the current tick.
@@ -279,6 +469,11 @@ impl Simulation {
     /// Get simulation statistics.
     pub fn stats(&self) -> &SimulationStats {
         &self.stats
+    }
+
+    /// Get wake condition index statistics.
+    pub fn wake_index_stats(&self) -> agents::IndexStats {
+        self.wake_index.stats()
     }
 
     /// Get a reference to the primary (first) symbol's order book.
@@ -337,12 +532,34 @@ impl Simulation {
             .unwrap_or(Quantity::ZERO)
     }
 
-    /// Get agent summaries (name, position, cash, realized_pnl) for display.
-    /// Returns a vec of (name, position, cash, realized_pnl) tuples.
-    pub fn agent_summaries(&self) -> Vec<(&str, i64, types::Cash, types::Cash)> {
+    /// Get agent summaries for display (V3.1: per-symbol positions).
+    /// Returns a vec of (name, positions_map, cash, total_pnl) tuples.
+    /// V3.5: Returns owned String for name due to Mutex wrapper.
+    pub fn agent_summaries(&self) -> Vec<(String, HashMap<Symbol, i64>, types::Cash, types::Cash)> {
+        // Get current prices for all symbols
+        let prices: HashMap<Symbol, types::Price> = self
+            .market
+            .symbols()
+            .filter_map(|sym| {
+                self.market
+                    .get_book(sym)
+                    .and_then(|b| b.last_price())
+                    .map(|p| (sym.clone(), p))
+            })
+            .collect();
+
         self.agents
             .iter()
-            .map(|a| (a.name(), a.position(), a.cash(), a.realized_pnl()))
+            .map(|agent_mutex| {
+                let a = agent_mutex.lock();
+                let positions: HashMap<Symbol, i64> = a
+                    .positions()
+                    .iter()
+                    .map(|(sym, entry)| (sym.clone(), entry.quantity))
+                    .collect();
+                let total_pnl = a.state().total_pnl(&prices);
+                (a.name().to_owned(), positions, a.cash(), total_pnl)
+            })
             .collect()
     }
 
@@ -419,19 +636,17 @@ impl Simulation {
 
     /// Build indicator snapshot for current tick (all symbols).
     fn build_indicator_snapshot(&mut self) -> IndicatorSnapshot {
-        let mut snapshot = IndicatorSnapshot::new(self.tick);
-
-        // Compute indicators for each symbol
-        for (symbol, symbol_candles) in &self.candles {
-            if !symbol_candles.is_empty() {
+        let indicators = self
+            .candles
+            .iter()
+            .filter(|(_, symbol_candles)| !symbol_candles.is_empty())
+            .filter_map(|(symbol, symbol_candles)| {
                 let values = self.indicator_engine.compute_all(symbol_candles);
-                if !values.is_empty() {
-                    snapshot.insert(symbol.clone(), values);
-                }
-            }
-        }
+                (!values.is_empty()).then(|| (symbol.clone(), values))
+            })
+            .collect();
 
-        snapshot
+        IndicatorSnapshot::from_map(self.tick, indicators)
     }
 
     /// Build candles map for StrategyContext (just return reference).
@@ -494,10 +709,10 @@ impl Simulation {
             return Ok(());
         }
 
-        let symbol = self.config.symbol().to_string();
+        // Use the order's symbol for shares outstanding check (V3.1 fix)
         let total_held = self
             .total_shares_held
-            .get(&symbol)
+            .get(&order.symbol)
             .copied()
             .unwrap_or(Quantity::ZERO);
 
@@ -592,10 +807,13 @@ impl Simulation {
         }
     }
 
-    /// Process a single order through the matching engine.
+    /// Process a single order through the matching engine (for T3 background pool).
     ///
     /// Returns the trades that occurred and optionally the order if it's resting on the book
     /// (with its assigned OrderId).
+    ///
+    /// **Deprecated in V3.8**: T3 now uses batch auction. This method remains only for tests.
+    #[cfg(test)]
     fn process_order(&mut self, mut order: Order) -> (Vec<Trade>, Option<Order>) {
         // Assign order ID and timestamp
         order.id = self.next_order_id();
@@ -610,26 +828,23 @@ impl Simulation {
             return (Vec::new(), None);
         };
 
-        // Try to match the order
-        let result = self
-            .engine
-            .match_order(book, &mut order, self.timestamp, self.tick);
+        // Try to match the order (create engine locally for test-only use)
+        let mut engine = sim_core::MatchingEngine::new();
+        let result = engine.match_order(book, &mut order, self.timestamp, self.tick);
 
         let mut resting_order = None;
 
-        // If there's remaining quantity for a limit order, add to book
+        // If there's remaining quantity for a limit order, add to book temporarily
+        // (will be cleared at end of tick - all orders are IOC within tick)
         if !result.remaining_quantity.is_zero() && order.limit_price().is_some() {
-            // Update order's remaining quantity before adding to book
             order.remaining_quantity = result.remaining_quantity;
             let order_clone = order.clone();
-            // Re-borrow book (needed after match_order consumed mutable borrow)
             if let Some(book) = self.market.get_book_mut(&order.symbol)
                 && book.add_order(order).is_ok()
             {
                 resting_order = Some(order_clone);
                 self.stats.resting_orders += 1;
             }
-            // Market orders with remaining quantity are dropped (no liquidity)
         }
 
         if result.has_trades() {
@@ -639,75 +854,143 @@ impl Simulation {
         (result.trades, resting_order)
     }
 
-    /// Advance the simulation by one tick.
+    // =========================================================================
+    // V3.5: Parallel Agent Collection (using parallel:: helpers)
+    // =========================================================================
+
+    /// Collect agent actions from the given indices.
     ///
-    /// Returns trades that occurred during this tick.
-    pub fn step(&mut self) -> Vec<Trade> {
-        let mut tick_trades = Vec::new();
-
-        // Phase 0 (V2.4): Generate and process news events
-        // This happens BEFORE building the context so events are available to agents
-        self.process_news_events();
-
-        // Phase 1: Build all owned data for StrategyContext.
-        // These must live for the duration of agent ticks.
-        let candles_map = self.build_candles_map();
-        let trades_map = self.build_trades_map();
-        let indicators = self.build_indicator_snapshot();
-
-        // Build StrategyContext with references to owned data (V2.3: uses Market directly)
-        // V2.4: Now includes events and fundamentals
-        let ctx = StrategyContext::new(
-            self.tick,
-            self.timestamp,
-            &self.market,
-            &candles_map,
-            &indicators,
-            &trades_map,
-            &self.active_events,
-            &self.fundamentals,
-        );
-
-        // Shuffle agent processing order to eliminate ID-based priority bias.
-        // Without this, lower-indexed agents would always get their orders
-        // processed first within each tick, creating unfair advantages.
-        let mut indices: Vec<usize> = (0..self.agents.len()).collect();
-        indices.shuffle(&mut rand::rng());
-
-        // Phase 2: Collect all agent actions with their current state for validation.
-        // We need to snapshot position/cash before processing to validate orders.
-        let actions_with_state: Vec<(AgentId, AgentAction, i64, types::Cash, bool)> = indices
-            .iter()
-            .map(|&i| {
-                let agent = &mut self.agents[i];
-                let action = agent.on_tick(&ctx);
-                let position = agent.position();
+    /// Uses `parallel::map_indices` which automatically parallelizes when
+    /// the `parallel` feature is enabled.
+    fn collect_agent_actions(
+        &self,
+        indices: &[usize],
+        ctx: &StrategyContext<'_>,
+    ) -> Vec<AgentActionWithState> {
+        parallel::map_indices(
+            indices,
+            |i| {
+                let mut agent = self.agents[i].lock();
+                let agent_id = agent.id();
+                let action = agent.on_tick(ctx);
+                let positions: HashMap<Symbol, i64> = agent
+                    .positions()
+                    .iter()
+                    .map(|(sym, entry)| (sym.clone(), entry.quantity))
+                    .collect();
                 let cash = agent.cash();
                 let is_mm = agent.is_market_maker();
-                (agent.id(), action, position, cash, is_mm)
+                (agent_id, action, positions, cash, is_mm)
+            },
+            !self.config.parallelization.parallel_agent_collection,
+        )
+    }
+
+    /// Build position cache for all agents (for counterparty lookup during trade processing).
+    fn build_position_cache(&self) -> HashMap<AgentId, HashMap<Symbol, i64>> {
+        parallel::map_mutex_slice_ref(
+            &self.agents,
+            |agent| {
+                let positions: HashMap<Symbol, i64> = agent
+                    .positions()
+                    .iter()
+                    .map(|(sym, entry)| (sym.clone(), entry.quantity))
+                    .collect();
+                (agent.id(), positions)
+            },
+            !self.config.parallelization.parallel_agent_collection,
+        )
+        .into_iter()
+        .collect()
+    }
+
+    /// Collect current prices for all symbols (for wake condition checking).
+    fn collect_current_prices(&self) -> Vec<(Symbol, Price)> {
+        self.config
+            .get_symbol_configs()
+            .iter()
+            .map(|sc| {
+                let price = self
+                    .market
+                    .last_price(&sc.symbol)
+                    .unwrap_or(sc.initial_price);
+                (sc.symbol.clone(), price)
             })
+            .collect()
+    }
+
+    /// Determine which agent indices should be called this tick.
+    ///
+    /// T1 agents are always called; T2 agents only when their conditions trigger.
+    /// Returns (indices_to_call, triggered_t2_map).
+    fn compute_agents_to_call(
+        &mut self,
+        current_prices: &[(Symbol, Price)],
+    ) -> (
+        Vec<usize>,
+        HashMap<AgentId, smallvec::SmallVec<[agents::WakeCondition; 2]>>,
+    ) {
+        // Get news symbols for condition checking
+        let news_symbols: Vec<Symbol> = self
+            .active_events
+            .iter()
+            .filter_map(|e| e.symbol().cloned())
             .collect();
 
-        // Phase 3: ctx is now dropped (goes out of scope) - releases borrow on book
-        // Process all orders with validation
-        let mut fill_notifications: Vec<(AgentId, Trade, i64)> = Vec::new(); // Include position before trade
-        let mut resting_notifications: Vec<(AgentId, Order)> = Vec::new(); // Notify agents of resting orders
+        // Collect triggered T2 agents from wake index
+        let triggered_t2 =
+            self.wake_index
+                .collect_triggered(self.tick, current_prices, &news_symbols);
 
-        for (agent_id, action, agent_position, agent_cash, is_market_maker) in actions_with_state {
-            let mut current_position = agent_position;
+        // Track triggered count for stats
+        self.stats.t2_triggered_this_tick = triggered_t2.len();
 
-            // Process cancellations first (before placing new orders)
+        // Remove triggered PriceCross conditions immediately to prevent re-firing
+        for (agent_id, conditions) in &triggered_t2 {
+            for condition in conditions {
+                if matches!(condition, agents::WakeCondition::PriceCross { .. }) {
+                    self.wake_index.unregister(*agent_id, condition);
+                }
+            }
+        }
+
+        // Build list: T1 always, T2 only if triggered
+        let mut indices_to_call: Vec<usize> = self.t1_indices.clone();
+        indices_to_call.extend(
+            triggered_t2
+                .keys()
+                .filter_map(|agent_id| self.agent_id_to_index.get(agent_id).copied()),
+        );
+
+        // Randomize order to avoid systematic bias
+        indices_to_call.shuffle(&mut rand::thread_rng());
+
+        (indices_to_call, triggered_t2)
+    }
+
+    /// Validate and group orders by symbol for batch auction.
+    ///
+    /// Processes cancellations and validates new orders against position limits.
+    fn collect_orders_for_auction(
+        &mut self,
+        actions_with_state: Vec<AgentActionWithState>,
+    ) -> HashMap<Symbol, Vec<Order>> {
+        let mut orders_by_symbol: HashMap<Symbol, Vec<Order>> = HashMap::new();
+
+        for (agent_id, action, agent_positions, agent_cash, is_market_maker) in actions_with_state {
+            // Process cancellations first
             for order_id in action.cancellations {
-                // Cancel from all order books (agent may have orders across symbols)
                 for book in self.market.books_mut() {
                     let _ = book.cancel_order(order_id);
                 }
             }
 
-            for order in action.orders {
-                // Validate order against position limits (V2.1)
+            // Validate and collect orders
+            for mut order in action.orders {
+                let symbol_position = agent_positions.get(&order.symbol).copied().unwrap_or(0);
+
                 if let Err(violation) =
-                    self.validate_order(&order, current_position, agent_cash, is_market_maker)
+                    self.validate_order(&order, symbol_position, agent_cash, is_market_maker)
                 {
                     self.stats.rejected_orders += 1;
                     if self.config.verbose {
@@ -720,112 +1003,453 @@ impl Simulation {
                             order.limit_price()
                         );
                     }
-                    continue; // Skip this order
+                    continue;
                 }
 
-                let (trades, resting_order) = self.process_order(order);
+                order.id = self.next_order_id();
+                order.timestamp = self.timestamp;
+                self.stats.total_orders += 1;
 
-                // Track resting orders to notify agents
-                if let Some(order) = resting_order {
-                    resting_notifications.push((agent_id, order));
-                }
-
-                // Record trades and prepare fill notifications
-                for trade in trades {
-                    self.stats.total_trades += 1;
-
-                    // Track position before trade for borrow ledger updates
-                    let buyer_pos_before = if trade.buyer_id == agent_id {
-                        current_position
-                    } else {
-                        // Need to look up other agent's position
-                        self.agents
-                            .iter()
-                            .find(|a| a.id() == trade.buyer_id)
-                            .map(|a| a.position())
-                            .unwrap_or(0)
-                    };
-
-                    let seller_pos_before = if trade.seller_id == agent_id {
-                        current_position
-                    } else {
-                        self.agents
-                            .iter()
-                            .find(|a| a.id() == trade.seller_id)
-                            .map(|a| a.position())
-                            .unwrap_or(0)
-                    };
-
-                    // Update borrow ledger (V2.1)
-                    self.update_borrow_ledger(&trade, seller_pos_before, buyer_pos_before);
-
-                    // Update total shares held
-                    self.update_total_shares_held(&trade, seller_pos_before, buyer_pos_before);
-
-                    // Notify both parties with position before trade
-                    fill_notifications.push((trade.buyer_id, trade.clone(), buyer_pos_before));
-                    fill_notifications.push((trade.seller_id, trade.clone(), seller_pos_before));
-
-                    // Update tracking of current position for this agent's remaining orders
-                    if trade.buyer_id == agent_id {
-                        current_position += trade.quantity.raw() as i64;
-                    }
-                    if trade.seller_id == agent_id {
-                        current_position -= trade.quantity.raw() as i64;
-                    }
-
-                    tick_trades.push(trade);
-                }
+                orders_by_symbol
+                    .entry(order.symbol.clone())
+                    .or_default()
+                    .push(order);
             }
         }
 
-        // Add trades to recent trades per symbol (newest first)
-        for trade in tick_trades.iter().rev() {
-            let symbol_trades = self.recent_trades.entry(trade.symbol.clone()).or_default();
-            symbol_trades.insert(0, trade.clone());
+        orders_by_symbol
+    }
+
+    /// Build reference prices for batch auction clearing.
+    ///
+    /// Uses volume-weighted equilibrium pricing based on order imbalance:
+    /// - Compute WAP (weighted avg price) for bids and asks separately
+    /// - Anchor at reverse-volume-weighted price: scarce side pulls price toward it
+    /// - Formula: `(wap_bid × ask_vol + wap_ask × bid_vol) / (bid_vol + ask_vol)`
+    ///
+    /// Fallback chain: order-derived anchor → last_price → initial_price
+    ///
+    /// Parallelized across symbols when `parallel` feature is enabled.
+    fn build_reference_prices(
+        &self,
+        orders_by_symbol: &HashMap<Symbol, Vec<Order>>,
+    ) -> HashMap<String, Price> {
+        let symbols: Vec<_> = orders_by_symbol.keys().collect();
+
+        parallel::filter_map_slice(
+            &symbols,
+            |symbol| {
+                let price = Self::compute_order_derived_anchor(orders_by_symbol.get(*symbol))
+                    .or_else(|| {
+                        self.market
+                            .get_book(symbol)
+                            .and_then(|book| book.last_price())
+                    })
+                    .or_else(|| {
+                        self.config
+                            .get_symbol_configs()
+                            .iter()
+                            .find(|sc| &sc.symbol == *symbol)
+                            .map(|sc| sc.initial_price)
+                    });
+                price.map(|p| ((*symbol).clone(), p))
+            },
+            !self.config.parallelization.parallel_order_validation,
+        )
+        .into_iter()
+        .collect()
+    }
+
+    /// Compute order-derived anchor price from submitted orders.
+    ///
+    /// Uses reverse volume weighting to reflect supply/demand imbalance:
+    /// when supply exceeds demand, price gravitates toward buyers.
+    fn compute_order_derived_anchor(orders: Option<&Vec<Order>>) -> Option<Price> {
+        let orders = orders?;
+        if orders.is_empty() {
+            return None;
         }
 
-        // Trim recent trades per symbol to max
-        for symbol_trades in self.recent_trades.values_mut() {
+        // Compute WAP and total volume for each side
+        let (bid_wap, bid_vol) = Self::compute_side_wap(orders, OrderSide::Buy);
+        let (ask_wap, ask_vol) = Self::compute_side_wap(orders, OrderSide::Sell);
+
+        match (bid_wap, ask_wap) {
+            // Both sides present: reverse volume weighting
+            (Some(b_wap), Some(a_wap)) => {
+                let b_val = b_wap.to_float() * ask_vol as f64;
+                let a_val = a_wap.to_float() * bid_vol as f64;
+                let total_vol = bid_vol + ask_vol;
+                Some(Price::from_float((b_val + a_val) / total_vol as f64))
+            }
+            // Only bids: anchor at bid WAP
+            (Some(b_wap), None) => Some(b_wap),
+            // Only asks: anchor at ask WAP
+            (None, Some(a_wap)) => Some(a_wap),
+            // No limit orders
+            (None, None) => None,
+        }
+    }
+
+    /// Compute weighted average price and total volume for one side.
+    fn compute_side_wap(orders: &[Order], side: OrderSide) -> (Option<Price>, u64) {
+        let (price_x_qty_sum, qty_sum) = orders
+            .iter()
+            .filter(|o| o.side == side)
+            .filter_map(|o| o.limit_price().map(|p| (p, o.quantity.raw())))
+            .fold((0.0, 0u64), |(pq_sum, q_sum), (price, qty)| {
+                (pq_sum + price.to_float() * qty as f64, q_sum + qty)
+            });
+
+        if qty_sum == 0 {
+            (None, 0)
+        } else {
+            (
+                Some(Price::from_float(price_x_qty_sum / qty_sum as f64)),
+                qty_sum,
+            )
+        }
+    }
+
+    /// Process batch auction results into trades.
+    ///
+    /// Updates stats, borrow ledger, share tracking, and collects fill notifications.
+    fn process_auction_results(
+        &mut self,
+        auction_results: HashMap<Symbol, sim_core::BatchAuctionResult>,
+        position_cache: &HashMap<AgentId, HashMap<Symbol, i64>>,
+    ) -> (Vec<Trade>, Vec<(AgentId, Trade, i64)>) {
+        let mut tick_trades = Vec::new();
+        let mut fill_notifications = Vec::new();
+
+        for (symbol, result) in auction_results {
+            self.stats.filled_orders += result.filled_orders.len() as u64;
+            self.stats.total_trades += result.trades.len() as u64;
+
+            // Update last price in order book
+            if let Some(clearing_price) = result.clearing_price
+                && let Some(book) = self.market.get_book_mut(&symbol)
+            {
+                book.set_last_price(clearing_price);
+            }
+
+            for trade in result.trades {
+                let buyer_pos_before = position_cache
+                    .get(&trade.buyer_id)
+                    .and_then(|positions| positions.get(&trade.symbol).copied())
+                    .unwrap_or(0);
+
+                let seller_pos_before = position_cache
+                    .get(&trade.seller_id)
+                    .and_then(|positions| positions.get(&trade.symbol).copied())
+                    .unwrap_or(0);
+
+                self.update_borrow_ledger(&trade, seller_pos_before, buyer_pos_before);
+                self.update_total_shares_held(&trade, seller_pos_before, buyer_pos_before);
+
+                fill_notifications.push((trade.buyer_id, trade.clone(), buyer_pos_before));
+                fill_notifications.push((trade.seller_id, trade.clone(), seller_pos_before));
+
+                tick_trades.push(trade);
+            }
+        }
+
+        (tick_trades, fill_notifications)
+    }
+
+    /// Generate Tier 3 background pool orders for batch auction (V3.8).
+    ///
+    /// Returns orders to be included in the main batch auction alongside T1/T2 orders.
+    /// This is more efficient than continuous matching and ensures consistent semantics.
+    fn generate_background_pool_orders(&mut self) -> Vec<Order> {
+        let Some(pool) = self.background_pool.as_mut() else {
+            return Vec::new();
+        };
+
+        // Build mid prices map
+        let mid_prices: HashMap<Symbol, Price> = self
+            .config
+            .get_symbol_configs()
+            .iter()
+            .filter_map(|sc| {
+                self.market
+                    .mid_price(&sc.symbol)
+                    .map(|p| (sc.symbol.clone(), p))
+            })
+            .collect();
+
+        // Build pool context (V3.8: use cached symbol_sectors)
+        let pool_ctx = PoolContext {
+            tick: self.tick,
+            mid_prices: &mid_prices,
+            active_events: &self.active_events,
+            symbol_sectors: &self.symbol_sectors,
+        };
+
+        // Generate orders
+        let t3_orders = pool.generate(&pool_ctx);
+        self.stats.t3_orders_this_tick = t3_orders.len();
+
+        t3_orders
+    }
+
+    /// Update T3 pool accounting from batch auction results (V3.8).
+    ///
+    /// Called after auction completes to record T3 trades and notify counterparty agents.
+    fn update_background_pool_accounting(&mut self, trades: &[Trade]) {
+        let Some(pool) = self.background_pool.as_mut() else {
+            return;
+        };
+
+        for trade in trades {
+            // Only process trades involving the background pool
+            if trade.buyer_id == BACKGROUND_POOL_ID {
+                pool.accounting_mut().record_trade_as_buyer(
+                    &trade.symbol,
+                    trade.price,
+                    trade.quantity,
+                );
+            } else if trade.seller_id == BACKGROUND_POOL_ID {
+                pool.accounting_mut().record_trade_as_seller(
+                    &trade.symbol,
+                    trade.price,
+                    trade.quantity,
+                );
+            }
+        }
+    }
+
+    /// Update recent trades storage with new trades.
+    fn update_recent_trades(&mut self, tick_trades: &[Trade]) {
+        // Add trades (newest first)
+        tick_trades.iter().rev().for_each(|trade| {
+            let symbol_trades = self.recent_trades.entry(trade.symbol.clone()).or_default();
+            symbol_trades.insert(0, trade.clone());
+        });
+
+        // Trim to max
+        self.recent_trades.values_mut().for_each(|symbol_trades| {
             if symbol_trades.len() > self.config.max_recent_trades {
                 symbol_trades.truncate(self.config.max_recent_trades);
             }
-        }
+        });
+    }
 
-        // Update candles with trade data
-        self.update_candles(&tick_trades);
+    /// Notify agents of fills and update wake conditions.
+    fn process_fill_notifications(&mut self, fill_notifications: Vec<(AgentId, Trade, i64)>) {
+        let condition_updates = parallel::filter_map_slice(
+            &fill_notifications,
+            |(agent_id, trade, pos_before)| {
+                self.agent_id_to_index.get(agent_id).and_then(|&idx| {
+                    let mut agent = self.agents[idx].lock();
+                    agent.on_fill(trade);
+                    agent
+                        .is_reactive()
+                        .then(|| agent.post_fill_condition_update(*pos_before))
+                        .flatten()
+                })
+            },
+            !self.config.parallelization.parallel_fill_notifications,
+        );
 
-        // Notify agents of fills
-        for (agent_id, trade, _pos_before) in fill_notifications {
-            if let Some(agent) = self.agents.iter_mut().find(|a| a.id() == agent_id) {
-                agent.on_fill(&trade);
+        self.wake_index.apply_updates(condition_updates);
+    }
+
+    /// Restore wake conditions for triggered T2 agents.
+    ///
+    /// After triggering, agents may need new conditions (e.g., exit conditions after entry).
+    fn restore_t2_wake_conditions(
+        &mut self,
+        triggered_t2: &HashMap<AgentId, smallvec::SmallVec<[agents::WakeCondition; 2]>>,
+    ) {
+        let triggered_keys: Vec<_> = triggered_t2.keys().copied().collect();
+        let t2_conditions = parallel::filter_map_slice(
+            &triggered_keys,
+            |agent_id| {
+                self.agent_id_to_index.get(agent_id).and_then(|&idx| {
+                    let agent = self.agents[idx].lock();
+                    agent
+                        .is_reactive()
+                        .then(|| (*agent_id, agent.current_wake_conditions().to_vec()))
+                })
+            },
+            !self.config.parallelization.parallel_wake_conditions,
+        );
+
+        for (agent_id, conditions) in t2_conditions {
+            // First unregister ALL existing conditions for this agent to prevent accumulation
+            self.wake_index.unregister_all(agent_id);
+            // Then register the new conditions
+            for condition in conditions {
+                self.wake_index.register(agent_id, condition);
             }
         }
+    }
 
-        // Notify agents of resting orders (so they can track OrderIds for cancellation)
-        for (agent_id, order) in resting_notifications {
-            if let Some(agent) = self.agents.iter_mut().find(|a| a.id() == agent_id) {
-                agent.on_order_resting(order.id, &order);
-            }
+    /// Update risk tracking with current equity values.
+    fn update_risk_tracking(&mut self) {
+        let prices: HashMap<Symbol, Price> = self
+            .config
+            .get_symbol_configs()
+            .iter()
+            .map(|sc| {
+                let price = self
+                    .market
+                    .last_price(&sc.symbol)
+                    .unwrap_or(sc.initial_price);
+                (sc.symbol.clone(), price)
+            })
+            .collect();
+
+        let equities = parallel::map_mutex_slice_ref(
+            &self.agents,
+            |agent| (agent.id(), agent.equity(&prices).to_float()),
+            !self.config.parallelization.parallel_risk_tracking,
+        );
+
+        for (agent_id, equity) in equities {
+            self.risk_tracker.record_equity(agent_id, equity);
+        }
+    }
+
+    /// Clear order books and advance tick counter.
+    fn finalize_tick(&mut self) {
+        // Clear all order books (orders expire after tick)
+        for book in self.market.books_mut() {
+            book.clear();
         }
 
-        // Update risk tracking with current equity values
-        // Use last price from primary symbol or initial price for mark-to-market
-        let mark_price = self
-            .book()
-            .last_price()
-            .unwrap_or(self.config.initial_price());
-        for agent in &self.agents {
-            let equity = agent.equity(mark_price).to_float();
-            self.risk_tracker.record_equity(agent.id(), equity);
-        }
+        // Cleanup expired time-based wake conditions (V3.9 fix for progressive slowdown)
+        self.wake_index.cleanup_expired(self.tick);
 
         // Advance time
         self.tick += 1;
-        self.timestamp += 1; // Simple 1:1 mapping for now
-
-        // Update stats tick
+        self.timestamp += 1;
         self.stats.tick = self.tick;
+    }
+
+    /// Advance the simulation by one tick.
+    ///
+    /// Returns trades that occurred during this tick.
+    ///
+    /// # Phases
+    ///
+    /// 0. Process news events (updates fundamentals and active events)
+    /// 1. Hook: on_tick_start (V3.6)
+    /// 2. Determine which agents to call (T1 always, T2 when triggered)
+    /// 3. Build strategy context for agents
+    /// 4. Collect agent actions (orders and cancellations)
+    /// 5. Generate Tier 3 background pool orders (V3.8)
+    /// 6. Hook: on_orders_collected (V3.6)
+    /// 7. Run batch auction for ALL orders (T1/T2/T3) (V3.8)
+    /// 8. Update T3 pool accounting (V3.8)
+    /// 9. Hook: on_trades (V3.6)
+    /// 10. Update market data (recent trades, candles)
+    /// 11. Notify agents of fills and update wake conditions
+    /// 12. Update risk tracking
+    /// 13. Hook: on_tick_end (V3.6)
+    /// 14. Finalize tick (clear books, advance time)
+    pub fn step(&mut self) -> Vec<Trade> {
+        // Phase 0: Process news events
+        self.process_news_events();
+
+        // Phase 1 (V3.6): Hook - tick start
+        if !self.hooks.is_empty() {
+            let hook_ctx = self.build_hook_context();
+            self.hooks.on_tick_start(&hook_ctx);
+        }
+
+        // Phase 2: Determine which agents to call (before building ctx to avoid borrow conflict)
+        // This mutates wake_index, so must happen before taking immutable refs to self
+        let current_prices = self.collect_current_prices();
+        let (indices_to_call, triggered_t2) = self.compute_agents_to_call(&current_prices);
+
+        // Phase 3: Build strategy context for agents
+        let candles_map = self.build_candles_map();
+        let trades_map = self.build_trades_map();
+        let indicators = self.build_indicator_snapshot();
+        let ctx = StrategyContext::new(
+            self.tick,
+            self.timestamp,
+            &self.market,
+            &candles_map,
+            &indicators,
+            &trades_map,
+            &self.active_events,
+            &self.fundamentals,
+        );
+
+        // Phase 4: Collect agent actions
+        let actions_with_state = self.collect_agent_actions(&indices_to_call, &ctx);
+        self.stats.agents_called_this_tick = actions_with_state.len();
+
+        // Phase 5: Collect orders from T1/T2 agents
+        let position_cache = self.build_position_cache();
+        let mut orders_by_symbol = self.collect_orders_for_auction(actions_with_state);
+
+        // Phase 5b: Generate Tier 3 background pool orders (V3.8)
+        let t3_orders = self.generate_background_pool_orders();
+
+        // Add T3 orders to batch auction (V3.8 optimization)
+        for mut order in t3_orders {
+            order.id = self.next_order_id();
+            order.timestamp = self.timestamp;
+            self.stats.total_orders += 1;
+
+            orders_by_symbol
+                .entry(order.symbol.clone())
+                .or_default()
+                .push(order);
+        }
+
+        // Phase 6 (V3.6): Hook - orders collected (before matching)
+        if !self.hooks.is_empty() {
+            let all_orders: Vec<Order> = orders_by_symbol.values().flatten().cloned().collect();
+            let hook_ctx = self.build_hook_context();
+            self.hooks.on_orders_collected(&all_orders, &hook_ctx);
+        }
+
+        // Phase 7: Run batch auction for ALL orders (T1/T2/T3) (V3.8)
+        let reference_prices = self.build_reference_prices(&orders_by_symbol);
+        let auction_results = run_parallel_auctions(
+            orders_by_symbol,
+            &reference_prices,
+            self.timestamp,
+            self.tick,
+            self.next_order_id,
+            !self.config.parallelization.parallel_auctions,
+        );
+        let (tick_trades, fill_notifications) =
+            self.process_auction_results(auction_results, &position_cache);
+
+        // Phase 8: Update T3 pool accounting (V3.8)
+        self.update_background_pool_accounting(&tick_trades);
+
+        // Phase 9 (V3.6): Hook - trades produced
+        if !self.hooks.is_empty() {
+            let hook_ctx = self.build_hook_context();
+            self.hooks.on_trades(&tick_trades, &hook_ctx);
+        }
+
+        // Phase 10: Update market data
+        self.update_recent_trades(&tick_trades);
+        self.update_candles(&tick_trades);
+
+        // Phase 11: Notify agents and update wake conditions
+        self.process_fill_notifications(fill_notifications);
+        self.restore_t2_wake_conditions(&triggered_t2);
+
+        // Phase 12: Update risk tracking
+        self.update_risk_tracking();
+
+        // Phase 13 (V3.6): Hook - tick end
+        if !self.hooks.is_empty() {
+            let hook_ctx = self.build_hook_context();
+            self.hooks.on_tick_end(&self.stats, &hook_ctx);
+        }
+
+        // Phase 14: Finalize tick
+        self.finalize_tick();
 
         tick_trades
     }
@@ -834,14 +1458,15 @@ impl Simulation {
     ///
     /// Returns total trades across all ticks.
     pub fn run(&mut self, ticks: u64) -> Vec<Trade> {
-        let mut all_trades = Vec::new();
+        let result = (0..ticks).fold(Vec::new(), |mut all_trades, _| {
+            all_trades.extend(self.step());
+            all_trades
+        });
 
-        for _ in 0..ticks {
-            let trades = self.step();
-            all_trades.extend(trades);
-        }
+        // V3.6: Notify hooks that simulation ended
+        self.hooks.on_simulation_end(&self.stats);
 
-        all_trades
+        result
     }
 
     // =========================================================================
@@ -976,9 +1601,10 @@ mod tests {
 
     impl OneShotAgent {
         fn new(id: AgentId, order: Order) -> Self {
+            let symbol = order.symbol.clone();
             Self {
                 id,
-                state: AgentState::new(Cash::from_float(100_000.0)),
+                state: AgentState::new(Cash::from_float(100_000.0), &[&symbol]),
                 order: Some(order),
             }
         }
@@ -1052,7 +1678,7 @@ mod tests {
         );
         sim.add_agent(Box::new(OneShotAgent::new(AgentId(1), sell_order)));
 
-        // Agent 2 places a buy order
+        // Agent 2 places a buy order at same price
         let buy_order = Order::limit(
             AgentId(2),
             "TEST",
@@ -1062,16 +1688,16 @@ mod tests {
         );
         sim.add_agent(Box::new(OneShotAgent::new(AgentId(2), buy_order)));
 
-        // First tick: both orders submitted, sell order processed first (rests),
-        // then buy order matches against it
+        // First tick: both orders submitted, one rests briefly, other matches against it
         let trades = sim.step();
         assert_eq!(trades.len(), 1);
         assert_eq!(trades[0].quantity, Quantity(50));
         assert_eq!(trades[0].price, Price::from_float(100.0));
-        assert_eq!(trades[0].buyer_id, AgentId(2));
-        assert_eq!(trades[0].seller_id, AgentId(1));
 
         assert_eq!(sim.stats().total_trades, 1);
+
+        // After tick, book should be cleared
+        assert!(sim.book().is_empty());
     }
 
     #[test]
@@ -1089,13 +1715,14 @@ mod tests {
         );
         sim.add_agent(Box::new(OneShotAgent::new(AgentId(1), sell_order)));
 
-        // Tick 0: order placed
+        // Tick 0: order placed, then book cleared at end of tick
         sim.step();
 
-        // Book should now show the ask
+        // Book should be empty after tick (orders expire)
         let book = sim.book();
-        assert_eq!(book.best_ask_price(), Some(Price::from_float(105.0)));
+        assert_eq!(book.best_ask_price(), None);
         assert_eq!(book.best_bid_price(), None);
+        assert!(book.is_empty());
     }
 
     #[test]

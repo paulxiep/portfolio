@@ -230,7 +230,7 @@ fn test_position_limits_rejects_shorts_when_disabled() {
 
     sim.add_agent(Box::new(ShortAttemptAgent {
         id: AgentId(1),
-        state: agents::AgentState::new(Cash::from_float(10_000.0)),
+        state: agents::AgentState::new(Cash::from_float(10_000.0), &["ACME"]),
         attempted: false,
     }));
 
@@ -302,10 +302,12 @@ fn test_position_limits_allows_shorts_when_enabled() {
 
         fn on_fill(&mut self, trade: &types::Trade) {
             if trade.seller_id == self.id {
-                self.state.on_sell(trade.quantity.raw(), trade.value());
+                self.state
+                    .on_sell(&trade.symbol, trade.quantity.raw(), trade.value());
             }
             if trade.buyer_id == self.id {
-                self.state.on_buy(trade.quantity.raw(), trade.value());
+                self.state
+                    .on_buy(&trade.symbol, trade.quantity.raw(), trade.value());
             }
         }
     }
@@ -347,23 +349,25 @@ fn test_position_limits_allows_shorts_when_enabled() {
 
         fn on_fill(&mut self, trade: &types::Trade) {
             if trade.buyer_id == self.id {
-                self.state.on_buy(trade.quantity.raw(), trade.value());
+                self.state
+                    .on_buy(&trade.symbol, trade.quantity.raw(), trade.value());
             }
             if trade.seller_id == self.id {
-                self.state.on_sell(trade.quantity.raw(), trade.value());
+                self.state
+                    .on_sell(&trade.symbol, trade.quantity.raw(), trade.value());
             }
         }
     }
 
     sim.add_agent(Box::new(ShortSellerAgent {
         id: AgentId(1),
-        state: agents::AgentState::new(Cash::from_float(10_000.0)),
+        state: agents::AgentState::new(Cash::from_float(10_000.0), &["ACME"]),
         attempted: false,
     }));
 
     sim.add_agent(Box::new(BuyerAgent {
         id: AgentId(2),
-        state: agents::AgentState::new(Cash::from_float(20_000.0)),
+        state: agents::AgentState::new(Cash::from_float(20_000.0), &["ACME"]),
         attempted: false,
     }));
 

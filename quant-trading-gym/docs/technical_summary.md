@@ -14,9 +14,9 @@
 │                      types crate                         │
 │        (Order, Trade, Price, Symbol, Sector)            │
 └─────────────────────────────────────────────────────────┘
-│                       tui crate                          │
-│            (visualization, user input)                   │
-└─────────────────────────────────────────────────────────┘
+│     tui crate      ││    storage crate    │
+│  (visualization)   ││ (SQLite persistence)│
+└────────────────────┘└─────────────────────┘
 ```
 
 ## Crate Responsibilities
@@ -24,26 +24,30 @@
 | Crate | Purpose | Key Files |
 |-------|---------|-----------|
 | `types` | Shared types, no logic | `order.rs`, `config.rs` |
-| `sim-core` | Order book, matching engine | `order_book.rs`, `matching.rs` |
-| `agents` | Agent trait + 7 strategies | `strategies/*.rs` |
+| `sim-core` | Order book, matching engine, batch auction | `order_book.rs`, `batch_auction.rs` |
+| `agents` | Agent trait + tiered strategies | `strategies/`, `tier2/`, `tier3/` |
 | `news` | Events, fundamentals, sectors | `generator.rs`, `fundamentals.rs` |
 | `quant` | Indicators, risk metrics | `indicators/`, `tracker.rs` |
-| `simulation` | Tick loop coordination | `runner.rs` |
+| `simulation` | Tick loop, parallel execution, hooks | `runner.rs`, `parallel.rs`, `hooks.rs` |
+| `storage` | SQLite persistence, candle aggregation | `schema.rs`, `candles.rs`, `hook.rs` |
 | `tui` | Terminal UI | `app.rs`, `widgets/` |
 
-## Simulation Loop
+## Simulation Loop (V3 Two-Phase Architecture)
 
 ```
 for tick in 0..max_ticks:
-    1. Generate news events (probabilistic)
-    2. Apply permanent fundamentals changes (earnings, guidance, rates)
-    3. Build StrategyContext for each agent
-    4. Collect orders from agents (on_tick)
-    5. Validate against position limits
-    6. Match orders through engine
-    7. Notify agents of fills (on_fill)
-    8. Update candles, indicators, risk metrics
-    9. Send SimUpdate to TUI
+    Phase 1: Collection (parallel)
+      1. Generate news events (probabilistic)
+      2. Apply permanent fundamentals changes
+      3. Build StrategyContext per symbol
+      4. Collect orders from T1/T2/T3 agents in parallel (rayon)
+      5. Validate against position limits
+
+    Phase 2: Auction (parallel per-symbol)
+      6. Reference-price auction: match crossing orders at volume-weighted seller price
+      7. Notify agents of fills
+      8. Update candles, indicators, risk metrics
+      9. Invoke SimulationHooks (storage, metrics, TUI)
 ```
 
 ## Fair Value Model
@@ -62,29 +66,37 @@ With defaults: $5 EPS, 40% payout, 5% growth → **$52.50 fair value**
 
 ## Agent Strategies
 
-| Strategy | Signal | Behavior |
-|----------|--------|----------|
-| MarketMaker | Always | Two-sided quotes around mid |
-| NoiseTrader | Random | Random buys/sells near fair value |
-| Momentum | RSI < 30 / > 70 | Buy oversold, sell overbought |
-| TrendFollower | SMA crossover | Buy golden cross, sell death cross |
-| MacdCrossover | MACD/Signal | Buy bullish cross, sell bearish |
-| BollingerReversion | Band touch | Buy lower band, sell upper band |
-| VwapExecutor | Time-sliced | Execute target qty over horizon |
+| Strategy | Tier | Signal | Behavior |
+|----------|------|--------|----------|
+| MarketMaker | T1 | Always | Two-sided quotes around mid |
+| NoiseTrader | T1 | Random | Random buys/sells near fair value |
+| Momentum | T1 | RSI < 30 / > 70 | Buy oversold, sell overbought |
+| TrendFollower | T1 | SMA crossover | Buy golden cross, sell death cross |
+| MacdCrossover | T1 | MACD/Signal | Buy bullish cross, sell bearish |
+| BollingerReversion | T1 | Band touch | Buy lower band, sell upper band |
+| VwapExecutor | T1 | Time-sliced | Execute target qty over horizon |
+| PairsTrader | T1 | Spread z-score | Long/short cointegrated pairs |
+| SectorRotator | T2 | Sector sentiment | Rotate allocation on news events |
+| ThresholdTrader | T2 | Price threshold | Wake on price cross |
+| BackgroundPool | T3 | Statistical | 45k+ agents via aggregate modeling |
 
 ## Key Design Decisions
 
-1. **Mean-reverting prices**: Realistic for tick-level liquid markets; momentum strategies struggle (as in real HFT)
-2. **Fixed-point arithmetic**: `Price` and `Cash` use i64 with implicit decimals for financial precision
-3. **Event-value-first generation**: Events generate magnitude before selecting symbol to prevent seed-based bias
-4. **Growth cap at 7%**: Prevents Gordon Growth Model breakdown when g ≥ r
+1. **Reference-price auction**: Statistically equivalent to individual matching; volume-weighted price is deterministic, not arrival-order dependent
+2. **Tiered agent architecture**: T1 (full logic), T2 (reactive/wake conditions), T3 (statistical background pool)
+3. **Mean-reverting prices**: Realistic for tick-level liquid markets; momentum strategies struggle (as in real HFT)
+4. **Fixed-point arithmetic**: `Price` and `Cash` use i64 with implicit decimals for financial precision
+5. **Event-value-first generation**: Events generate magnitude before selecting symbol to prevent seed-based bias
+6. **Growth cap at 7%**: Prevents Gordon Growth Model breakdown when g ≥ r
 
 ## Build & Run
 
 ```bash
-cargo build --release      # Build
-cargo test --all           # 213 tests
-cargo run --release        # TUI (Space to start)
+cargo build --release           # Build
+cargo test --all                # Tests
+cargo run --release             # TUI (Space to start)
+cargo run --release -- --headless --ticks 10000  # Benchmark
+docker compose up               # Containerized run
 ```
 
 ## TUI Controls

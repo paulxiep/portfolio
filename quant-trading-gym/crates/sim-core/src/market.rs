@@ -245,6 +245,17 @@ impl Market {
         self.books.insert(symbol.clone(), OrderBook::new(symbol));
     }
 
+    /// Add a symbol with an initial reference price.
+    ///
+    /// This sets the order book's last_price so charts and agents have
+    /// a reference price even before any trades occur.
+    pub fn add_symbol_with_price(&mut self, symbol: impl Into<Symbol>, initial_price: Price) {
+        let symbol = symbol.into();
+        let mut book = OrderBook::new(symbol.clone());
+        book.set_last_price(initial_price);
+        self.books.insert(symbol, book);
+    }
+
     /// Get a reference to an order book by symbol.
     pub fn get_book(&self, symbol: &Symbol) -> Option<&OrderBook> {
         self.books.get(symbol)

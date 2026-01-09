@@ -453,6 +453,16 @@ impl OrderBook {
     pub fn order_count(&self) -> usize {
         self.order_index.len()
     }
+
+    /// Clear all orders from the book (for end-of-tick expiration).
+    ///
+    /// Removes all bids, asks, and order index entries.
+    /// Preserves `last_price` for reference.
+    pub fn clear(&mut self) {
+        self.bids.clear();
+        self.asks.clear();
+        self.order_index.clear();
+    }
 }
 
 #[cfg(test)]

@@ -58,7 +58,7 @@ impl Default for MarketMakerConfig {
             initial_position: 500, // Start with inventory from the float
             max_inventory: 1000,
             inventory_skew: 0.0001, // Adjust price 0.01% per share of inventory
-            refresh_interval: 5,
+            refresh_interval: 1,    // Quote every tick (required for IOC mode)
             fair_value_weight: 0.3, // 30% fair value, 70% mid price
         }
     }
@@ -94,15 +94,15 @@ impl MarketMaker {
     pub fn new(id: AgentId, config: MarketMakerConfig) -> Self {
         let initial_cash = config.initial_cash;
         let initial_position = config.initial_position;
-        let mut state = AgentState::new(initial_cash);
+        let mut state = AgentState::new(initial_cash, &[&config.symbol]);
         // MarketMakers start with inventory from the float
-        state.set_position(initial_position);
+        state.set_position(&config.symbol, initial_position);
         // Each MM gets a random bias on fair value: ±20%
         // This creates heterogeneous beliefs across market makers
         use rand::rngs::StdRng;
         use rand::{Rng, SeedableRng};
-        let mut rng = StdRng::from_os_rng();
-        let fair_value_bias = rng.random_range(-0.20..0.20);
+        let mut rng = StdRng::from_entropy();
+        let fair_value_bias = rng.r#gen_range(-0.20..0.20);
         Self {
             id,
             config,
@@ -120,9 +120,9 @@ impl MarketMaker {
         Self::new(id, MarketMakerConfig::default())
     }
 
-    /// Get current position.
+    /// Get current position for this market maker's symbol.
     pub fn position(&self) -> i64 {
-        self.state.position()
+        self.state.position_for(&self.config.symbol)
     }
 
     /// Get current cash balance.
@@ -248,9 +248,11 @@ impl Agent for MarketMaker {
         self.total_volume += trade.quantity.raw();
 
         if trade.buyer_id == self.id {
-            self.state.on_buy(trade.quantity.raw(), trade.value());
+            self.state
+                .on_buy(&trade.symbol, trade.quantity.raw(), trade.value());
         } else if trade.seller_id == self.id {
-            self.state.on_sell(trade.quantity.raw(), trade.value());
+            self.state
+                .on_sell(&trade.symbol, trade.quantity.raw(), trade.value());
         }
         // Note: We don't clear outstanding_bid/ask here because partial fills
         // leave the remainder on the book with the same OrderId. The cancellation
@@ -439,14 +441,14 @@ mod tests {
         let mut mm = MarketMaker::with_defaults(AgentId(1));
 
         // Simulate large long position
-        mm.state.set_position(500);
+        mm.state.set_position("ACME", 500);
 
         // Skew should be negative (lower prices to sell)
         let skew = mm.calculate_skew();
         assert!(skew < 0.0);
 
         // Simulate large short position
-        mm.state.set_position(-500);
+        mm.state.set_position("ACME", -500);
 
         // Skew should be positive (higher prices to buy)
         let skew = mm.calculate_skew();

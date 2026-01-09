@@ -35,7 +35,7 @@ use ratatui::{
 };
 
 use crate::SimCommand;
-use crate::widgets::{AgentTable, BookDepth, PriceChart, RiskPanel, SimUpdate, StatsPanel};
+use crate::widgets::{AgentTable, PriceChart, RiskPanel, SimUpdate, StatsPanel};
 
 /// TUI application state.
 pub struct TuiApp {
@@ -76,7 +76,7 @@ impl TuiApp {
             state: SimUpdate::default(),
             finished: false,
             running: false, // Start paused
-            frame_rate: 30, // 30 FPS
+            frame_rate: 60, // 60 FPS is smooth enough for visualization
             risk_scroll: 0,
             agent_scroll: 0,
             risk_area: None,
@@ -129,6 +129,10 @@ impl TuiApp {
         let mut last_tick = Instant::now();
 
         loop {
+            // V3.8: Drain all pending updates BEFORE drawing
+            // This ensures TUI shows latest state and never blocks simulation
+            self.poll_updates();
+
             // Draw current state
             terminal.draw(|f| self.draw(f))?;
 
@@ -151,9 +155,8 @@ impl TuiApp {
                 }
             }
 
-            // Update state from channel (non-blocking)
+            // Rate limit frames
             if last_tick.elapsed() >= tick_rate {
-                self.poll_updates();
                 last_tick = Instant::now();
             }
 
@@ -373,13 +376,12 @@ impl TuiApp {
             .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
             .split(main_chunks[2]);
 
-        // Left panel: stats + order book + risk panel
+        // Left panel: stats + risk panel (book removed - batch auction clears each tick)
         let left_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(9),  // Stats
-                Constraint::Length(14), // Order book (reduced)
-                Constraint::Min(10),    // Risk panel (expanded)
+                Constraint::Length(9), // Stats
+                Constraint::Min(10),   // Risk panel (expanded)
             ])
             .split(content_chunks[0]);
 
@@ -390,13 +392,12 @@ impl TuiApp {
             .split(content_chunks[1]);
 
         // Store areas for mouse detection
-        self.risk_area = Some(left_chunks[2]);
+        self.risk_area = Some(left_chunks[1]);
         self.agent_area = Some(right_chunks[1]);
 
         // Draw widgets
         self.draw_stats(frame, left_chunks[0]);
-        self.draw_book_depth(frame, left_chunks[1]);
-        self.draw_risk_panel(frame, left_chunks[2]);
+        self.draw_risk_panel(frame, left_chunks[1]);
         self.draw_price_chart(frame, right_chunks[0]);
         self.draw_agent_table(frame, right_chunks[1]);
 
@@ -547,18 +548,16 @@ impl TuiApp {
             .last_price(self.state.current_last_price())
             .total_trades(self.state.total_trades)
             .total_orders(self.state.total_orders)
-            .agent_count(self.state.agents.len())
+            .tier1_count(self.state.tier1_count)
+            .tier2_count(self.state.tier2_count)
+            .tier3_count(self.state.tier3_count)
+            .t3_orders(self.state.t3_orders)
+            .background_pnl(self.state.background_pnl)
+            .agents_called(self.state.agents_called)
+            .t2_triggered(self.state.t2_triggered)
             .spread(spread);
 
         frame.render_widget(stats, area);
-    }
-
-    /// Draw the order book depth.
-    fn draw_book_depth(&self, frame: &mut Frame, area: Rect) {
-        let bids = self.state.current_bids();
-        let asks = self.state.current_asks();
-        let book = BookDepth::new(bids, asks).max_levels(10);
-        frame.render_widget(book, area);
     }
 
     /// Draw the price chart.
@@ -566,8 +565,9 @@ impl TuiApp {
         if self.overlay_mode && self.state.symbols.len() > 1 {
             // Overlay mode: show all symbols
             let title = "Price (Overlay)".to_string();
-            let chart =
-                PriceChart::multi(&self.state.price_history, &self.state.symbols).title(&title);
+            let chart = PriceChart::multi(&self.state.price_history, &self.state.symbols)
+                .title(&title)
+                .tick(self.state.tick);
             frame.render_widget(chart, area);
         } else {
             // Single symbol mode
@@ -576,7 +576,9 @@ impl TuiApp {
                 Some(p) => format!("Price: ${:.2}", p.to_float()),
                 None => "Price".to_string(),
             };
-            let chart = PriceChart::new(price_history).title(&title);
+            let chart = PriceChart::new(price_history)
+                .title(&title)
+                .tick(self.state.tick);
             frame.render_widget(chart, area);
         }
     }
@@ -584,7 +586,11 @@ impl TuiApp {
     /// Draw the agent P&L table.
     fn draw_agent_table(&mut self, frame: &mut Frame, area: Rect) {
         let total = self.state.agents.len();
-        let table = AgentTable::new(&self.state.agents).scroll_offset(self.agent_scroll);
+        let selected_symbol = self.state.symbols.get(self.selected_symbol).cloned();
+        let mut table = AgentTable::new(&self.state.agents).scroll_offset(self.agent_scroll);
+        if let Some(sym) = selected_symbol {
+            table = table.symbol(sym);
+        }
         frame.render_widget(table, area);
 
         // Render scrollbar if there are items
@@ -716,7 +722,7 @@ impl SimpleTui {
             receiver: rx,
             state: self.state.clone(),
             finished: self.state.finished,
-            frame_rate: 30,
+            frame_rate: 60, // 60 FPS is smooth enough for visualization
             risk_scroll: self.risk_scroll,
             agent_scroll: self.agent_scroll,
             risk_area: None,

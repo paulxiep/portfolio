@@ -86,8 +86,8 @@ impl VwapExecutor {
         let remaining = config.target_quantity;
         Self {
             id,
-            config,
-            state: AgentState::new(initial_cash),
+            config: config.clone(),
+            state: AgentState::new(initial_cash, &[&config.symbol]),
             remaining_quantity: remaining,
             last_order_tick: 0,
             total_value: 0.0,
@@ -128,14 +128,13 @@ impl VwapExecutor {
         }
 
         // Combine historical total with recent trades
-        let mut total_value = self.total_value;
-        let mut total_volume = self.total_volume;
-
-        for trade in recent_trades {
-            let trade_value = trade.price.to_float() * trade.quantity.raw() as f64;
-            total_value += trade_value;
-            total_volume += trade.quantity.raw();
-        }
+        let (total_value, total_volume) = recent_trades.iter().fold(
+            (self.total_value, self.total_volume),
+            |(value, volume), trade| {
+                let trade_value = trade.price.to_float() * trade.quantity.raw() as f64;
+                (value + trade_value, volume + trade.quantity.raw())
+            },
+        );
 
         if total_volume == 0 {
             None
@@ -146,11 +145,15 @@ impl VwapExecutor {
 
     /// Update running VWAP with new trades.
     fn update_vwap(&mut self, recent_trades: &[Trade]) {
-        for trade in recent_trades {
-            let trade_value = trade.price.to_float() * trade.quantity.raw() as f64;
-            self.total_value += trade_value;
-            self.total_volume += trade.quantity.raw();
-        }
+        let (delta_value, delta_volume) =
+            recent_trades
+                .iter()
+                .fold((0.0, 0u64), |(value, volume), trade| {
+                    let trade_value = trade.price.to_float() * trade.quantity.raw() as f64;
+                    (value + trade_value, volume + trade.quantity.raw())
+                });
+        self.total_value += delta_value;
+        self.total_volume += delta_volume;
     }
 
     /// Determine the reference price for orders.
@@ -253,9 +256,9 @@ impl Agent for VwapExecutor {
         self.remaining_quantity = self.remaining_quantity.saturating_sub(filled_qty);
 
         if trade.buyer_id == self.id {
-            self.state.on_buy(filled_qty, trade.value());
+            self.state.on_buy(&trade.symbol, filled_qty, trade.value());
         } else if trade.seller_id == self.id {
-            self.state.on_sell(filled_qty, trade.value());
+            self.state.on_sell(&trade.symbol, filled_qty, trade.value());
         }
     }
 

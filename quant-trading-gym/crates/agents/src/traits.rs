@@ -3,6 +3,13 @@
 //! This module defines the core `Agent` trait that all trading agents must implement,
 //! as well as the `StrategyContext` they receive each tick.
 //!
+//! # V3.1 Multi-Symbol Support
+//!
+//! Agents can now track positions across multiple symbols:
+//! - `positions()` returns a map of symbol → position entry
+//! - `watched_symbols()` declares symbols for Tier 2 wake conditions
+//! - Backward-compatible: `position()` returns aggregate across all symbols
+//!
 //! # V2.3 Changes
 //!
 //! The `on_tick` method receives `StrategyContext<'_>` which provides
@@ -13,8 +20,10 @@
 //! All agents must provide access to their `AgentState` via the `state()` method.
 //! This enables automatic tracking of position, cash, and realized P&L.
 
-use crate::state::AgentState;
-use types::{AgentId, Order, OrderId};
+use std::collections::HashMap;
+
+use crate::state::{AgentState, PositionEntry};
+use types::{AgentId, Order, OrderId, Symbol};
 
 use crate::StrategyContext;
 
@@ -152,10 +161,30 @@ pub trait Agent: Send {
     /// Required for all agents - enables automatic position/cash/P&L tracking.
     fn state(&self) -> &AgentState;
 
-    /// Get the agent's current position (shares held).
+    /// Get the agent's current aggregate position (shares held across all symbols).
     /// Positive = long, negative = short, zero = flat.
     fn position(&self) -> i64 {
         self.state().position()
+    }
+
+    /// Get position for a specific symbol.
+    fn position_for(&self, symbol: &str) -> i64 {
+        self.state().position_for(symbol)
+    }
+
+    /// Get all positions as a map of symbol → position entry.
+    ///
+    /// For single-symbol agents, this returns a map with one entry.
+    /// For multi-symbol agents, this returns all tracked positions.
+    fn positions(&self) -> &HashMap<Symbol, PositionEntry> {
+        self.state().positions()
+    }
+
+    /// Get symbols this agent watches for Tier 2 wake conditions.
+    ///
+    /// Used by `WakeConditionIndex` to register price/event subscriptions.
+    fn watched_symbols(&self) -> Vec<Symbol> {
+        self.state().symbols()
     }
 
     /// Get the agent's current cash balance.
@@ -168,16 +197,64 @@ pub trait Agent: Send {
         self.state().realized_pnl()
     }
 
-    /// Compute the agent's total equity at the given price.
-    /// Equity = cash + (position * price)
-    fn equity(&self, price: types::Price) -> types::Cash {
-        let position = self.position();
-        let position_value = if position >= 0 {
-            price * types::Quantity(position as u64)
-        } else {
-            -(price * types::Quantity((-position) as u64))
-        };
-        self.cash() + position_value
+    /// Compute the agent's total equity given prices for all symbols.
+    fn equity(&self, prices: &HashMap<Symbol, types::Price>) -> types::Cash {
+        self.state().equity(prices)
+    }
+
+    /// Compute the agent's equity for a single symbol (convenience).
+    fn equity_for(&self, symbol: &str, price: types::Price) -> types::Cash {
+        self.state().equity_for(symbol, price)
+    }
+
+    /// Whether this agent uses reactive/event-driven wake conditions (Tier 2).
+    ///
+    /// Reactive agents are NOT called every tick via `on_tick()`. Instead, they
+    /// register wake conditions and are only invoked when conditions trigger.
+    /// Override this to return `true` for T2 agents.
+    fn is_reactive(&self) -> bool {
+        false
+    }
+
+    /// Get initial wake conditions for registration with WakeConditionIndex.
+    ///
+    /// Called once when agent is added to simulation. Override for T2 agents.
+    /// T1 agents return empty (they're called every tick via on_tick).
+    fn initial_wake_conditions(&self, _current_tick: types::Tick) -> Vec<crate::WakeCondition> {
+        Vec::new()
+    }
+
+    /// Get wake conditions to register after a fill (for exit strategies).
+    ///
+    /// Called after on_fill() for T2 agents. Exit strategies like StopLoss/TakeProfit
+    /// compute absolute thresholds from cost_basis at fill time.
+    fn fill_wake_conditions(&self) -> Vec<crate::WakeCondition> {
+        Vec::new()
+    }
+
+    /// Get ALL wake conditions that should currently be active based on agent state.
+    ///
+    /// Called after a trigger fires to restore correct conditions.
+    /// Returns the complete set of conditions that should be registered.
+    fn current_wake_conditions(&self) -> Vec<crate::WakeCondition> {
+        Vec::new()
+    }
+
+    /// Generate condition updates after a fill to maintain wake index consistency.
+    ///
+    /// Called after on_fill() for T2 agents. Returns conditions to add/remove:
+    /// - Remove entry conditions when at max capacity or out of cash
+    /// - Add exit conditions when opening a position (was 0, now > 0)
+    /// - Remove exit conditions when closing a position (was > 0, now 0)
+    /// - Re-add entry conditions when position closed and has capacity
+    ///
+    /// # Arguments
+    /// * `position_before` - Agent's position before the fill
+    fn post_fill_condition_update(
+        &self,
+        _position_before: i64,
+    ) -> Option<crate::tiers::ConditionUpdate> {
+        None
     }
 }
 

@@ -7,9 +7,10 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Widget},
 };
+use serde::{Deserialize, Serialize};
 
 /// Risk snapshot for display in TUI.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RiskInfo {
     /// Agent name.
     pub name: String,

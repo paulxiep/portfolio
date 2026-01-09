@@ -54,14 +54,14 @@ impl Macd {
         }
 
         // Calculate MACD line at each point after slow_period
-        let mut macd_values: Vec<f64> = Vec::with_capacity(prices.len() - self.slow_period + 1);
-
-        for i in self.slow_period..=prices.len() {
-            let slice = &prices[..i];
-            let fast_ema = Ema::calculate_from_prices(slice, self.fast_period)?;
-            let slow_ema = Ema::calculate_from_prices(slice, self.slow_period)?;
-            macd_values.push(fast_ema - slow_ema);
-        }
+        let macd_values: Vec<f64> = (self.slow_period..=prices.len())
+            .filter_map(|i| {
+                let slice = &prices[..i];
+                let fast_ema = Ema::calculate_from_prices(slice, self.fast_period)?;
+                let slow_ema = Ema::calculate_from_prices(slice, self.slow_period)?;
+                Some(fast_ema - slow_ema)
+            })
+            .collect();
 
         if macd_values.len() < self.signal_period {
             return None;

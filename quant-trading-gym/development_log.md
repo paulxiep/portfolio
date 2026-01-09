@@ -1,5 +1,606 @@
 # Development Log
 
+## 2026-01-09: V3.9 Minimal Storage Infrastructure
+
+### Summary
+Implemented minimal storage layer as foundation for V4+ features. Storage crate provides trade history (append-only), candle aggregation (OHLCV), and portfolio snapshots via `SimulationHook` trait. Designed for headless simulation mode to generate data for future versions: V4 (Web Frontend queries storage), V5 (Feature Engineering ML), V6 (RL training on historical data), and V7 (Portfolio Manager Game replay/leaderboards).
+
+### Files
+
+| File | Changes |
+|------|---------|
+| `crates/storage/src/lib.rs` | Storage crate with declarative, modular, SoC philosophy |
+| `crates/storage/src/schema.rs` | SQLite schema: trades, candles, portfolio_snapshots tables |
+| `crates/storage/src/candles.rs` | `CandleAggregator` with in-memory buffering, flush on period end |
+| `crates/storage/src/hook.rs` | `StorageHook` implementing `SimulationHook` trait |
+| `crates/storage/src/tests.rs` | Integration test placeholder |
+| `crates/storage/Cargo.toml` | Dependencies: rusqlite 0.38, serde_json, parking_lot |
+| `Cargo.toml` (workspace) | Added storage crate, rusqlite with bundled feature |
+| `docker-compose.yaml` | Added `./data:/data` volume mounts, `STORAGE_PATH` env var |
+| `.gitignore` | Ignore `/data/`, `*.db` files |
+| `src/main.rs` | Added `--storage-path` CLI flag, StorageHook integration (headless mode only) |
+
+### Storage Architecture
+
+**Philosophy:** V3.9 provides shared infrastructure for all future versions (V4-V7).
+
+**Three Data Streams:**
+
+1. **Trade History (Append-Only Event Log)**
+   - Schema: `(tick, symbol, price, quantity, buyer_id, seller_id)`
+   - Purpose: V4 (charting), V5 (features), V6 (RL rewards), V7 (game replay)
+   - No updates or deletes
+
+2. **Candle Aggregation (Time-Series OLAP)**
+   - Schema: `(symbol, timeframe, tick_start, open, high, low, close, volume)`
+   - Timeframes: 1m, 5m, 1h (configurable via `StorageConfig`)
+   - In-memory buffer with periodic flush (on candle period completion)
+   - Used by: V4 (frontend charts), V5/V6 (RL observations)
+
+3. **Portfolio Snapshots (Analysis Checkpoints)**
+   - Schema: `(tick, agent_id, cash, positions_json, realized_pnl, equity)`
+   - Frequency: Every 1000 ticks (configurable)
+   - Purpose: V4 (analytics), V6 (episode evaluation), V7 (leaderboards)
+
+### Implementation Details
+
+**StorageHook Pattern:**
+- Implements `SimulationHook` trait (V3.6 hook system)
+- Interior mutability via `Mutex<Connection>` (trait requires `&self`)
+- Hooks: `on_trades()` for trade persistence, `on_tick_end()` for candle flush
+
+**CandleAggregator:**
+- Tracks current candles per symbol: `HashMap<Symbol, (tick_start, Candle)>`
+- Buffered completed candles: `Vec<(Symbol, tick_start, Candle)>`
+- Flush pattern: `std::mem::take(&mut self.completed)`
+
+**Type Conversions:**
+- `Price` (i64) → SQLite i64 (direct)
+- `Quantity` (u64) → SQLite i64 (via `i64::try_from()`)
+- `AgentId` (u64) → SQLite i64 (via `i64::try_from()`)
+- `positions` (HashMap) → JSON string (via `serde_json::json!()`)
+
+### Docker Integration
+
+**Volume Mounts:**
+```yaml
+volumes:
+  - ./data:/data  # V3.9: Persistent storage
+environment:
+  - STORAGE_PATH=/data/sim.db
+```
+
+**Use Cases:**
+- TUI mode: Ephemeral (no storage needed)
+- Headless mode: Persistent storage for V4+ data pipelines
+
+### Deferred Features
+
+**Deferred to Later Versions:**
+- ❌ REST APIs for real-time queries → V4 (Web Frontend)
+- ❌ Fill-level events (finer granularity) → V5/V6 (if RL training demands it)
+- ❌ Game save/resume functionality → V7 (Portfolio Manager Game)
+- ❌ Agent-level trade attribution → V7 (leaderboards)
+
+**Why Minimal Scope:**
+- V3.9 provides data persistence only
+- V4 will add query APIs (Axum endpoints reading from storage)
+- V5/V6 will consume stored data for training
+- V7 will add game-specific persistence features
+
+### Exit Criteria
+```
+cargo fmt              # ✅ No formatting issues
+cargo clippy --all-targets -- -D warnings  # ✅ No warnings
+cargo test --package storage  # ✅ 8 tests pass
+cargo run --headless --ticks 100 --storage-path ./test.db  # ✅ Storage integration works
+```
+
+### Notes
+- ✅ Storage integration with main.rs completed (headless mode only)
+- ✅ CLI flag `--storage-path` added with env var support `STORAGE_PATH`
+- ✅ Graceful error handling if storage initialization fails
+- `persist_snapshots()` method ready but needs agent summary access (future enhancement)
+- Clippy satisfied with `i64::try_from()` for u64→i64 conversions
+- `is_multiple_of()` used for snapshot interval checks (clippy suggestion)
+
+---
+
+## 2026-01-08: V3.8 Performance Profiling
+
+### Summary
+Added fine-grained parallelization control for profiling. All parallel functions accept runtime `force_sequential` override via `ParallelizationConfig`. CLI/environment variables control 9 phases independently. PowerShell script automates benchmarking.
+
+### Files
+
+| File | Changes |
+|------|---------|
+| `crates/simulation/src/parallel.rs` | Added `force_sequential: bool` parameter to all 10 functions |
+| `crates/simulation/src/config.rs` | `ParallelizationConfig` struct with 9 boolean fields |
+| `crates/simulation/src/runner.rs` | Updated 7 parallel call sites to use config flags |
+| `crates/sim-core/src/batch_auction.rs` | Added `force_sequential` to `run_parallel_auctions` |
+| `src/main.rs` | 9 CLI args (env var support): `PAR_AGENT_COLLECTION`, `PAR_INDICATORS`, etc. |
+| `run_profiling.ps1` | Automated profiling script (11 configs × 3 trials) |
+
+### Parallelization Control
+
+9 independently controllable phases:
+
+| Phase | Config Field | Description |
+|-------|-------------|-------------|
+| 3 | `parallel_indicators` | Build indicator snapshot per-symbol |
+| 4 | `parallel_agent_collection` | Collect agent actions |
+| 5 | `parallel_order_validation` | Validate orders |
+| 6 | `parallel_auctions` | Batch auctions across symbols |
+| 9 | `parallel_candle_updates` | Update candles per-symbol |
+| 9 | `parallel_trade_updates` | Update recent trades per-symbol |
+| 10 | `parallel_fill_notifications` | Process fill notifications |
+| 10 | `parallel_wake_conditions` | Restore T2 wake conditions |
+| 11 | `parallel_risk_tracking` | Update risk tracking |
+
+### Usage
+
+```bash
+# Disable specific phase
+PAR_AUCTIONS=false cargo run --release --all-features -- --headless --ticks 1000
+
+# Automated profiling (Windows)
+.\run_profiling.ps1
+# Outputs: profiling_results.csv (config_name, trial, elapsed_ms, ticks_per_sec, total_trades)
+```
+
+### Notes
+- 2^9 = 512 total permutations; script tests 11 meaningful configs
+- Uses exact same agent configuration as default run (not minimal agents)
+- Runtime control avoids recompilation
+
+---
+
+## 2026-01-07: V3.7 Containerization & CLI
+
+### Summary
+Added Docker support with ttyd for browser-accessible TUI. `--headless` flag enables benchmarks/CI without terminal. Environment variables (`SIM_*`) override config.
+
+### Files
+
+| File | Changes |
+|------|---------|
+| `src/main.rs` | `Args` struct with clap, `run_headless()`, env var support |
+| `Cargo.toml` | Added `clap` dependency |
+| `dockerfile/Dockerfile.simulation` | Distroless image for headless benchmarks |
+| `dockerfile/Dockerfile.tui` | Debian + ttyd for browser TUI |
+| `docker-compose.yaml` | Local dev setup with both services |
+
+### Usage
+
+```bash
+# Local headless benchmark
+cargo run --release -- --headless --ticks 10000
+
+# Docker TUI (browser at http://localhost:7681)
+docker compose up tui
+
+# Docker headless benchmark
+docker compose up simulation
+```
+
+### CLI Args
+
+| Flag | Env Var | Description |
+|------|---------|-------------|
+| `--headless` | `SIM_HEADLESS` | Disable TUI |
+| `--ticks N` | `SIM_TICKS` | Total simulation ticks |
+| `--tier1 N` | `SIM_TIER1` | Tier 1 agent count |
+| `--tier2 N` | `SIM_TIER2` | Tier 2 agent count |
+| `--pool-size N` | `SIM_POOL_SIZE` | Background pool size |
+| `--tick-delay N` | `SIM_TICK_DELAY` | Delay between ticks (ms) |
+
+### Notes
+- ttyd installed from GitHub releases (not in Debian repos)
+- Distroless runtime for headless (~20MB image)
+- Debian slim for TUI (ttyd requires libc)
+
+---
+
+## 2026-01-07: V3.6 Hooks System
+
+### Summary
+Added extensible hook infrastructure for simulation events. Hooks receive **owned data** (snapshots, cloned orders/trades) to avoid borrow-checker issues with async/network use. TUI BookDepth widget removed (meaningless in batch auction mode).
+
+### Files
+
+| File | Changes |
+|------|---------|
+| `crates/simulation/src/hooks.rs` | `SimulationHook` trait, `HookContext`, `HookRunner` |
+| `crates/simulation/src/metrics.rs` | `MetricsHook` implementation with atomic counters |
+| `crates/simulation/src/runner.rs` | Hook integration in `step()` phases |
+| `crates/tui/src/widgets/update.rs` | Added `Serialize` derives for network hooks |
+| `crates/tui/src/app.rs` | Removed BookDepth, expanded risk panel |
+
+### Design Decisions
+
+1. **Owned data over references**: Hooks receive `Vec<Order>`, `Vec<Trade>`, `MarketSnapshot` — enables serialization, async, and avoids lifetime complexity
+2. **`Arc<dyn SimulationHook>`**: Shared ownership for registering hooks across contexts
+3. **Built-in `MetricsHook`**: Aggregates tick/trade/volume stats with atomics for thread-safety
+
+---
+
+## 2026-01-07: V3.5 Parallel Execution & Batch Auction
+
+### Summary
+Implemented parallel agent execution with rayon and switched order matching from continuous to batch auction. The `parallel` module provides declarative helpers that abstract over `par_iter`/`iter` with cfg logic in ONE place. Batch auction enables full parallelism across symbols by computing a single clearing price per symbol.
+
+### Architecture
+
+**Two-Phase Tick:**
+1. **Collection Phase**: All agents run `on_tick()` in parallel, collecting orders
+2. **Auction Phase**: Per-symbol batch auction computes clearing price, matches all crossing orders
+
+**Key Insight**: Since we clear the book every tick anyway, batch auction semantics are natural. All agents see the same market state and compete in a single auction per tick.
+
+### `parallel` Module (`crates/simulation/src/parallel.rs`)
+
+Declarative helpers that keep `#[cfg(feature = "parallel")]` in ONE place:
+- `map_slice()`, `filter_map_slice()` — parallel iteration over slices
+- `map_indices()`, `filter_map_indices()` — index-based iteration
+- `map_mutex_slice()`, `map_mutex_slice_ref()` — safe parallel access to `Mutex<T>` slices
+
+### Batch Auction (`crates/sim-core/src/batch_auction.rs`)
+
+**Clearing Price Algorithm:**
+1. Collect all unique limit prices + reference price (fair_value or last_price)
+2. For each candidate, compute executable volume (min of supply/demand)
+3. Return price with maximum volume (prefer reference price on ties for stability)
+
+**Price Stability Fix:** Reference price from `fundamentals.fair_value()` anchors clearing price, preventing wild oscillations when market orders dominate.
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `crates/simulation/src/parallel.rs` | New module: declarative parallel helpers |
+| `crates/simulation/src/runner.rs` | Batch auction integration, reference price from fair_value |
+| `crates/sim-core/src/batch_auction.rs` | New module: clearing price & matching with reference anchor |
+| `crates/sim-core/Cargo.toml` | Added `rayon` optional dependency |
+
+### Key Design Decisions
+
+1. **Batch auction over continuous**: Enables full parallelism, natural fit for "clear book each tick"
+2. **`parallel::` helpers**: Single source of truth for cfg logic, clean call sites
+3. **Reference price anchor**: Uses `fair_value` (from fundamentals) to stabilize clearing price after events
+4. **T3 retains continuous matching**: Background pool orders still use `process_order()` for different semantics
+
+### Exit Criteria
+```
+cargo clippy           # ✅ No warnings
+cargo test --workspace # ✅ All tests pass (parallel and sequential)
+```
+
+---
+
+## 2026-01-07: V3.4 Background Agent Pool (Tier 3)
+
+### Summary
+Implemented Tier 3 Background Agent Pool for statistical order generation. A single pool instance trades all symbols, simulating 45,000+ background agents with ~2KB memory overhead. Orders go through the real matching engine and trade against T1/T2 agents and market makers.
+
+### Architecture
+
+**Single Pool, All Symbols:**
+- One `BackgroundAgentPool` instance trades ALL configured symbols
+- Randomly selects symbol per order based on activity
+- Per-symbol sentiment tracking (sector news affects correct symbols)
+- Aggregate P&L accounting via `BackgroundPoolAccounting`
+
+**Memory Budget:**
+- Config: ~200 bytes
+- Sentiments: ~100 bytes per symbol
+- Distributions: ~50 bytes
+- Accounting: ~500 bytes
+- RNG: ~200 bytes
+- **Total: ~2 KB** (vs 90K individual agents)
+
+### Module Structure (`crates/agents/src/tier3/`)
+
+| File | Purpose |
+|------|---------|
+| `config.rs` | `MarketRegime`, `RegimePreset`, `BackgroundPoolConfig` |
+| `distributions.rs` | `PriceDistribution`, `SizeDistribution` traits; `ExponentialPriceSpread`, `LogNormalSize` |
+| `accounting.rs` | `BackgroundPoolAccounting`, `SanityCheckResult`, per-symbol P&L tracking |
+| `pool.rs` | `BackgroundAgentPool`, `PoolContext`, `BACKGROUND_POOL_ID` sentinel |
+
+### Order Generation
+
+```rust
+// Each tick, pool generates orders based on:
+// 1. pool_size × base_activity (regime-dependent)
+// 2. ±20% random variance
+// 3. Sentiment-biased side selection
+// 4. Log-normal size distribution
+// 5. Exponential price spread from mid
+```
+
+**Market Regimes:**
+| Regime | base_activity | Description |
+|--------|---------------|-------------|
+| Calm | 0.1 | 10% of pool trades/tick |
+| Normal | 0.3 | 30% of pool trades/tick |
+| Volatile | 0.6 | 60% of pool trades/tick |
+| Crisis | 0.9 | 90% of pool trades/tick |
+
+### Config Integration (`src/config.rs`)
+
+```rust
+// New Tier 3 fields
+enable_background_pool: true,
+background_pool_size: 45_000,
+background_regime: MarketRegime::Normal,
+t3_mean_order_size: 15.0,
+t3_max_order_size: 100,
+t3_order_size_stddev: 10.0,
+t3_base_activity: Option<f64>,  // Override regime default
+t3_price_spread_lambda: 20.0,
+t3_max_price_deviation: 0.02,
+```
+
+### Simulation Integration (`runner.rs`)
+
+**Phase 4 in `step()`:**
+1. Build `PoolContext` with mid prices and active events
+2. Call `pool.generate(&ctx)` → `Vec<Order>`
+3. Process orders through existing `process_order()` (real matching)
+4. Update `BackgroundPoolAccounting` with fills
+5. Notify counterparty agents via `on_fill()`
+
+```rust
+// Declarative trade processing
+let t3_trades: Vec<_> = t3_orders
+    .into_iter()
+    .flat_map(|order| {
+        let (trades, _) = self.process_order(order);
+        trades
+    })
+    .collect();
+
+t3_trades.into_iter().for_each(|trade| {
+    // Update accounting and notify agents
+});
+```
+
+### TUI Updates
+
+**StatsPanel shows:**
+- `Agents: 12T1 + 3900T2 + 45000T3`
+- `T3 Orders: X` (orders generated this tick)
+- `Pool P&L: $Y` (realized P&L, green/red colored)
+
+**SimUpdate new fields:**
+- `tier3_count: usize`
+- `t3_orders: usize`
+- `background_pnl: f64`
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `crates/agents/src/tier3/*.rs` | New module: config, distributions, accounting, pool |
+| `crates/agents/src/lib.rs` | Export tier3 module |
+| `crates/agents/Cargo.toml` | Added `rand_distr = "0.4"` |
+| `crates/simulation/src/runner.rs` | `background_pool` field, Phase 4 integration, `t3_orders_this_tick` stat |
+| `crates/tui/src/widgets/update.rs` | `tier3_count`, `t3_orders`, `background_pnl` fields |
+| `crates/tui/src/widgets/stats_panel.rs` | T3 count display, T3 orders/P&L line |
+| `crates/tui/src/app.rs` | Wire T3 stats to StatsPanel |
+| `src/config.rs` | T3 config fields with defaults |
+| `src/main.rs` | Phase 5: BackgroundAgentPool creation, SimUpdate wiring |
+| `Cargo.toml` (workspace) | Downgraded rand to 0.8 (rand_distr compatibility) |
+
+### Key Design Decisions
+
+1. **Single pool trades all symbols** (not per-symbol pools) - simpler accounting
+2. **Real order matching** - T3 orders go through same engine as T1/T2
+3. **BACKGROUND_POOL_ID = AgentId(0)** sentinel for all pool orders
+4. **Append-only accounting** - fills recorded but never read during generation
+5. **rand 0.8 + rand_distr 0.4** - required `r#gen` escape for Rust 2024
+
+### Exit Criteria
+```
+cargo fmt              # ✅ No formatting issues
+cargo clippy           # ✅ No warnings
+cargo test --workspace # ✅ All tests pass (116 in agents crate)
+```
+
+---
+
+## 2026-01-07: V3.3 Multi-Symbol Strategies
+
+### Summary
+Implemented two flagship multi-symbol strategies: PairsTrading (Tier 1) and SectorRotator (Tier 2). Added quant extensions for cointegration tracking and sector sentiment aggregation. Updated TUI to show Total P&L (realized + unrealized).
+
+### Quant Extensions (`crates/quant/src/stats.rs`)
+
+**CointegrationTracker:**
+- Rolling OLS hedge ratio computation
+- Spread z-score calculation for mean-reversion signals
+- Configurable lookback window
+
+**SectorSentimentAggregator:**
+- `NewsEventLike` trait for decoupling from `news` crate
+- Decay-weighted sentiment aggregation per sector
+- Event expiration filtering by magnitude threshold
+
+### PairsTrading Strategy (Tier 1)
+
+```rust
+pub struct PairsTradingConfig {
+    pub symbol_a: Symbol,
+    pub symbol_b: Symbol,
+    pub entry_z_threshold: f64,   // Default: 2.0
+    pub exit_z_threshold: f64,    // Default: 0.5
+    pub max_position_per_leg: i64,
+}
+```
+
+- Runs every tick (continuous spread monitoring)
+- Uses `CointegrationTracker` for z-score signals
+- Returns `AgentAction::multiple()` for simultaneous leg execution
+- Declarative exit logic via `filter_map` patterns
+
+### SectorRotator Strategy (Tier 2)
+
+```rust
+pub struct SectorRotatorConfig {
+    pub symbols_per_sector: HashMap<Sector, Vec<Symbol>>,
+    pub sentiment_scale: f64,      // ±30% allocation shift
+    pub rebalance_threshold: f64,  // 5% drift threshold
+}
+```
+
+- Wakes on `NewsEvent` for watched symbols
+- Implements `initial_wake_conditions()` trait method (critical fix)
+- Sentiment-driven allocation with clamping and normalization
+- Multi-symbol rebalance orders via `flat_map` patterns
+
+### TUI Updates
+
+Changed P&L display from "Realized P&L" to "Total P&L":
+- `AgentState::total_pnl(&prices)` computes realized + unrealized
+- Unrealized = Σ (current_price - avg_cost) × quantity
+- Agents sorted by total P&L descending
+
+### Config & Simulation Integration
+
+```rust
+// New config fields
+num_pairs_traders: 50,     // Tier 1 (included in specified_tier1_agents)
+num_sector_rotators: 300,  // Special Tier 2 (added to tier2_count)
+```
+
+- PairsTrading cycles through symbol pairs
+- SectorRotator watches all sectors with all symbols
+- TUI widget counts updated: `tier2_count = num_tier2_agents + num_sector_rotators`
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `crates/quant/src/stats.rs` | `CointegrationTracker`, `SectorSentimentAggregator`, `NewsEventLike` |
+| `crates/agents/src/tier1/strategies/pairs_trading.rs` | New: Tier 1 multi-symbol pairs strategy |
+| `crates/agents/src/tier2/sector_rotator.rs` | New: Tier 2 sentiment-driven rotation |
+| `crates/agents/src/state.rs` | Added `total_pnl()` method |
+| `crates/simulation/src/runner.rs` | `agent_summaries()` returns total P&L |
+| `crates/tui/src/widgets/update.rs` | `AgentInfo.total_pnl` field |
+| `crates/tui/src/widgets/agent_table.rs` | "Total P&L" column, sorting by total_pnl |
+| `src/config.rs` | `num_pairs_traders`, `num_sector_rotators`, `specified_tier1_agents()` |
+| `src/main.rs` | `spawn_sector_rotators()`, pairs trading spawn, tier count fix |
+
+### Key Fixes
+
+1. **SectorRotator wake conditions**: Must implement `initial_wake_conditions(tick)` trait method, not just a helper method
+2. **Tier 2 count**: `tier2_count = num_tier2_agents + num_sector_rotators` (was missing sector rotators)
+3. **Declarative refactoring**: Converted for loops to `filter_map`, `flat_map`, `fold` patterns
+
+### Exit Criteria
+```
+cargo fmt              # ✅ No formatting issues
+cargo clippy           # ✅ No warnings  
+cargo test --workspace # ✅ All tests pass
+```
+
+---
+
+## 2026-01-06: V3.2 Tier 2 Reactive Agents
+
+### Summary
+Complete Tier 2 reactive agent system with proper wake condition lifecycle. 4000 T2 agents spawn with randomized strategies (1 entry + 1 exit + optional NewsReactor). Entry conditions removed at max capacity, exit conditions added/removed based on position state.
+
+### Wake Condition Lifecycle
+
+**Problem:** T2 agents triggered repeatedly on every price cross because conditions were never removed after acting.
+
+**Solution:** `post_fill_condition_update()` returns `ConditionUpdate` (add/remove lists):
+- Entry conditions (ThresholdBuyer): Remove at max capacity, re-add when flat
+- Exit conditions (StopLoss/TakeProfit): Add when opening position (computed from cost_basis), remove when closing
+
+```
+At startup: ThresholdBuyer/Seller → PriceCross conditions; StopLoss/TakeProfit → NOT registered
+After BUY: If at_capacity → REMOVE entry; If just opened → ADD exits
+After SELL: If closed to flat → REMOVE exits, ADD entry back
+```
+
+### ReactiveAgent Implementation
+- `AgentState` field for position/cash tracking (SoC: AgentState owns state, ReactiveAgent owns strategy)
+- `Agent` trait implementation with `on_tick()` and `on_fill()`
+- `compute_condition_update()` detects state transitions and returns add/remove lists
+- Optimized T1/T2 iteration using index arrays (avoids iterating all 4000 agents)
+
+### Config & TUI
+- `SimConfig`: Added `num_tier2_agents` (default 4000), `t2_initial_cash`, `t2_max_position`
+- TUI: T1/T2 agent counts displayed separately (T1 cyan, T2 magenta)
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `crates/agents/src/traits.rs` | Added `post_fill_condition_update()` to Agent trait |
+| `crates/agents/src/tier2/agent.rs` | AgentState integration, Agent trait impl, `compute_condition_update()` |
+| `crates/agents/src/lib.rs` | Export ReactiveAgent, ReactivePortfolio, ReactiveStrategyType |
+| `crates/simulation/src/runner.rs` | Collect and apply condition updates, T1/T2 index optimization |
+| `src/config.rs` | `num_tier2_agents`, `t2_initial_cash`, `t2_max_position` |
+| `src/main.rs` | `spawn_tier2_agents()`, random strategy generators |
+| `crates/tui/src/widgets/*.rs` | T1/T2 count display |
+
+### Exit Criteria
+```
+cargo fmt              # ✅ No formatting issues
+cargo clippy           # ✅ No warnings
+cargo test --workspace # ✅ All tests pass
+```
+
+---
+
+## 2026-01-05: V3.1 Multi-Symbol & IOC Orders
+
+### Summary
+Refactored `AgentState` to multi-symbol HashMap-based architecture and implemented IOC (Immediate-Or-Cancel) order behavior. All strategies updated to per-symbol position tracking.
+
+### Multi-Symbol AgentState
+
+#### Core Changes (`agents/state.rs`)
+- `PositionEntry { quantity: i64, avg_cost: f64 }` for per-symbol tracking
+- `positions: HashMap<Symbol, PositionEntry>` replaces `position: i64`
+- New API: `on_buy(symbol, qty, value)`, `on_sell(symbol, qty, value)`, `position_for(symbol)`
+- Weighted average cost tracking for realized P&L calculation
+- `equity(&HashMap<Symbol, Price>)` for multi-symbol mark-to-market
+
+#### Agent Trait Extensions (`agents/traits.rs`)
+- `positions()`, `position_for(symbol)`, `watched_symbols()`, `equity()`, `equity_for()`
+
+#### Strategy Updates
+All 7 strategies (NoiseTrader, MarketMaker, Momentum, TrendFollower, MacdCrossover, BollingerReversion, VwapExecutor) updated to use `AgentState::new(cash, &[symbols])` and per-symbol `on_buy`/`on_sell`.
+
+### IOC Order Expiration
+- `OrderBook::clear()` removes all resting orders at end of each tick
+- Each tick starts fresh - cleaner mental model, no stale order accumulation
+- Market makers now quote every tick (`refresh_interval: 1`)
+
+### Files Modified
+| File | Changes |
+|------|---------|
+| `crates/agents/src/state.rs` | Complete refactor to multi-symbol |
+| `crates/agents/src/traits.rs` | New trait methods |
+| `crates/agents/src/strategies/*.rs` | All 7 strategies updated |
+| `crates/sim-core/src/order_book.rs` | Added `clear()` method |
+| `crates/simulation/src/runner.rs` | Multi-symbol equity, IOC clearing |
+| `crates/tui/src/widgets/agent_table.rs` | Per-symbol position display |
+| `src/config.rs` | Default `mm_refresh_interval: 1` |
+
+### Exit Criteria
+```
+cargo fmt --check      # ✅ No formatting issues
+cargo clippy           # ✅ No warnings  
+cargo test --workspace # ✅ All 224 tests pass
+```
+
+---
+
 ## 2026-01-04: V2.4 - Fundamentals, Events & TUI Controls
 
 ### Summary

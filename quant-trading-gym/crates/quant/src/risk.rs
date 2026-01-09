@@ -32,22 +32,19 @@ pub fn max_drawdown(equity_curve: &[f64]) -> f64 {
         return 0.0;
     }
 
-    let mut max_dd: f64 = 0.0;
-    let mut peak = equity_curve[0];
-
-    for &value in equity_curve {
-        if value > peak {
-            peak = value;
-        }
-        let dd = if peak > 0.0 {
-            (peak - value) / peak
-        } else {
-            0.0
-        };
-        max_dd = max_dd.max(dd);
-    }
-
-    max_dd
+    let initial_peak = equity_curve[0];
+    equity_curve
+        .iter()
+        .fold((0.0_f64, initial_peak), |(max_dd, peak), &value| {
+            let new_peak = peak.max(value);
+            let dd = if new_peak > 0.0 {
+                (new_peak - value) / new_peak
+            } else {
+                0.0
+            };
+            (max_dd.max(dd), new_peak)
+        })
+        .0
 }
 
 /// Calculate Sharpe ratio from returns.

@@ -1,4 +1,9 @@
 //! Order book depth widget - displays bid/ask levels as horizontal bars.
+//!
+//! NOTE: Currently unused in batch auction mode (book cleared each tick).
+//! Kept for potential future use with "orders this tick" display.
+
+#![allow(dead_code)]
 
 use ratatui::{
     buffer::Buffer,

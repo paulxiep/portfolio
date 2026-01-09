@@ -5,6 +5,10 @@
 //! The chart supports two modes:
 //! - Single symbol: Shows one price line (cyan)
 //! - Multi-symbol overlay: Shows multiple price lines with different colors
+//!
+//! # V3.7 Smoothing
+//!
+//! Prices can be smoothed with a simple moving average for better visualization.
 
 use std::collections::HashMap;
 
@@ -19,6 +23,9 @@ use ratatui::{
 
 use types::Symbol;
 
+/// Default smoothing window size (number of ticks to average).
+const DEFAULT_SMOOTHING_WINDOW: usize = 3;
+
 /// Colors for multi-symbol overlay mode.
 const OVERLAY_COLORS: &[Color] = &[
     Color::Cyan,
@@ -31,6 +38,28 @@ const OVERLAY_COLORS: &[Color] = &[
     Color::LightGreen,
 ];
 
+/// Apply centered moving average smoothing to price data.
+/// Each point is the average of `window` points centered around it.
+fn smooth_prices(prices: &[f64], window: usize) -> Vec<f64> {
+    if window <= 1 || prices.len() < window {
+        return prices.to_vec();
+    }
+
+    let half = window / 2;
+    let mut smoothed = Vec::with_capacity(prices.len());
+
+    for i in 0..prices.len() {
+        // Center the window around index i
+        let start = i.saturating_sub(half);
+        let end = (i + half + 1).min(prices.len());
+        let slice = &prices[start..end];
+        let avg = slice.iter().sum::<f64>() / slice.len() as f64;
+        smoothed.push(avg);
+    }
+
+    smoothed
+}
+
 /// Type alias for multi-symbol price data references.
 type MultiPriceData<'a> = (&'a HashMap<Symbol, Vec<f64>>, &'a [Symbol]);
 
@@ -42,6 +71,10 @@ pub struct PriceChart<'a> {
     multi_prices: Option<MultiPriceData<'a>>,
     /// Chart title.
     title: &'a str,
+    /// Smoothing window size (1 = no smoothing).
+    smoothing: usize,
+    /// Current tick (for X axis labeling).
+    current_tick: u64,
 }
 
 impl<'a> PriceChart<'a> {
@@ -51,6 +84,8 @@ impl<'a> PriceChart<'a> {
             prices,
             multi_prices: None,
             title: "Price",
+            smoothing: DEFAULT_SMOOTHING_WINDOW,
+            current_tick: 0,
         }
     }
 
@@ -60,12 +95,27 @@ impl<'a> PriceChart<'a> {
             prices: &[],
             multi_prices: Some((prices, symbols)),
             title: "Price (Overlay)",
+            smoothing: DEFAULT_SMOOTHING_WINDOW,
+            current_tick: 0,
         }
     }
 
     /// Set the chart title.
     pub fn title(mut self, title: &'a str) -> Self {
         self.title = title;
+        self
+    }
+
+    /// Set the smoothing window size (1 = no smoothing).
+    #[allow(dead_code)]
+    pub fn smoothing(mut self, window: usize) -> Self {
+        self.smoothing = window.max(1);
+        self
+    }
+
+    /// Set the current tick for X axis labels.
+    pub fn tick(mut self, tick: u64) -> Self {
+        self.current_tick = tick;
         self
     }
 }
@@ -93,28 +143,37 @@ impl PriceChart<'_> {
             return;
         }
 
-        // Calculate bounds for Y axis
-        let min_price = self.prices.iter().cloned().fold(f64::INFINITY, f64::min);
-        let max_price = self
-            .prices
-            .iter()
-            .cloned()
-            .fold(f64::NEG_INFINITY, f64::max);
+        // Apply smoothing
+        let smoothed = smooth_prices(self.prices, self.smoothing);
 
-        // Add some padding to Y bounds
-        let y_padding = ((max_price - min_price) * 0.1).max(0.01);
-        let y_min = min_price - y_padding;
-        let y_max = max_price + y_padding;
+        // Calculate bounds for Y axis
+        let min_price = smoothed.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max_price = smoothed.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+
+        // Ensure minimum Y range to prevent visual noise when prices are stable
+        // Use 2% of mid price or $2, whichever is larger
+        let mid_price = (min_price + max_price) / 2.0;
+        let min_range = (mid_price * 0.02).max(2.0);
+        let actual_range = max_price - min_price;
+
+        let (y_min, y_max) = if actual_range < min_range {
+            // Expand range symmetrically around midpoint
+            let half_range = min_range / 2.0;
+            (mid_price - half_range, mid_price + half_range)
+        } else {
+            // Add 10% padding to actual range
+            let y_padding = actual_range * 0.1;
+            (min_price - y_padding, max_price + y_padding)
+        };
 
         // Prepare data points: (x, y) where x is the index
-        let data: Vec<(f64, f64)> = self
-            .prices
+        let data: Vec<(f64, f64)> = smoothed
             .iter()
             .enumerate()
             .map(|(i, &p)| (i as f64, p))
             .collect();
 
-        let x_max = (self.prices.len().saturating_sub(1)) as f64;
+        let x_max = (smoothed.len().saturating_sub(1)) as f64;
 
         let dataset = Dataset::default()
             .marker(Marker::Braille)
@@ -128,6 +187,18 @@ impl PriceChart<'_> {
             Line::from(format!("{:.2}", y_max)),
         ];
 
+        // X axis tick labels showing actual tick numbers
+        let history_len = smoothed.len() as u64;
+        let start_tick = self
+            .current_tick
+            .saturating_sub(history_len.saturating_sub(1));
+        let mid_tick = (start_tick + self.current_tick) / 2;
+        let x_labels: Vec<Line> = vec![
+            Line::from(format!("{}", start_tick)),
+            Line::from(format!("{}", mid_tick)),
+            Line::from(format!("{}", self.current_tick)),
+        ];
+
         let chart = Chart::new(vec![dataset])
             .block(
                 Block::default()
@@ -137,9 +208,10 @@ impl PriceChart<'_> {
             )
             .x_axis(
                 Axis::default()
+                    .title("Tick")
                     .style(Style::default().fg(Color::Gray))
                     .bounds([0.0, x_max.max(1.0)])
-                    .labels::<Vec<Line>>(vec![]),
+                    .labels(x_labels),
             )
             .y_axis(
                 Axis::default()
@@ -159,14 +231,15 @@ impl PriceChart<'_> {
         area: Rect,
         buf: &mut Buffer,
     ) {
-        // Collect all price data
-        let all_prices: Vec<_> = symbols
+        // Collect and smooth all price data
+        let smoothed_prices: Vec<Vec<f64>> = symbols
             .iter()
             .filter_map(|s| prices_map.get(s))
             .filter(|v| !v.is_empty())
+            .map(|v| smooth_prices(v, self.smoothing))
             .collect();
 
-        if all_prices.is_empty() {
+        if smoothed_prices.is_empty() {
             let block = Block::default()
                 .title(self.title)
                 .borders(Borders::ALL)
@@ -176,29 +249,36 @@ impl PriceChart<'_> {
         }
 
         // Calculate global Y bounds across all symbols
-        let min_price = all_prices
+        let min_price = smoothed_prices
             .iter()
             .flat_map(|v| v.iter())
             .cloned()
             .fold(f64::INFINITY, f64::min);
-        let max_price = all_prices
+        let max_price = smoothed_prices
             .iter()
             .flat_map(|v| v.iter())
             .cloned()
             .fold(f64::NEG_INFINITY, f64::max);
 
-        let y_padding = ((max_price - min_price) * 0.1).max(0.01);
-        let y_min = min_price - y_padding;
-        let y_max = max_price + y_padding;
+        // Ensure minimum Y range to prevent visual noise when prices are stable
+        let mid_price = (min_price + max_price) / 2.0;
+        let min_range = (mid_price * 0.05).max(5.0);
+        let actual_range = max_price - min_price;
+
+        let (y_min, y_max) = if actual_range < min_range {
+            let half_range = min_range / 2.0;
+            (mid_price - half_range, mid_price + half_range)
+        } else {
+            let y_padding = actual_range * 0.1;
+            (min_price - y_padding, max_price + y_padding)
+        };
 
         // Find max X
-        let x_max = all_prices.iter().map(|v| v.len()).max().unwrap_or(1) as f64 - 1.0;
+        let x_max = smoothed_prices.iter().map(|v| v.len()).max().unwrap_or(1) as f64 - 1.0;
 
         // Build datasets with owned data
-        // We need to store the data vectors to keep them alive for the chart
-        let data_vecs: Vec<Vec<(f64, f64)>> = symbols
+        let data_vecs: Vec<Vec<(f64, f64)>> = smoothed_prices
             .iter()
-            .filter_map(|s| prices_map.get(s))
             .map(|prices| {
                 prices
                     .iter()
@@ -227,6 +307,18 @@ impl PriceChart<'_> {
             Line::from(format!("{:.2}", y_max)),
         ];
 
+        // X axis tick labels showing actual tick numbers
+        let history_len = (x_max as u64) + 1;
+        let start_tick = self
+            .current_tick
+            .saturating_sub(history_len.saturating_sub(1));
+        let mid_tick = (start_tick + self.current_tick) / 2;
+        let x_labels: Vec<Line> = vec![
+            Line::from(format!("{}", start_tick)),
+            Line::from(format!("{}", mid_tick)),
+            Line::from(format!("{}", self.current_tick)),
+        ];
+
         let chart = Chart::new(datasets)
             .block(
                 Block::default()
@@ -236,9 +328,10 @@ impl PriceChart<'_> {
             )
             .x_axis(
                 Axis::default()
+                    .title("Tick")
                     .style(Style::default().fg(Color::Gray))
                     .bounds([0.0, x_max.max(1.0)])
-                    .labels::<Vec<Line>>(vec![]),
+                    .labels(x_labels),
             )
             .y_axis(
                 Axis::default()

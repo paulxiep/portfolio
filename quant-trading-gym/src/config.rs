@@ -23,8 +23,9 @@
 //! - Production: Up to 10 symbols (performance depends on agent count per symbol)
 //! - Hard limit: None, but memory grows linearly with symbols × price history
 
+use agents::tier3::MarketRegime;
 use rand::Rng;
-use rand::prelude::IndexedRandom;
+use rand::prelude::SliceRandom;
 use types::{Cash, Price, Sector};
 
 /// Configuration for a single symbol.
@@ -90,6 +91,10 @@ pub struct SimConfig {
     pub num_bollinger_traders: usize,
     /// Minimum number of VWAP executors.
     pub num_vwap_executors: usize,
+    /// Minimum number of pairs trading agents (V3.3 multi-symbol).
+    pub num_pairs_traders: usize,
+    /// Minimum number of sector rotator agents (V3.3 multi-symbol, special Tier 2).
+    pub num_sector_rotators: usize,
 
     // ─────────────────────────────────────────────────────────────────────────
     // Tier Minimums
@@ -97,6 +102,65 @@ pub struct SimConfig {
     /// Minimum total Tier 1 agents. If specific agent types don't reach this,
     /// random Tier 1 agents are spawned to fill the gap.
     pub min_tier1_agents: usize,
+
+    /// Number of Tier 2 reactive agents (V3.2).
+    /// These are lightweight event-driven agents.
+    pub num_tier2_agents: usize,
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Tier 2 Reactive Agent Parameters (V3.2)
+    // ─────────────────────────────────────────────────────────────────────────
+    /// Starting cash for each Tier 2 reactive agent.
+    pub t2_initial_cash: Cash,
+    /// Maximum position size for Tier 2 agents.
+    pub t2_max_position: u64,
+    /// ThresholdBuyer: minimum buy price (dollars).
+    pub t2_buy_threshold_min: f64,
+    /// ThresholdBuyer: maximum buy price (dollars).
+    pub t2_buy_threshold_max: f64,
+    /// StopLoss: minimum stop percentage (e.g., 0.02 = 2%).
+    pub t2_stop_loss_min: f64,
+    /// StopLoss: maximum stop percentage (e.g., 0.08 = 8%).
+    pub t2_stop_loss_max: f64,
+    /// TakeProfit: minimum target percentage (e.g., 0.10 = 10%).
+    pub t2_take_profit_min: f64,
+    /// TakeProfit: maximum target percentage (e.g., 0.30 = 30%).
+    pub t2_take_profit_max: f64,
+    /// ThresholdSeller: minimum sell price (dollars).
+    pub t2_sell_threshold_min: f64,
+    /// ThresholdSeller: maximum sell price (dollars).
+    pub t2_sell_threshold_max: f64,
+    /// Probability of having TakeProfit vs ThresholdSeller (0.0 - 1.0).
+    pub t2_take_profit_prob: f64,
+    /// Probability of having NewsReactor strategy (0.0 - 1.0).
+    pub t2_news_reactor_prob: f64,
+    /// ThresholdBuyer: minimum order size fraction (0.0 - 1.0).
+    pub t2_order_size_min: f64,
+    /// ThresholdBuyer: maximum order size fraction (0.0 - 1.0).
+    pub t2_order_size_max: f64,
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Tier 3 Background Pool Parameters (V3.4)
+    // ─────────────────────────────────────────────────────────────────────────
+    /// Enable background pool (statistical order generation).
+    pub enable_background_pool: bool,
+    /// Number of simulated background agents (scales order rate).
+    pub background_pool_size: usize,
+    /// Market regime for background pool behavior.
+    pub background_regime: MarketRegime,
+    /// Mean order size for background pool.
+    pub t3_mean_order_size: f64,
+    /// Maximum order size for background pool.
+    pub t3_max_order_size: u64,
+    /// Order size standard deviation for background pool.
+    pub t3_order_size_stddev: f64,
+    /// Base activity rate override (None = use regime default).
+    /// Fraction of pool that trades each tick (0.0-1.0).
+    pub t3_base_activity: Option<f64>,
+    /// Price spread lambda (higher = tighter around mid price).
+    pub t3_price_spread_lambda: f64,
+    /// Maximum price deviation from mid (as fraction).
+    pub t3_max_price_deviation: f64,
 
     // ─────────────────────────────────────────────────────────────────────────
     // Market Maker Parameters
@@ -145,8 +209,35 @@ pub struct SimConfig {
     // ─────────────────────────────────────────────────────────────────────────
     /// Maximum price history points to display.
     pub max_price_history: usize,
-    /// TUI frame rate (frames per second).
+    /// TUI display frame rate (frames per second). Controls visual refresh.
+    /// 30 FPS is plenty smooth for a text-based financial display.
     pub tui_frame_rate: u64,
+    /// Simulation data update rate (updates per second). Controls how often
+    /// expensive agent_summaries() and risk metrics are computed.
+    /// Lower than display rate since data collection is expensive with 25k+ agents.
+    pub data_update_rate: u64,
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Event/News Generation Parameters (V2.4)
+    // ─────────────────────────────────────────────────────────────────────────
+    /// Enable event/news generation.
+    pub events_enabled: bool,
+    /// Earnings event probability per tick (e.g., 0.002 = ~1 per 500 ticks).
+    pub event_earnings_prob: f64,
+    /// Minimum ticks between earnings events.
+    pub event_earnings_interval: u64,
+    /// Guidance event probability per tick (e.g., 0.001 = ~1 per 1000 ticks).
+    pub event_guidance_prob: f64,
+    /// Minimum ticks between guidance events.
+    pub event_guidance_interval: u64,
+    /// Rate decision probability per tick (e.g., 0.0005 = ~1 per 2000 ticks).
+    pub event_rate_decision_prob: f64,
+    /// Minimum ticks between rate decisions.
+    pub event_rate_decision_interval: u64,
+    /// Sector news probability per tick (e.g., 0.003 = ~1 per 333 ticks).
+    pub event_sector_news_prob: f64,
+    /// Minimum ticks between sector news.
+    pub event_sector_news_interval: u64,
 }
 
 impl Default for SimConfig {
@@ -155,30 +246,67 @@ impl Default for SimConfig {
             // Simulation Control - default multi-symbol with different sectors (V2.4)
             symbols: vec![
                 SymbolSpec::with_sector("Duck Delish", 100.0, Sector::Consumer),
-                SymbolSpec::with_sector("Zephyr Zap", 100.0, Sector::Energy),
+                SymbolSpec::with_sector("Zephyr Zap", 100.0, Sector::Utilities),
                 SymbolSpec::with_sector("Vraiment Villa", 100.0, Sector::RealEstate),
                 SymbolSpec::with_sector("Quant Quotation", 100.0, Sector::Finance),
+                SymbolSpec::with_sector("Hello Handy", 100.0, Sector::Communications),
+                SymbolSpec::with_sector("Nubes Nexus", 100.0, Sector::Tech),
             ],
-            total_ticks: 5000,
+            total_ticks: 10000,
             tick_delay_ms: 0, // ~100 ticks/sec for watchable visualization
             verbose: false,
 
+            // V3.5: Doubled agent counts for parallel execution benchmarking
             // Tier 1 Agent Counts (minimums per type)
-            num_market_makers: 100,
-            num_noise_traders: 400,
-            num_momentum_traders: 50,
-            num_trend_followers: 50,
-            num_macd_traders: 50,
-            num_bollinger_traders: 50,
-            num_vwap_executors: 50,
+            num_market_makers: 300,
+            num_noise_traders: 1500,
+            num_momentum_traders: 400,
+            num_trend_followers: 400,
+            num_macd_traders: 400,
+            num_bollinger_traders: 400,
+            num_vwap_executors: 400,
+            num_pairs_traders: 1200,   // V3.3: multi-symbol pairs traders
+            num_sector_rotators: 2000, // V3.3: sector rotation agents (special T2)
             // Tier Minimums
-            min_tier1_agents: 1000, // Random agents fill the gap
+            min_tier1_agents: 5000, // Random agents fill the gap
+
+            // Tier 2 Reactive Agents (V3.2)
+            num_tier2_agents: 18000,
+
+            // Tier 2 Reactive Agent Parameters (V3.2)
+            // Equal starting cash to noise traders for fair comparison
+            t2_initial_cash: Cash::from_float(100_000.0),
+            t2_max_position: 1000,
+            t2_buy_threshold_min: 60.0, // Buy when price drops to $50-75
+            t2_buy_threshold_max: 90.0,
+            t2_stop_loss_min: 0.25, // StopLoss 25-50% (wider to avoid noise)
+            t2_stop_loss_max: 0.5,
+            t2_take_profit_min: 0.25, // TakeProfit 25-50% (aggressive targets)
+            t2_take_profit_max: 0.5,
+            t2_sell_threshold_min: 105.0, // ThresholdSeller $110-140
+            t2_sell_threshold_max: 130.0,
+            t2_take_profit_prob: 0.5,  // 50% TakeProfit, 50% ThresholdSeller
+            t2_news_reactor_prob: 0.1, // 10% have NewsReactor
+            t2_order_size_min: 0.2,    // Min 30% of max position per order
+            t2_order_size_max: 0.5,    // Max 70% of max position per order
+
+            // Tier 3 Background Pool (V3.4)
+            // V3.5: Doubled pool size for parallel execution benchmarking
+            enable_background_pool: true,
+            background_pool_size: 75000,
+            background_regime: MarketRegime::Normal,
+            t3_mean_order_size: 25.0,
+            t3_max_order_size: 100,
+            t3_order_size_stddev: 10.0,
+            t3_base_activity: Some(0.003), // Use regime default
+            t3_price_spread_lambda: 10.0,
+            t3_max_price_deviation: 0.05, // 5% from mid
 
             // Market Maker Parameters
             mm_initial_cash: Cash::from_float(1_000_000.0),
-            mm_half_spread: 0.0025, // 0.25% half-spread = $0.25 on $100
-            mm_quote_size: 50,
-            mm_refresh_interval: 10,
+            mm_half_spread: 0.005, // 0.25% half-spread = $0.25 on $100
+            mm_quote_size: 100,
+            mm_refresh_interval: 1, // Quote every tick (required for IOC mode)
             mm_max_inventory: 200,
             mm_inventory_skew: 0.001,
 
@@ -188,18 +316,31 @@ impl Default for SimConfig {
             nt_initial_cash: Cash::from_float(100_000.0),
             nt_initial_position: 0,
             nt_order_probability: 0.3, // 30% chance each tick
-            nt_price_deviation: 0.01,  // 1% from mid price
-            nt_min_quantity: 5,
-            nt_max_quantity: 30,
+            nt_price_deviation: 0.02,  // 1% from mid price
+            nt_min_quantity: 15,
+            nt_max_quantity: 50,
 
             // Quant Strategy Parameters
             quant_initial_cash: Cash::from_float(100_000.0),
-            quant_order_size: 25,
+            quant_order_size: 35,
             quant_max_position: 200,
 
             // TUI Parameters
-            max_price_history: 200,
-            tui_frame_rate: 30,
+            max_price_history: 500,
+            tui_frame_rate: 30,   // 30 FPS display - smooth enough for TUI
+            data_update_rate: 30, // 10 Hz data updates - expensive with 25k agents
+
+            // Event/News Generation Parameters (V2.4)
+            // Defaults match crates/news/src/config.rs
+            events_enabled: true,
+            event_earnings_prob: 0.006, // ~1 per 500 ticks per symbol
+            event_earnings_interval: 25,
+            event_guidance_prob: 0.003, // ~1 per 1000 ticks
+            event_guidance_interval: 50,
+            event_rate_decision_prob: 0.0015, // ~1 per 2000 ticks (rare)
+            event_rate_decision_interval: 125,
+            event_sector_news_prob: 0.009, // ~1 per 333 ticks
+            event_sector_news_interval: 12,
         }
     }
 }
@@ -213,10 +354,12 @@ pub enum Tier1AgentType {
     MacdTrader,
     BollingerTrader,
     VwapExecutor,
+    PairsTrading, // V3.3: multi-symbol pairs trading
 }
 
 impl Tier1AgentType {
     /// All spawnable Tier 1 agent types (excludes MarketMaker as it's infrastructure).
+    /// Note: PairsTrading excluded from random spawn (requires 2-symbol pairs config).
     pub const SPAWNABLE: &'static [Tier1AgentType] = &[
         Tier1AgentType::NoiseTrader,
         Tier1AgentType::MomentumTrader,
@@ -330,9 +473,39 @@ impl SimConfig {
         self
     }
 
+    /// Set minimum number of pairs trading agents (V3.3).
+    pub fn pairs_traders(mut self, count: usize) -> Self {
+        self.num_pairs_traders = count;
+        self
+    }
+
+    /// Set minimum number of sector rotator agents (V3.3).
+    pub fn sector_rotators(mut self, count: usize) -> Self {
+        self.num_sector_rotators = count;
+        self
+    }
+
     /// Set minimum total Tier 1 agents.
     pub fn min_tier1(mut self, count: usize) -> Self {
         self.min_tier1_agents = count;
+        self
+    }
+
+    /// Set number of Tier 2 reactive agents (V3.2).
+    pub fn tier2_agents(mut self, count: usize) -> Self {
+        self.num_tier2_agents = count;
+        self
+    }
+
+    /// Set Tier 2 agent initial cash (V3.2).
+    pub fn t2_cash(mut self, cash: f64) -> Self {
+        self.t2_initial_cash = Cash::from_float(cash);
+        self
+    }
+
+    /// Set Tier 2 agent max position (V3.2).
+    pub fn t2_max_position(mut self, max_pos: u64) -> Self {
+        self.t2_max_position = max_pos;
         self
     }
 
@@ -405,6 +578,7 @@ impl SimConfig {
             + self.num_macd_traders
             + self.num_bollinger_traders
             + self.num_vwap_executors
+            + self.num_pairs_traders
     }
 
     /// Number of random Tier 1 agents to spawn to meet minimum.
@@ -413,9 +587,14 @@ impl SimConfig {
         self.min_tier1_agents.saturating_sub(specified)
     }
 
-    /// Total number of agents (specified + random fill).
-    pub fn total_agents(&self) -> usize {
+    /// Total number of Tier 1 agents (specified + random fill).
+    pub fn total_tier1_agents(&self) -> usize {
         self.specified_tier1_agents() + self.random_tier1_count()
+    }
+
+    /// Total number of agents (Tier 1 + Tier 2 + SectorRotators).
+    pub fn total_agents(&self) -> usize {
+        self.total_tier1_agents() + self.num_tier2_agents + self.num_sector_rotators
     }
 
     /// Total starting cash in the system (estimate, doesn't include random agents).
@@ -512,7 +691,8 @@ mod tests {
             + config.num_trend_followers
             + config.num_macd_traders
             + config.num_bollinger_traders
-            + config.num_vwap_executors;
+            + config.num_vwap_executors
+            + config.num_pairs_traders;
         assert_eq!(config.specified_tier1_agents(), expected_specified);
 
         // Sanity checks - defaults should be reasonable
@@ -548,11 +728,13 @@ mod tests {
             .macd_traders(0)
             .bollinger_traders(0)
             .vwap_executors(0)
-            .min_tier1(10);
+            .pairs_traders(0)
+            .min_tier1(10)
+            .tier2_agents(0); // Explicitly set tier2 to 0 for this test
 
         assert_eq!(config.specified_tier1_agents(), 5);
         assert_eq!(config.random_tier1_count(), 5); // Need 5 more to reach 10
-        assert_eq!(config.total_agents(), 10);
+        assert_eq!(config.total_tier1_agents(), 10);
     }
 
     #[test]
@@ -602,7 +784,7 @@ mod tests {
 
     #[test]
     fn test_tier1_agent_type_random() {
-        let mut rng = rand::rng();
+        let mut rng = rand::thread_rng();
         // Just verify it doesn't panic and returns valid types
         for _ in 0..10 {
             let agent_type = Tier1AgentType::random(&mut rng);

@@ -51,3 +51,9 @@ pub use risk::{
 };
 pub use rolling::RollingWindow;
 pub use tracker::{AgentRiskSnapshot, AgentRiskTracker, RiskTrackerConfig};
+
+// V3.3: Multi-symbol strategy support
+pub use stats::{
+    CointegrationResult, CointegrationTracker, NewsEventLike, SectorSentiment,
+    SectorSentimentAggregator,
+};

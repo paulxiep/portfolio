@@ -119,7 +119,7 @@ impl NewsGenerator {
         }
 
         // Roll probability
-        if !self.rng.random_bool(cfg.frequency.probability_per_tick) {
+        if !self.rng.r#gen_bool(cfg.frequency.probability_per_tick) {
             return None;
         }
 
@@ -127,13 +127,13 @@ impl NewsGenerator {
         // (Otherwise the same seed always gives the same symbol the same outcomes)
         let surprise_pct = self
             .rng
-            .random_range(cfg.surprise_range.0..=cfg.surprise_range.1);
+            .r#gen_range(cfg.surprise_range.0..=cfg.surprise_range.1);
 
         // Then select symbol independently
-        let symbol_idx = self.rng.random_range(0..self.symbols.len());
+        let symbol_idx = self.rng.r#gen_range(0..self.symbols.len());
         let symbol = self.symbols[symbol_idx].clone();
         let sentiment = surprise_pct.signum() * (surprise_pct.abs().sqrt()); // Sentiment proportional to sqrt(surprise)
-        let magnitude = self.rng.random_range(cfg.magnitude.min..=cfg.magnitude.max);
+        let magnitude = self.rng.r#gen_range(cfg.magnitude.min..=cfg.magnitude.max);
 
         let event = NewsEvent::new(
             self.next_id,
@@ -167,21 +167,21 @@ impl NewsGenerator {
             return None;
         }
 
-        if !self.rng.random_bool(cfg.frequency.probability_per_tick) {
+        if !self.rng.r#gen_bool(cfg.frequency.probability_per_tick) {
             return None;
         }
 
         // Generate growth value FIRST to break symbol-value correlation
         let new_growth = self
             .rng
-            .random_range(cfg.growth_range.0..=cfg.growth_range.1);
+            .r#gen_range(cfg.growth_range.0..=cfg.growth_range.1);
 
         // Then select symbol independently
-        let symbol_idx = self.rng.random_range(0..self.symbols.len());
+        let symbol_idx = self.rng.r#gen_range(0..self.symbols.len());
         let symbol = self.symbols[symbol_idx].clone();
         // Positive guidance = positive sentiment
         let sentiment = (new_growth * 10.0).clamp(-1.0, 1.0);
-        let magnitude = self.rng.random_range(cfg.magnitude.min..=cfg.magnitude.max);
+        let magnitude = self.rng.r#gen_range(cfg.magnitude.min..=cfg.magnitude.max);
 
         let event = NewsEvent::new(
             self.next_id,
@@ -212,18 +212,18 @@ impl NewsGenerator {
             return None;
         }
 
-        if !self.rng.random_bool(cfg.frequency.probability_per_tick) {
+        if !self.rng.r#gen_bool(cfg.frequency.probability_per_tick) {
             return None;
         }
 
         let change_bps = self
             .rng
-            .random_range(cfg.change_range_bps.0..=cfg.change_range_bps.1);
+            .r#gen_range(cfg.change_range_bps.0..=cfg.change_range_bps.1);
         let new_rate = 0.04 + (change_bps as f64 / 10000.0); // Base rate + change
 
         // Rate hikes are typically negative for equities
         let sentiment = -(change_bps as f64 / 50.0).clamp(-1.0, 1.0);
-        let magnitude = self.rng.random_range(cfg.magnitude.min..=cfg.magnitude.max);
+        let magnitude = self.rng.r#gen_range(cfg.magnitude.min..=cfg.magnitude.max);
 
         let event = NewsEvent::new(
             self.next_id,
@@ -260,7 +260,7 @@ impl NewsGenerator {
             return None;
         }
 
-        if !self.rng.random_bool(probability) {
+        if !self.rng.r#gen_bool(probability) {
             return None;
         }
 
@@ -269,14 +269,14 @@ impl NewsGenerator {
         let sector = if active_sectors.is_empty() {
             // Fallback: pick any sector
             let all_sectors = Sector::all();
-            all_sectors[self.rng.random_range(0..all_sectors.len())]
+            all_sectors[self.rng.r#gen_range(0..all_sectors.len())]
         } else {
-            active_sectors[self.rng.random_range(0..active_sectors.len())]
+            active_sectors[self.rng.r#gen_range(0..active_sectors.len())]
         };
 
         // Random sentiment
-        let sentiment = self.rng.random_range(-1.0..=1.0);
-        let magnitude = self.rng.random_range(mag_min..=mag_max);
+        let sentiment = self.rng.r#gen_range(-1.0..=1.0);
+        let magnitude = self.rng.r#gen_range(mag_min..=mag_max);
 
         let event = NewsEvent::new(
             self.next_id,

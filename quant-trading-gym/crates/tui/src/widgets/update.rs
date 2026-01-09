@@ -15,16 +15,17 @@ use std::collections::HashMap;
 use types::{BookLevel, Cash, Price, Symbol, Tick, Trade};
 
 use crate::widgets::RiskInfo;
+use serde::{Deserialize, Serialize};
 
 /// Agent state summary for TUI display.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentInfo {
     /// Agent display name.
     pub name: String,
     /// Positions per symbol (positive = long, negative = short).
     pub positions: HashMap<Symbol, i64>,
-    /// Total realized P&L.
-    pub realized_pnl: Cash,
+    /// Total P&L (realized + unrealized).
+    pub total_pnl: Cash,
     /// Current cash balance.
     pub cash: Cash,
     /// Whether this is a market maker (for sorting to bottom).
@@ -55,7 +56,12 @@ impl AgentInfo {
 ///
 /// Market data is now keyed by symbol. Use `selected_symbol` index
 /// to determine which symbol to display, or show overlay for all.
-#[derive(Debug, Clone, Default)]
+///
+/// # Serialization (V3.6)
+///
+/// Implements Serialize/Deserialize for network transmission
+/// (WebSocket hooks, remote TUI clients).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SimUpdate {
     /// Current simulation tick.
     pub tick: Tick,
@@ -83,10 +89,24 @@ pub struct SimUpdate {
     // ─────────────────────────────────────────────────────────────────────────
     /// Agent summaries for P&L table.
     pub agents: Vec<AgentInfo>,
+    /// Number of Tier 1 agents.
+    pub tier1_count: usize,
+    /// Number of Tier 2 reactive agents (V3.2).
+    pub tier2_count: usize,
+    /// Number of Tier 3 background pool agents (V3.4).
+    pub tier3_count: usize,
     /// Total trades executed.
     pub total_trades: u64,
     /// Total orders submitted.
     pub total_orders: u64,
+    /// Agents called this tick (V3.2 debug).
+    pub agents_called: usize,
+    /// T2 agents triggered this tick (V3.2 debug).
+    pub t2_triggered: usize,
+    /// T3 background pool orders this tick (V3.4).
+    pub t3_orders: usize,
+    /// Background pool P&L (V3.4).
+    pub background_pnl: f64,
     /// Simulation is complete.
     pub finished: bool,
     /// Per-agent risk metrics.
