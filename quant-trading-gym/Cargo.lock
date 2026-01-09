@@ -1011,6 +1011,7 @@ dependencies = [
  "news",
  "rand",
  "ratatui",
+ "rayon",
  "sim-core",
  "simulation",
  "tui",

@@ -76,7 +76,7 @@ impl TuiApp {
             state: SimUpdate::default(),
             finished: false,
             running: false, // Start paused
-            frame_rate: 30, // 30 FPS
+            frame_rate: 60, // 60 FPS is smooth enough for visualization
             risk_scroll: 0,
             agent_scroll: 0,
             risk_area: None,
@@ -129,6 +129,10 @@ impl TuiApp {
         let mut last_tick = Instant::now();
 
         loop {
+            // V3.8: Drain all pending updates BEFORE drawing
+            // This ensures TUI shows latest state and never blocks simulation
+            self.poll_updates();
+
             // Draw current state
             terminal.draw(|f| self.draw(f))?;
 
@@ -151,9 +155,8 @@ impl TuiApp {
                 }
             }
 
-            // Update state from channel (non-blocking)
+            // Rate limit frames
             if last_tick.elapsed() >= tick_rate {
-                self.poll_updates();
                 last_tick = Instant::now();
             }
 
@@ -719,7 +722,7 @@ impl SimpleTui {
             receiver: rx,
             state: self.state.clone(),
             finished: self.state.finished,
-            frame_rate: 30,
+            frame_rate: 60, // 60 FPS is smooth enough for visualization
             risk_scroll: self.risk_scroll,
             agent_scroll: self.agent_scroll,
             risk_area: None,

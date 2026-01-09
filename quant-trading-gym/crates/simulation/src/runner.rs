@@ -273,9 +273,9 @@ impl Simulation {
             .map(|c| c.symbol.clone())
             .collect();
 
-        // Initialize each symbol
+        // Initialize each symbol with initial price for chart display
         for symbol_config in config.get_symbol_configs() {
-            market.add_symbol(&symbol_config.symbol);
+            market.add_symbol_with_price(&symbol_config.symbol, symbol_config.initial_price);
             borrow_ledger.init_symbol(&symbol_config.symbol, symbol_config.borrow_pool_size());
             total_shares_held.insert(symbol_config.symbol.clone(), Quantity::ZERO);
             candles.insert(symbol_config.symbol.clone(), Vec::new());
@@ -469,6 +469,11 @@ impl Simulation {
     /// Get simulation statistics.
     pub fn stats(&self) -> &SimulationStats {
         &self.stats
+    }
+
+    /// Get wake condition index statistics.
+    pub fn wake_index_stats(&self) -> agents::IndexStats {
+        self.wake_index.stats()
     }
 
     /// Get a reference to the primary (first) symbol's order book.
@@ -1272,6 +1277,9 @@ impl Simulation {
         );
 
         for (agent_id, conditions) in t2_conditions {
+            // First unregister ALL existing conditions for this agent to prevent accumulation
+            self.wake_index.unregister_all(agent_id);
+            // Then register the new conditions
             for condition in conditions {
                 self.wake_index.register(agent_id, condition);
             }
@@ -1310,6 +1318,9 @@ impl Simulation {
         for book in self.market.books_mut() {
             book.clear();
         }
+
+        // Cleanup expired time-based wake conditions (V3.9 fix for progressive slowdown)
+        self.wake_index.cleanup_expired(self.tick);
 
         // Advance time
         self.tick += 1;

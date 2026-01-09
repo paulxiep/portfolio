@@ -125,11 +125,17 @@ impl WakeConditionIndex {
                     CrossDirection::Above => {
                         if let Some(agents) = self.price_above.get_mut(&key) {
                             agents.retain(|id| *id != agent_id);
+                            if agents.is_empty() {
+                                self.price_above.remove(&key);
+                            }
                         }
                     }
                     CrossDirection::Below => {
                         if let Some(agents) = self.price_below.get_mut(&key) {
                             agents.retain(|id| *id != agent_id);
+                            if agents.is_empty() {
+                                self.price_below.remove(&key);
+                            }
                         }
                     }
                 }
@@ -137,6 +143,9 @@ impl WakeConditionIndex {
             WakeCondition::TimeExact { wake_tick } => {
                 if let Some(agents) = self.time_exact.get_mut(wake_tick) {
                     agents.retain(|id| *id != agent_id);
+                    if agents.is_empty() {
+                        self.time_exact.remove(wake_tick);
+                    }
                 }
             }
             WakeCondition::TimeInterval { .. } => {
@@ -146,6 +155,9 @@ impl WakeConditionIndex {
                 for symbol in symbols {
                     if let Some(agents) = self.news_subscriptions.get_mut(symbol) {
                         agents.retain(|id| *id != agent_id);
+                        if agents.is_empty() {
+                            self.news_subscriptions.remove(symbol);
+                        }
                     }
                 }
             }
@@ -326,6 +338,8 @@ impl WakeConditionIndex {
         IndexStats {
             price_above_count: self.price_above.values().map(|v| v.len()).sum(),
             price_below_count: self.price_below.values().map(|v| v.len()).sum(),
+            price_above_keys: self.price_above.len(),
+            price_below_keys: self.price_below.len(),
             time_exact_count: self.time_exact.values().map(|v| v.len()).sum(),
             time_interval_count: self.time_intervals.len(),
             news_subscription_count: self.news_subscriptions.values().map(|v| v.len()).sum(),
@@ -345,6 +359,8 @@ impl WakeConditionIndex {
 pub struct IndexStats {
     pub price_above_count: usize,
     pub price_below_count: usize,
+    pub price_above_keys: usize,
+    pub price_below_keys: usize,
     pub time_exact_count: usize,
     pub time_interval_count: usize,
     pub news_subscription_count: usize,

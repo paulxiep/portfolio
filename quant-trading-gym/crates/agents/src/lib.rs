@@ -90,8 +90,8 @@ pub use tier1::{
 };
 // Re-export Tier 2 types for V3.2
 pub use tier2::{
-    ReactiveAgent, ReactivePortfolio, ReactiveStrategyType, SectorRotator, SectorRotatorConfig,
-    WakeConditionIndex,
+    IndexStats, ReactiveAgent, ReactivePortfolio, ReactiveStrategyType, SectorRotator,
+    SectorRotatorConfig, WakeConditionIndex,
 };
 // Re-export Tier 3 types for V3.4
 pub use tier3::{

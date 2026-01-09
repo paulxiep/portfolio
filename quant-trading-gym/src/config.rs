@@ -209,8 +209,13 @@ pub struct SimConfig {
     // ─────────────────────────────────────────────────────────────────────────
     /// Maximum price history points to display.
     pub max_price_history: usize,
-    /// TUI frame rate (frames per second).
+    /// TUI display frame rate (frames per second). Controls visual refresh.
+    /// 30 FPS is plenty smooth for a text-based financial display.
     pub tui_frame_rate: u64,
+    /// Simulation data update rate (updates per second). Controls how often
+    /// expensive agent_summaries() and risk metrics are computed.
+    /// Lower than display rate since data collection is expensive with 25k+ agents.
+    pub data_update_rate: u64,
 
     // ─────────────────────────────────────────────────────────────────────────
     // Event/News Generation Parameters (V2.4)
@@ -322,7 +327,8 @@ impl Default for SimConfig {
 
             // TUI Parameters
             max_price_history: 500,
-            tui_frame_rate: 100,
+            tui_frame_rate: 30,   // 30 FPS display - smooth enough for TUI
+            data_update_rate: 30, // 10 Hz data updates - expensive with 25k agents
 
             // Event/News Generation Parameters (V2.4)
             // Defaults match crates/news/src/config.rs

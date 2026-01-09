@@ -1,4 +1,4 @@
-﻿config_name,trial,elapsed_ms,ticks_per_sec,total_trades
+﻿config_name,trial,elapsed_ms,ticks_per_sec
 seq_agent_collection,1,22051,45.35
 seq_agent_collection,2,21985,45.49
 seq_agent_collection,3,21434,46.65

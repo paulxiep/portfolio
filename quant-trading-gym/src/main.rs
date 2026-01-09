@@ -23,7 +23,7 @@
 
 mod config;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::thread;
 use std::time::Duration;
 
@@ -130,7 +130,7 @@ fn digit_width(n: usize) -> usize {
 /// V3.2: Added tier1_count and tier2_count for agent tier display.
 fn build_update(
     sim: &Simulation,
-    price_history: &HashMap<Symbol, Vec<f64>>,
+    price_history: &HashMap<Symbol, VecDeque<f64>>,
     finished: bool,
     tier1_count: usize,
     tier2_count: usize,
@@ -138,8 +138,11 @@ fn build_update(
     let stats = sim.stats();
     let symbols: Vec<Symbol> = sim.config().symbols();
 
-    // Calculate digit width for agent numbering
-    let agent_summaries = sim.agent_summaries();
+    // - agent_summaries: locks 25k agents to read state
+    // - agent_risk_metrics: computes Sharpe/VaR/etc from equity history
+    let (agent_summaries, risk_metrics_map) =
+        rayon::join(|| sim.agent_summaries(), || sim.agent_risk_metrics());
+
     let num_agents = agent_summaries.len();
     let width = digit_width(num_agents);
 
@@ -174,8 +177,7 @@ fn build_update(
         })
         .collect();
 
-    // Build risk metrics from simulation
-    let risk_metrics_map = sim.agent_risk_metrics();
+    // Build risk info by joining with pre-fetched metrics
     let risk_metrics: Vec<RiskInfo> = agent_summaries
         .iter()
         .enumerate()
@@ -225,7 +227,11 @@ fn build_update(
         tick: sim.tick(),
         symbols,
         selected_symbol: 0,
-        price_history: price_history.clone(),
+        // Convert VecDeque to Vec for TUI (happens at 10 Hz, not every tick)
+        price_history: price_history
+            .iter()
+            .map(|(k, v)| (k.clone(), v.iter().copied().collect()))
+            .collect(),
         bids: bids_map,
         asks: asks_map,
         last_price: last_price_map,
@@ -903,7 +909,7 @@ struct SimulationLoopState {
     tier1_count: usize,
     tier2_count: usize,
     symbols: Vec<Symbol>,
-    price_history: HashMap<Symbol, Vec<f64>>,
+    price_history: HashMap<Symbol, VecDeque<f64>>,
     max_price_history: usize,
     tick_delay_ms: u64,
 }
@@ -916,12 +922,12 @@ impl SimulationLoopState {
             .map(|s| s.symbol.clone())
             .collect();
 
-        let price_history: HashMap<Symbol, Vec<f64>> = config
+        let price_history: HashMap<Symbol, VecDeque<f64>> = config
             .get_symbols()
             .iter()
             .map(|spec| {
-                let mut history = Vec::with_capacity(config.max_price_history);
-                history.push(spec.initial_price.to_float());
+                let mut history = VecDeque::with_capacity(config.max_price_history);
+                history.push_back(spec.initial_price.to_float());
                 (spec.symbol.clone(), history)
             })
             .collect();
@@ -946,9 +952,9 @@ impl SimulationLoopState {
                 && let Some(price) = book.last_price()
             {
                 let history = self.price_history.entry(symbol.clone()).or_default();
-                history.push(price.to_float());
+                history.push_back(price.to_float());
                 if history.len() > self.max_price_history {
-                    history.remove(0);
+                    history.pop_front(); // O(1) with VecDeque
                 }
             }
         }
@@ -1032,6 +1038,12 @@ fn run_simulation(
     let mut state = SimulationLoopState::new(&config);
     let _ = tx.send(state.build_update(&sim, false));
 
+    // V3.9: Rate limit expensive TUI updates (agent_summaries locks 25k agents!)
+    // Use data_update_rate (not tui_frame_rate) - data collection is expensive with 25k+ agents
+    // TUI can render at higher FPS by redrawing cached state
+    let update_interval = std::time::Duration::from_millis(1000 / config.data_update_rate);
+    let mut last_update = std::time::Instant::now();
+
     // Phase 6: Main event loop
     loop {
         if !process_commands(&cmd_rx, &mut state, &sim, &tx) {
@@ -1053,8 +1065,14 @@ fn run_simulation(
         state.tick += 1;
         state.update_price_history(&sim);
 
-        if tx.send(state.build_update(&sim, false)).is_err() {
-            break;
+        // V3.9: Only build TUI updates when channel has space AND interval elapsed
+        // build_update() is expensive (locks 25k agents) - don't call it if we'd just discard
+        // Single-producer so is_full() check is reliable - use blocking send()
+        if last_update.elapsed() >= update_interval && !tx.is_full() {
+            if tx.send(state.build_update(&sim, false)).is_err() {
+                break; // Disconnected
+            }
+            last_update = std::time::Instant::now();
         }
 
         if state.tick_delay_ms > 0 {
@@ -1193,6 +1211,7 @@ fn run_headless(config: SimConfig, args: Args) {
 
     eprintln!("Running {} ticks...", total_ticks);
     let start = Instant::now();
+    let mut segment_start = Instant::now();
 
     for tick in 0..total_ticks {
         sim.step();
@@ -1201,10 +1220,18 @@ fn run_headless(config: SimConfig, args: Args) {
             thread::sleep(Duration::from_millis(tick_delay_ms));
         }
 
-        // Progress every 10%
+        // Progress every 10% with segment timing
         if tick > 0 && tick % (total_ticks / 10).max(1) == 0 {
             let pct = (tick * 100) / total_ticks;
-            eprintln!("  {}% ({}/{} ticks)", pct, tick, total_ticks);
+            let segment_elapsed = segment_start.elapsed();
+            eprintln!(
+                "  {}% ({}/{} ticks) - segment: {:.2}s",
+                pct,
+                tick,
+                total_ticks,
+                segment_elapsed.as_secs_f64()
+            );
+            segment_start = Instant::now();
         }
     }
 
@@ -1231,7 +1258,8 @@ fn run_headless(config: SimConfig, args: Args) {
 /// Run simulation with TUI visualization.
 fn run_with_tui(config: SimConfig, args: Args) {
     // Create bounded channel for updates (backpressure if TUI falls behind)
-    let (tx, rx) = bounded::<SimUpdate>(100);
+    // Small buffer since data updates are now 10 Hz (decoupled from 30 FPS display)
+    let (tx, rx) = bounded::<SimUpdate>(4);
 
     // Create unbounded channel for commands (TUI → simulation)
     let (cmd_tx, cmd_rx) = bounded::<SimCommand>(10);

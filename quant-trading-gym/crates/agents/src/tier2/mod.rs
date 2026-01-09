@@ -66,4 +66,4 @@ pub use context::LightweightContext;
 pub use portfolio::ReactivePortfolio;
 pub use sector_rotator::{SectorRotator, SectorRotatorConfig};
 pub use strategies::ReactiveStrategyType;
-pub use wake_index::WakeConditionIndex;
+pub use wake_index::{IndexStats, WakeConditionIndex};
