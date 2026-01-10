@@ -14,7 +14,7 @@ More project info can be found on the projects' own readme.
 
 ## 2025 onwards (AI-assisted projects)
 
-1. [quant-trading-gym](quant-trading-gym) (Rust + Dockerfile - for now): a quantitative trading simulation in Rust with RL training in Python, modular quant strategies, risk management, microservices architecture, and web interface for portfolio manager game.
+1. [quant-trading-gym](quant-trading-gym) (Rust + TS + Dockerfile - for now): a quantitative trading simulation in Rust with RL training in Python, modular quant strategies, risk management, microservices architecture, and web interface for portfolio manager game.
 2. [portfolio-rag-chat](portfolio-rag-chat) (Rust + Dockerfile): Chatbot and RAG implemented in Rust. Uses chatbot to answer questions about this portfolio.
 
 ## 2023-2024 (100% hand-written)

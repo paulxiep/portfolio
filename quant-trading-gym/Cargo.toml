@@ -8,6 +8,7 @@ members = [
     "crates/tui",
     "crates/news",
     "crates/storage",
+    "crates/server",
 ]
 resolver = "2"
 
@@ -33,6 +34,10 @@ simulation = { path = "crates/simulation" }
 tui = { path = "crates/tui" }
 news = { path = "crates/news" }
 storage = { path = "crates/storage" }
+server = { path = "crates/server" }
+
+# Async runtime (V4.2)
+tokio = { version = "1.42", features = ["full"] }
 
 # Storage (V3.9)
 rusqlite = { version = "0.38", features = ["bundled"] }
@@ -66,9 +71,12 @@ simulation.workspace = true
 news.workspace = true
 tui.workspace = true
 storage.workspace = true
+server.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 crossbeam-channel.workspace = true
 rand.workspace = true
 clap.workspace = true
 rayon.workspace = true
+tokio.workspace = true
+axum = { version = "0.8", features = ["ws"] }
