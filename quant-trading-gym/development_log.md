@@ -1,5 +1,96 @@
 # Development Log
 
+## 2026-01-10: V4.2 Services Foundation
+
+### Summary
+Implemented Axum async server as bridge between sync simulation and React frontend. New `server` crate provides HTTP/WebSocket endpoints for real-time tick streaming, health checks, and simulation control. Server runs simulation in background thread, broadcasts updates via tokio broadcast channels. Frontend hook `useWebSocket` connects to tick stream.
+
+### Files
+
+| File | Changes |
+|------|---------|
+| `crates/server/Cargo.toml` | New crate with axum 0.8, tokio, tower-http, serde |
+| `crates/server/src/lib.rs` | Module exports, crate documentation |
+| `crates/server/src/app.rs` | Axum router with routes, CORS, tracing middleware |
+| `crates/server/src/state.rs` | `ServerState` with broadcast channels, metrics |
+| `crates/server/src/error.rs` | `AppError` with HTTP status mapping |
+| `crates/server/src/bridge.rs` | `TickData`, `SimUpdate`, `SimCommand` message types |
+| `crates/server/src/hooks.rs` | `BroadcastHook` implementing `SimulationHook` |
+| `crates/server/src/routes/mod.rs` | Route module organization |
+| `crates/server/src/routes/health.rs` | `/health`, `/health/ready` endpoints |
+| `crates/server/src/routes/ws.rs` | `/ws` WebSocket upgrade handler |
+| `crates/server/src/routes/api.rs` | `/api/status`, `/api/command` REST endpoints |
+| `src/main.rs` | Added `--server` mode with `run_with_server()` function |
+| `Cargo.toml` (workspace) | Added server crate, tokio 1.42 |
+| `docker-compose.yaml` | Added `server` and `frontend` services, profiles for tui/headless |
+| `dockerfile/Dockerfile.server` | Multi-stage build for server mode |
+| `frontend/src/hooks/useWebSocket.ts` | React hook for WebSocket connection |
+| `frontend/src/hooks/index.ts` | Hooks barrel file |
+
+### Server Architecture
+
+**Endpoints:**
+- `GET /health` - Liveness probe (tick, agents, uptime, ws_connections)
+- `GET /health/ready` - Readiness probe (ready, reason, sim_running, sim_finished)
+- `GET /ws` - WebSocket upgrade for real-time tick stream
+- `GET /api/status` - Current simulation state
+- `POST /api/command` - Send command (Start/Pause/Toggle/Step/Quit)
+
+**Channel Bridge:**
+```
+Simulation (sync thread)      Server (async tokio)
+       |                            |
+       |-- BroadcastHook ---------->|-- broadcast::Sender<TickData>
+       |      on_tick_end()         |       to WebSocket clients
+       |                            |
+       |<-- crossbeam::Receiver ----|-- SimCommand from clients
+```
+
+**Design Principles:**
+- Declarative: Routes via Axum type-safe routing, message types define protocol
+- Modular: Server crate independent of TUI, hooks decoupled from server internals
+- SoC: Simulation runs sync loop, server observes via hooks, clients receive via WS
+
+### Usage
+
+```bash
+# Run with server mode (replaces TUI)
+cargo run -- --server --server-port 8001
+
+# With docker
+docker compose up server frontend
+```
+
+### Frontend Integration
+
+New `useWebSocket` hook provides:
+```typescript
+const { tickData, connectionState, sendCommand } = useWebSocket();
+
+// Start simulation
+sendCommand('Start');
+
+// Access real-time data
+if (tickData) {
+  console.log(`Tick: ${tickData.tick}, Trades: ${tickData.total_trades}`);
+}
+```
+
+### Exit Criteria
+- `cargo build --release` passes with server crate
+- `cargo run -- --server` starts Axum server on port 8001
+- `/health` returns JSON with tick/agents/uptime
+- `/ws` accepts WebSocket connections
+- Frontend hook connects and receives tick updates
+
+### Notes
+- V4.2 is read-only: server observes simulation state, no order submission
+- WebSocket uses tokio broadcast channel (lagged clients skip messages)
+- Simulation starts paused; send `{"command": "Start"}` to `/api/command`
+- TUI and headless modes still available via `--headless` flag (no `--server`)
+
+---
+
 ## 2026-01-10: V4.1 Web Frontend Landing & Config Pages
 
 ### Summary
