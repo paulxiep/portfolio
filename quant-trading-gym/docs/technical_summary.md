@@ -96,7 +96,7 @@ cargo build --release           # Build
 cargo test --all                # Tests
 cargo run --release             # TUI (Space to start)
 cargo run --release -- --headless --ticks 10000  # Benchmark
-docker compose up               # Containerized run
+docker compose up               # Containerized run (port 7681)
 ```
 
 ## TUI Controls

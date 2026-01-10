@@ -73,6 +73,9 @@ pub struct SimConfig {
     pub tick_delay_ms: u64,
     /// Enable verbose logging.
     pub verbose: bool,
+    /// Maximum CPU usage percentage (1-100). Controls rayon thread pool size.
+    /// Set to 75 to use ~75% of cores, leaving headroom for other processes.
+    pub max_cpu_percent: u8,
 
     // ─────────────────────────────────────────────────────────────────────────
     // Tier 1 Agent Counts (minimum for each type)
@@ -255,16 +258,17 @@ impl Default for SimConfig {
             total_ticks: 10000,
             tick_delay_ms: 0, // ~100 ticks/sec for watchable visualization
             verbose: false,
+            max_cpu_percent: 34, // Use only some available cores by default
 
             // V3.5: Doubled agent counts for parallel execution benchmarking
             // Tier 1 Agent Counts (minimums per type)
-            num_market_makers: 300,
+            num_market_makers: 200,
             num_noise_traders: 1500,
-            num_momentum_traders: 400,
-            num_trend_followers: 400,
-            num_macd_traders: 400,
-            num_bollinger_traders: 400,
-            num_vwap_executors: 400,
+            num_momentum_traders: 500,
+            num_trend_followers: 500,
+            num_macd_traders: 500,
+            num_bollinger_traders: 500,
+            num_vwap_executors: 100,
             num_pairs_traders: 1200,   // V3.3: multi-symbol pairs traders
             num_sector_rotators: 2000, // V3.3: sector rotation agents (special T2)
             // Tier Minimums

@@ -533,16 +533,6 @@ impl TuiApp {
 
     /// Draw the stats panel.
     fn draw_stats(&self, frame: &mut Frame, area: Rect) {
-        // Get data for selected symbol
-        let bids = self.state.current_bids();
-        let asks = self.state.current_asks();
-
-        // Calculate spread from book data
-        let spread = match (bids.first(), asks.first()) {
-            (Some(bid), Some(ask)) => Some(ask.price - bid.price),
-            _ => None,
-        };
-
         let stats = StatsPanel::new()
             .tick(self.state.tick)
             .last_price(self.state.current_last_price())
@@ -552,10 +542,8 @@ impl TuiApp {
             .tier2_count(self.state.tier2_count)
             .tier3_count(self.state.tier3_count)
             .t3_orders(self.state.t3_orders)
-            .background_pnl(self.state.background_pnl)
             .agents_called(self.state.agents_called)
-            .t2_triggered(self.state.t2_triggered)
-            .spread(spread);
+            .t2_triggered(self.state.t2_triggered);
 
         frame.render_widget(stats, area);
     }

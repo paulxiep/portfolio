@@ -119,6 +119,11 @@ struct Args {
     /// Storage database path (V3.9, headless mode only, default: :memory:)
     #[arg(long, env = "STORAGE_PATH")]
     storage_path: Option<String>,
+
+    /// Maximum CPU usage percentage (1-100). Overrides config default.
+    /// Set to 75 to use ~75% of available cores, leaving headroom for other processes.
+    #[arg(long, env = "SIM_MAX_CPU_PERCENT")]
+    max_cpu_percent: Option<u8>,
 }
 
 /// Calculate the number of digits needed to display a number.
@@ -254,10 +259,6 @@ fn build_update(
         agents_called: stats.agents_called_this_tick,
         t2_triggered: stats.t2_triggered_this_tick,
         t3_orders: stats.t3_orders_this_tick,
-        background_pnl: sim
-            .background_pool()
-            .map(|p| p.accounting().realized_pnl().to_float())
-            .unwrap_or(0.0),
         finished,
         risk_metrics,
     }
@@ -1111,6 +1112,23 @@ fn main() {
     if let Some(delay) = args.tick_delay {
         config.tick_delay_ms = delay;
     }
+    if let Some(cpu) = args.max_cpu_percent {
+        config.max_cpu_percent = cpu;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Configure rayon thread pool based on max_cpu_percent
+    // ─────────────────────────────────────────────────────────────────────────
+    let max_cpu = config.max_cpu_percent.clamp(1, 100);
+    let available_cores = std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(1);
+    let num_threads = ((available_cores as f64 * max_cpu as f64 / 100.0).ceil() as usize).max(1);
+
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .build_global()
+        .expect("Failed to initialize rayon thread pool");
 
     // In headless mode, ensure we have a finite tick count
     if args.headless && config.total_ticks == 0 {
@@ -1129,13 +1147,17 @@ fn main() {
     );
     eprintln!("╠═══════════════════════════════════════════════════════════════════════╣");
     eprintln!(
+        "║  CPU: {:2}/{:2} threads ({}%)  │  Tick Delay: {:3}ms                      ║",
+        num_threads, available_cores, max_cpu, config.tick_delay_ms
+    );
+    eprintln!(
         "║  Symbol: {:6}  │  Initial Price: ${:<8.2}                      ║",
         config.primary_symbol(),
         config.primary_initial_price().to_float()
     );
     eprintln!(
-        "║  Ticks:  {:6}  │  Tick Delay: {:3}ms                              ║",
-        config.total_ticks, config.tick_delay_ms
+        "║  Ticks:  {:6}                                                        ║",
+        config.total_ticks
     );
     eprintln!("╠═══════════════════════════════════════════════════════════════════════╣");
     eprintln!("║  Tier 1 Agents (specified minimums):                                  ║");

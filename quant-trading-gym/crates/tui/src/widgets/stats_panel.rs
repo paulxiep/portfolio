@@ -27,14 +27,10 @@ pub struct StatsPanel {
     pub tier3_count: usize,
     /// T3 orders generated this tick.
     pub t3_orders: usize,
-    /// Background pool P&L.
-    pub background_pnl: f64,
     /// Agents called this tick.
     pub agents_called: usize,
     /// T2 agents triggered this tick.
     pub t2_triggered: usize,
-    /// Spread (if available).
-    pub spread: Option<Price>,
 }
 
 impl StatsPanel {
@@ -49,10 +45,8 @@ impl StatsPanel {
             tier2_count: 0,
             tier3_count: 0,
             t3_orders: 0,
-            background_pnl: 0.0,
             agents_called: 0,
             t2_triggered: 0,
-            spread: None,
         }
     }
 
@@ -104,12 +98,6 @@ impl StatsPanel {
         self
     }
 
-    /// Set background pool P&L.
-    pub fn background_pnl(mut self, pnl: f64) -> Self {
-        self.background_pnl = pnl;
-        self
-    }
-
     /// Set agents called this tick.
     pub fn agents_called(mut self, count: usize) -> Self {
         self.agents_called = count;
@@ -119,12 +107,6 @@ impl StatsPanel {
     /// Set T2 agents triggered this tick.
     pub fn t2_triggered(mut self, count: usize) -> Self {
         self.t2_triggered = count;
-        self
-    }
-
-    /// Set spread.
-    pub fn spread(mut self, spread: Option<Price>) -> Self {
-        self.spread = spread;
         self
     }
 }
@@ -139,11 +121,6 @@ impl Widget for StatsPanel {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let price_str = match self.last_price {
             Some(p) => format!("${:.2}", p.to_float()),
-            None => "—".to_string(),
-        };
-
-        let spread_str = match self.spread {
-            Some(s) => format!("${:.4}", s.to_float()),
             None => "—".to_string(),
         };
 
@@ -162,9 +139,6 @@ impl Widget for StatsPanel {
                 Span::styled(price_str, Style::default().fg(Color::White)),
             ]),
             Line::from(vec![
-                Span::styled("Spread: ", Style::default().fg(Color::Gray)),
-                Span::styled(spread_str, Style::default().fg(Color::Yellow)),
-                Span::raw("  "),
                 Span::styled("Trades: ", Style::default().fg(Color::Gray)),
                 Span::styled(
                     format!("{}", self.total_trades),
@@ -200,16 +174,6 @@ impl Widget for StatsPanel {
                     format!("{}", self.t3_orders),
                     Style::default().fg(Color::Blue),
                 ),
-                Span::raw("  "),
-                Span::styled("Pool P&L: ", Style::default().fg(Color::Gray)),
-                Span::styled(
-                    format!("${:.0}", self.background_pnl),
-                    if self.background_pnl >= 0.0 {
-                        Style::default().fg(Color::Green)
-                    } else {
-                        Style::default().fg(Color::Red)
-                    },
-                ),
             ]),
         ];
 
@@ -238,14 +202,15 @@ mod tests {
 
     #[test]
     fn test_stats_panel_with_data() {
+        use types::Price;
+
         let panel = StatsPanel::new()
             .tick(500)
             .last_price(Some(Price::from_float(100.25)))
             .total_trades(42)
             .total_orders(150)
             .tier1_count(12)
-            .tier2_count(4000)
-            .spread(Some(Price::from_float(0.50)));
+            .tier2_count(4000);
 
         let area = Rect::new(0, 0, 30, 10);
         let mut buf = Buffer::empty(area);

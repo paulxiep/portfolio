@@ -105,8 +105,6 @@ pub struct SimUpdate {
     pub t2_triggered: usize,
     /// T3 background pool orders this tick (V3.4).
     pub t3_orders: usize,
-    /// Background pool P&L (V3.4).
-    pub background_pnl: f64,
     /// Simulation is complete.
     pub finished: bool,
     /// Per-agent risk metrics.
