@@ -1,19 +1,133 @@
-//! Shared server state (V4.2).
+//! Shared server state (V4.2, extended V4.3).
 //!
-//! Contains channels and metrics shared across handlers.
+//! Contains channels, metrics, and simulation data shared across handlers.
 //!
 //! # Design Principles
 //!
 //! - **Declarative**: State is data, handlers extract what they need
 //! - **Modular**: State independent of route logic
 //! - **SoC**: State holds references, doesn't own simulation
+//!
+//! # V4.3 Additions
+//!
+//! - `SimData`: Cached simulation data for analytics/portfolio/risk endpoints
+//! - Updated by `DataServiceHook` on each tick
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
-use tokio::sync::broadcast;
+use tokio::sync::{RwLock, broadcast};
 
 use crate::bridge::{SimCommand, TickData};
+use quant::AgentRiskSnapshot;
+use types::{AgentId, Candle, Price, Symbol};
+
+// =============================================================================
+// SimData - Cached simulation data for V4.3 Data Service
+// =============================================================================
+
+/// Agent position data for API responses.
+#[derive(Debug, Clone, Default)]
+pub struct AgentPosition {
+    pub symbol: Symbol,
+    pub quantity: i64,
+    pub avg_cost: f64,
+}
+
+/// Agent data snapshot for API responses.
+#[derive(Debug, Clone)]
+pub struct AgentData {
+    pub id: u64,
+    pub name: String,
+    pub cash: f64,
+    pub equity: f64,
+    pub total_pnl: f64,
+    pub realized_pnl: f64,
+    pub positions: HashMap<Symbol, AgentPosition>,
+    pub position_count: usize,
+    pub is_market_maker: bool,
+    pub tier: u8,
+}
+
+/// News event data for API responses (mirrors news::NewsEvent).
+#[derive(Debug, Clone)]
+pub struct NewsEventSnapshot {
+    pub id: u64,
+    pub event: news::FundamentalEvent,
+    pub sentiment: f64,
+    pub magnitude: f64,
+    pub start_tick: u64,
+    pub duration_ticks: u64,
+}
+
+impl NewsEventSnapshot {
+    /// Check if the event is active at the given tick.
+    pub fn is_active(&self, tick: u64) -> bool {
+        tick >= self.start_tick && tick < self.start_tick + self.duration_ticks
+    }
+
+    /// Get the decay factor at the given tick.
+    pub fn decay_factor(&self, tick: u64) -> f64 {
+        if !self.is_active(tick) {
+            return 0.0;
+        }
+        let elapsed = (tick - self.start_tick) as f64;
+        let total = self.duration_ticks as f64;
+        1.0 - (elapsed / total)
+    }
+
+    /// Get the effective sentiment at the given tick.
+    pub fn effective_sentiment(&self, tick: u64) -> f64 {
+        self.sentiment * self.decay_factor(tick)
+    }
+
+    /// Get the primary symbol affected, if any.
+    pub fn symbol(&self) -> Option<&Symbol> {
+        self.event.symbol()
+    }
+
+    /// Get the sector affected, if any.
+    pub fn sector(&self) -> Option<types::Sector> {
+        self.event.sector()
+    }
+}
+
+/// Cached simulation data for V4.3 Data Service endpoints.
+///
+/// Updated by `DataServiceHook` on each tick. Read by API handlers.
+#[derive(Debug, Default)]
+pub struct SimData {
+    /// Current tick number.
+    pub tick: u64,
+    /// Candles per symbol.
+    pub candles: HashMap<Symbol, Vec<Candle>>,
+    /// Technical indicators per symbol (indicator_name -> value).
+    pub indicators: HashMap<Symbol, HashMap<String, f64>>,
+    /// Current prices per symbol.
+    pub prices: HashMap<Symbol, Price>,
+    /// Fair values per symbol.
+    pub fair_values: HashMap<Symbol, Price>,
+    /// Agent data.
+    pub agents: Vec<AgentData>,
+    /// Risk metrics per agent.
+    pub risk_metrics: HashMap<AgentId, AgentRiskSnapshot>,
+    /// Equity curves per agent (for portfolio detail).
+    pub equity_curves: HashMap<AgentId, Vec<f64>>,
+    /// Active news events.
+    pub active_events: Vec<NewsEventSnapshot>,
+}
+
+impl SimData {
+    /// Create empty SimData.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+// =============================================================================
+// ServerState
+// =============================================================================
 
 /// Shared state for all route handlers.
 ///
@@ -31,6 +145,9 @@ pub struct ServerState {
 
     /// Shared metrics.
     pub metrics: Arc<ServerMetrics>,
+
+    /// V4.3: Cached simulation data for data service endpoints.
+    pub sim_data: Arc<RwLock<SimData>>,
 }
 
 impl ServerState {
@@ -44,6 +161,22 @@ impl ServerState {
             cmd_tx,
             start_time: Instant::now(),
             metrics: Arc::new(ServerMetrics::new()),
+            sim_data: Arc::new(RwLock::new(SimData::new())),
+        }
+    }
+
+    /// Create new server state with pre-initialized SimData.
+    pub fn with_sim_data(
+        tick_tx: broadcast::Sender<TickData>,
+        cmd_tx: crossbeam_channel::Sender<SimCommand>,
+        sim_data: Arc<RwLock<SimData>>,
+    ) -> Self {
+        Self {
+            tick_tx,
+            cmd_tx,
+            start_time: Instant::now(),
+            metrics: Arc::new(ServerMetrics::new()),
+            sim_data,
         }
     }
 

@@ -1475,10 +1475,7 @@ async fn run_with_server(config: SimConfig, args: Args) {
     eprintln!("║    GET  /api/status   - Simulation status                             ║");
     eprintln!("║    POST /api/command  - Send command (Start/Pause/Toggle)             ║");
     eprintln!("╠═══════════════════════════════════════════════════════════════════════╣");
-    eprintln!(
-        "║  Listening on: http://0.0.0.0:{:<43} ║",
-        server_port
-    );
+    eprintln!("║  Listening on: http://0.0.0.0:{:<43} ║", server_port);
     eprintln!("╚═══════════════════════════════════════════════════════════════════════╝");
     eprintln!();
     eprintln!("Send POST /api/command with {{\"command\": \"Start\"}} to begin simulation.");

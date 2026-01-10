@@ -1,5 +1,132 @@
 # Development Log
 
+## 2026-01-10: V4.3 Data Service
+
+### Summary
+Implemented REST API endpoints for analytics, portfolio, risk, and news data. The Data Service provides comprehensive query APIs for the React frontend to fetch simulation state, enabling the V4.4 Simulation Dashboard. All endpoints read from a shared `SimData` cache updated by a hook on each tick.
+
+### Files
+
+| File | Changes |
+|------|---------|
+| `crates/server/src/routes/data.rs` | New: 7 data service endpoints with typed request/response |
+| `crates/server/src/routes/mod.rs` | Added `data` module export |
+| `crates/server/src/state.rs` | Added `SimData`, `AgentData`, `AgentPosition`, `NewsEventSnapshot` |
+| `crates/server/src/app.rs` | Wired 7 new routes to router |
+| `crates/server/src/lib.rs` | Updated exports for new types |
+| `crates/server/Cargo.toml` | Added `quant` and `news` crate dependencies |
+
+### Data Service Endpoints
+
+**Analytics:**
+- `GET /api/analytics/candles?symbol=X&limit=N` - OHLCV candle data
+- `GET /api/analytics/indicators?symbol=X` - Technical indicators (SMA, EMA, RSI, MACD, Bollinger, ATR)
+- `GET /api/analytics/factors?symbol=X` - Factor scores (momentum, value, volatility)
+
+**Portfolio:**
+- `GET /api/portfolio/agents` - List all agents with P&L summary
+- `GET /api/portfolio/agents/{agent_id}` - Detailed agent portfolio (positions, equity curve)
+
+**Risk:**
+- `GET /api/risk/{agent_id}` - Risk metrics (Sharpe, Sortino, VaR, max drawdown, volatility)
+
+**News:**
+- `GET /api/news/active` - Active news events with sentiment and decay
+
+### Architecture
+
+**SimData Cache:**
+```
+SimData (Arc<RwLock<...>>)
+├── tick: u64
+├── candles: HashMap<Symbol, Vec<Candle>>
+├── indicators: HashMap<Symbol, HashMap<String, f64>>
+├── prices: HashMap<Symbol, Price>
+├── fair_values: HashMap<Symbol, Price>
+├── agents: Vec<AgentData>
+├── risk_metrics: HashMap<AgentId, AgentRiskSnapshot>
+├── equity_curves: HashMap<AgentId, Vec<f64>>
+└── active_events: Vec<NewsEventSnapshot>
+```
+
+**Data Flow:**
+```
+Simulation Thread                    Axum Server
+       │                                  │
+       │── DataServiceHook ───────────────▶│ Update SimData
+       │   (on_tick_end)                  │
+       │                                  │
+       │                                  │◀── GET /api/... ────
+       │                                  │    Read SimData
+```
+
+### Response Types
+
+**CandlesResponse:**
+```json
+{
+  "candles": {
+    "AAPL": [{ "tick": 100, "open": 150.0, "high": 155.0, ... }]
+  },
+  "total": 100
+}
+```
+
+**IndicatorsResponse:**
+```json
+{
+  "symbol": "AAPL",
+  "indicators": {
+    "sma": { "10": 150.5, "20": 149.8, "50": 148.2 },
+    "rsi_14": 55.3,
+    "macd": { "macd_line": 1.2, "signal_line": 0.8, "histogram": 0.4 },
+    "bollinger": { "upper": 160.0, "middle": 150.0, "lower": 140.0 }
+  }
+}
+```
+
+**AgentsResponse:**
+```json
+{
+  "agents": [
+    { "agent_id": 1, "name": "MM-001", "total_pnl": 1234.56, "equity": 105000.0, "tier": 1 }
+  ],
+  "total_count": 25000
+}
+```
+
+**RiskMetricsResponse:**
+```json
+{
+  "agent_id": 1,
+  "sharpe": 1.5,
+  "sortino": 2.1,
+  "max_drawdown": 0.05,
+  "var_95": 0.02,
+  "volatility": 0.15,
+  "total_return": 0.05
+}
+```
+
+### Design Principles
+- **Declarative**: Typed request/response structs, pure handler functions
+- **Modular**: Data service isolated from control endpoints (api.rs)
+- **SoC**: Handlers extract from state, computation in simulation thread
+
+### Exit Criteria
+```
+cargo build --package server  # ✅ Compiles without errors
+cargo test --package server   # ✅ 20 tests pass
+```
+
+### Notes
+- SimData hook implementation deferred to V4.4 (requires simulation thread integration)
+- All endpoints return empty data until hook populates SimData
+- Axum 0.8 uses `{param}` syntax instead of `:param` for path parameters
+- V4.4 will implement real-time data population and WebSocket `/stream` endpoint
+
+---
+
 ## 2026-01-10: V4.2 Services Foundation
 
 ### Summary

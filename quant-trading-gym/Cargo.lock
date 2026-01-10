@@ -1720,6 +1720,8 @@ dependencies = [
  "axum",
  "crossbeam-channel",
  "futures",
+ "news",
+ "quant",
  "serde",
  "serde_json",
  "simulation",
