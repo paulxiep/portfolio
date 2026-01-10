@@ -1,5 +1,85 @@
 # Development Log
 
+## 2026-01-10: V4.1 Web Frontend Landing & Config Pages
+
+### Summary
+Implemented React frontend with Landing and Config pages as first step toward V4 Web Frontend. Uses Vite + TypeScript + Tailwind CSS. Dockerized development workflow with hot reload, Prettier formatting, and production builds. Config page mirrors `src/config.rs` SimConfig structure with preset system (6 built-in presets + custom localStorage-backed presets).
+
+### Files
+
+| File | Changes |
+|------|---------|
+| `frontend/package.json` | React 19, React Router 7, Vite 6, TypeScript 5.7, Tailwind 3.4 |
+| `frontend/vite.config.ts` | Dev server config with API proxy to port 8001 |
+| `frontend/tailwind.config.ts` | Trading-themed colors (primary blue, accent green/red) |
+| `frontend/src/types/config.ts` | `SimConfig`, `Sector`, `MarketRegime` types matching Rust |
+| `frontend/src/config/defaults.ts` | `DEFAULT_CONFIG` + 5 built-in presets (Demo, Stress Test, etc.) |
+| `frontend/src/components/ui/` | Accordion, Button, Input components (Tailwind-styled) |
+| `frontend/src/components/config/` | 9 config sections, SymbolsEditor for multi-symbol management |
+| `frontend/src/pages/LandingPage.tsx` | Hero section with feature bullets, Run Simulation + Configure CTAs |
+| `frontend/src/pages/ConfigPage.tsx` | Full SimConfig form with collapsible sections, preset load/save |
+| `frontend/src/pages/SimulationPage.tsx` | Placeholder for V4.2 |
+| `dockerfile/Dockerfile.frontend` | Multi-stage: deps, dev, format, typecheck, builder, prod |
+| `dockerfile/nginx.frontend.conf` | SPA fallback + API/WebSocket proxy to data-service |
+| `docker-compose.frontend.yaml` | FE development: dev server, format, typecheck, build services |
+| `docker-compose.tui.yaml` | Renamed from docker-compose.yaml (TUI-only simulation) |
+
+### Frontend Architecture
+
+**Stack:**
+- React 19 + React Router 7 (SPA with client-side routing)
+- Vite 6 (fast HMR, TypeScript, Tailwind integration)
+- Tailwind CSS 3.4 (utility-first, custom trading theme)
+- Prettier 3.4 (code formatting via Docker)
+
+**Page Structure:**
+- `/` - Landing: Hero, feature bullets, "Run Simulation" and "Configure" buttons
+- `/config` - Config: Preset selector, 9 collapsible config sections, save preset
+- `/sim` - Simulation: Placeholder (V4.2 will add WebSocket charts)
+
+**Config Sections:**
+1. Simulation Control (ticks, tick_ms, initial_cash, seed)
+2. Symbols Editor (add/remove symbols with sector dropdown)
+3. Tier 1 Agents (fundamental traders count/cash)
+4. Tier 2 Agents (reactive traders count/cash, wake conditions)
+5. Tier 3 Pool (noise traders count/cash)
+6. Market Maker (spread, inventory limits, quote refresh)
+7. Noise Trader (order size range, hold ticks)
+8. Quant Strategy (momentum/mean-reversion/breakout weights)
+9. Events (news frequency, earnings calendar)
+
+### Docker Development Workflow
+
+```powershell
+# Start dev server with hot reload (port 5173)
+docker compose -f docker-compose.frontend.yaml up frontend-dev
+
+# Format all TypeScript files with Prettier
+docker compose -f docker-compose.frontend.yaml run --rm format
+
+# TypeScript type checking
+docker compose -f docker-compose.frontend.yaml run --rm typecheck
+
+# Production build (outputs to frontend/dist/)
+docker compose -f docker-compose.frontend.yaml run --rm build
+```
+
+### Exit Criteria
+```
+docker compose -f docker-compose.frontend.yaml run --rm typecheck  # ✅ tsc passes
+docker compose -f docker-compose.frontend.yaml run --rm build      # ✅ Vite bundles (252KB JS, 13KB CSS)
+docker compose -f docker-compose.frontend.yaml run --rm format     # ✅ 21 files formatted
+docker compose -f docker-compose.frontend.yaml up frontend-dev     # ✅ Dev server on :5173
+```
+
+### Notes
+- Desktop-only design (min-width 1024px assumed)
+- Preset storage: Built-in presets in code, custom presets in localStorage (SQLite backend in V4.2+)
+- No form validation in V4.1 (deferred to later)
+- SimConfig types match Rust `src/config.rs` structure for future API integration
+
+---
+
 ## 2026-01-09: V3.9 Minimal Storage Infrastructure
 
 ### Summary
