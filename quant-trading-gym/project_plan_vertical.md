@@ -33,169 +33,12 @@ Every implementation decision should be evaluated against these three principles
 
 ---
 
-## V0: The Steel Thread (4 Weeks)
-
-**Goal:** A single-threaded simulation with TUI visualization showing agents trading.
-
-### Week 1: The Engine (The "Truth")
-
-**Focus:** Types, `BTreeMap`, Matching Logic
-
-**Deliverables:**
-- `OrderBook` struct using `BTreeMap<Price, VecDeque<Order>>`
-- `LimitOrder` and `Trade` types
-- Price-time priority matching
-- Basic unit tests
-
-**Rust Concepts:**
-- Ownership (who owns the order after submission?)
-- Structs, Enums (`Buy`/`Sell`)
-- `Option<Trade>` for match results
-- Newtype pattern: `struct Price(i64);` with fixed-point scale (e.g., 10,000 = 4 decimal places)
-
-**Files:**
-```
-crates/
-└── types/
-    └── lib.rs          # Order, Trade, Side, Price types
-└── sim-core/
-    ├── lib.rs
-    ├── order_book.rs   # BTreeMap-based book
-    └── matching.rs     # Price-time priority
-```
-
-**Exit Criteria:** `cargo test` passes for order insertion and matching.
-
----
-
-### Week 2: The Loop (The "Time")
-
-**Focus:** Event-driven simulation architecture
-
-**Deliverables:**
-- `Simulation` struct that holds `OrderBook` and `Vec<Box<dyn Agent>>`
-- Tick-based loop: `simulation.step()` advances one tick
-- `MarketData` snapshot passed to agents each tick
-- `Agent` trait definition
-
-**Rust Concepts:**
-- **Traits** — the polymorphic heart (`trait Agent { fn on_tick(&mut self, market: &MarketData) -> Option<Order>; }`)
-- Trait objects (`Box<dyn Agent>`)
-- Lifetimes (MarketData borrowing from OrderBook)
-- The borrow checker fight begins
-
-**Technical Note:** Orders need `agent_id: AgentId` (newtype around `u64`) so the simulation can update the correct agent's P&L when a trade occurs. Add `AgentId` to `types/lib.rs`.
-
-**Files:**
-```
-crates/
-└── agents/
-    ├── lib.rs
-    └── traits.rs       # Agent trait
-└── simulation/
-    ├── lib.rs
-    ├── runner.rs       # Simulation struct, step()
-    └── context.rs      # MarketData/StrategyContext for agents (matches full plan naming)
-```
-
-**Exit Criteria:** Empty simulation runs 1000 ticks without panic.
-
----
-
-### Week 3: The Dumb Agents
-
-**Focus:** Implement concrete agents, state management
-
-**Deliverables:**
-- `NoiseTrader`: Random buy/sell at random prices near mid
-- `MarketMaker`: Places bid/ask spread, manages inventory
-- Agents maintain internal state (position, cash)
-
-**Rust Concepts:**
-- `rand` crate usage
-- Mutable borrows (agents reading market, mutating themselves)
-- Interior mutability patterns (if needed)
-- Implementing traits for structs
-
-**Files:**
-```
-crates/
-└── agents/
-    ├── strategies/
-    │   ├── mod.rs
-    │   ├── noise_trader.rs   # Tier 1 agent: runs every tick, random orders
-    │   └── market_maker.rs   # Tier 1 agent: runs every tick, provides liquidity
-```
-
-**Migration Note:** In V2, when adding tiers, move these files into the tier1 folder:
-- `strategies/noise_trader.rs` → `tier1/strategies/noise_trader.rs`
-- `strategies/market_maker.rs` → `tier1/strategies/market_maker.rs`
-
-**Why Tier 1?** These agents run every tick with full decision logic. Tier 2 (Reactive) agents only wake on conditions like price crosses or intervals.
-
-**Exit Criteria:** 10 NoiseTraders + 2 MarketMakers produce trades over 1000 ticks.
-
-**⚠️ Zombie Risk:** If NoiseTraders place orders at random prices without a reference point, nothing matches — the simulation runs but produces zero trades. **Fix:** MarketMaker must seed a tight spread around an initial price (e.g., bid $99, ask $101 around $100 start). NoiseTraders then generate orders near the current mid price, not truly random.
-
----
-
-### Week 4: The Viz (The "Reward")
-
-**Focus:** Terminal UI with live updating
-
-**Deliverables:**
-- `ratatui` integration
-- Live price chart (candlesticks or line)
-- Order book depth visualization
-- Agent P&L summary table
-
-**Rust Concepts:**
-- External crate integration
-- Event loops (simulation tick vs render tick)
-- **Channels (Actor Model):** Use `std::sync::mpsc` or `crossbeam` channels
-  - Thread A (Sim): Runs fast, pushes `SimUpdate` events (trades, price changes)
-  - Thread B (TUI): Reads channel at ~60fps, renders UI
-  - Prevents slow terminal rendering from blocking matching engine
-
-**Files:**
-```
-crates/
-└── tui/                # NOTE: Not in full plan. Becomes SimulationHook in V3,
-    ├── lib.rs          # then replaced by services/frontend in V4
-    ├── app.rs          # Main TUI app
-    ├── price_chart.rs
-    └── book_depth.rs
-src/
-└── main.rs             # Binary that runs sim + TUI
-```
-
-**Migration Note:** The TUI crate is V0-specific for fast feedback. In V3, refactor it to implement `SimulationHook` trait. In V4, the web frontend supersedes it (TUI becomes optional dev tool).
-
-**Exit Criteria:** Watch agents trade in real-time in terminal. Screenshot-worthy.
-
----
-
-## V0 Summary
-
-| Week | Deliverable | Key Rust Learning |
-|------|-------------|-------------------|
-| 1 | OrderBook + Matching | Ownership, Enums, BTreeMap |
-| 2 | Simulation Loop | Traits, Trait Objects, Lifetimes |
-| 3 | NoiseTrader, MarketMaker | Rand, Mutable Borrows |
-| 4 | TUI Visualization | Crate Integration, Event Loops |
-
-**Total:** ~4 weeks
-**Lines of Code:** ~1,500-2,500
-**Dependencies:** `rand`, `ratatui`, `crossterm` (no decimal crate — uses `i64` fixed-point)
-
----
-
 # Iterative Expansion: V0 → Full Plan
 
-After V0, expand **iteratively** — each iteration adds a vertical slice of functionality.
+Each iteration adds a vertical slice of functionality.
 
 ```
-V0 (Steel Thread)
+V0 (MVP Simulation)
  │
  ├──► V1: Quant Layer (indicators, risk, strategies)
  │
@@ -214,30 +57,51 @@ V0 (Steel Thread)
 
 ---
 
-## V1: Quant Layer (+2 weeks)
+## V0: MVP Simulation
 
-**Add:** Indicators, risk metrics, better strategies
+**Goal:** Single-threaded simulation with TUI visualization showing agents trading.
 
-### V1.1: Indicators (~4 days)
-- SMA, EMA, RSI, MACD calculations
-- Rolling window data structures
-- Wire indicators into `MarketData`
+### V0.1: Core Engine
+- `OrderBook` using `BTreeMap<Price, VecDeque<Order>>` with price-time priority
+- `LimitOrder`, `Trade`, `Price` (i64 fixed-point) types
 
-### V1.2: Risk Metrics (~3 days)
-- Sharpe ratio, max drawdown, VaR
-- Per-agent risk tracking
-- Add to TUI dashboard
+### V0.2: Simulation Loop
+- `Simulation` struct, tick-based `step()`, `Agent` trait
+- `MarketData` snapshot for agents
 
-### V1.3: One Real Strategy (~3 days)
-- Implement `MomentumTrader` using RSI
-- Or `TrendFollower` using SMA crossover
-- Prove the indicator pipeline works
+### V0.3: Basic Agents
+- `NoiseTrader`, `MarketMaker` with inventory management
+- MarketMaker seeds initial spread to prevent zombie simulation
 
-**Maps to Original:** Phase 3 (Quant Foundation) + Phase 7 (partial: 1 strategy)
+### V0.4: TUI Visualization
+- `ratatui` live charts, order book depth, agent P&L
+- Channel-based sim/render threads
+
+**Maps to Original:** Core simulation foundation
 
 ---
 
-## V2: Events & Market Realism (+3 weeks)
+## V1: Quant Layer
+
+**Add:** Indicators, risk metrics, indicator-based strategies
+
+### V1.1: Indicators
+- `quant` crate: SMA, EMA, RSI, MACD, Bollinger, ATR
+- Rolling window data structures, wire into `StrategyContext`
+
+### V1.2: Risk Metrics
+- `AgentRiskTracker`: Sharpe, Sortino, max drawdown, VaR per agent
+- TUI RiskPanel with color-coded metrics
+
+### V1.3: Indicator Strategies
+- 5 strategies: Momentum (RSI), TrendFollower (SMA), MacdCrossover, BollingerReversion, VwapExecutor
+- Tier configuration system with per-type agent counts
+
+**Maps to Original:** Phase 3 (Quant Foundation) + Phase 7 (Strategies)
+
+---
+
+## V2: Events & Market Realism
 
 **Add:** Realistic market constraints, fundamental value system, multi-symbol trading
 
@@ -282,7 +146,7 @@ V3 adds efficient event subscriptions for scale.
 
 ---
 
-## V3: Scaling & Persistence (+4 weeks)
+## V3: Scaling & Persistence
 
 **Add:** Multi-symbol agent state, tiered agent architecture for 100k+ scale, storage layer
 
@@ -837,7 +701,7 @@ V8: Integration (if V5/V6 + V7 complete)
 
 ---
 
-## V4: Web Frontend (+4 weeks)
+## V4: Web Frontend
 
 **Philosophy:** Build rich data visualization with Axum backend and React frontend. This provides the foundation for V7 game features. Start with Landing + Config pages to establish frontend infrastructure, then add simulation dashboard.
 
@@ -981,7 +845,7 @@ V4.4: Simulation Dashboard (~1 wk)
 
 ---
 
-## V5: Feature Engineering ML (+2-3 weeks)
+## V5: Feature Engineering ML
 
 **Philosophy:** Build PyO3 bindings and feature engineering infrastructure for traditional ML training.
 
@@ -1023,7 +887,7 @@ V5.5: Rust Inference (~2 days)
 
 ---
 
-## V6: Reinforcement Learning (+2-3 weeks)
+## V6: Reinforcement Learning
 
 **Philosophy:** Build on V5 infrastructure to add reward functions and deep RL training. Add Deep RL (GPU) optionally if ensemble proves insufficient.
 
@@ -1075,7 +939,7 @@ V6.2.3: ONNX Export + Rust Inference (~3 days)
 **Maps to Original:** Phases 13-18 (RL Track) — updated for CPU-first approach with optional GPU path
 
 
-## V7: Portfolio Manager Game (+3 weeks)
+## V7: Portfolio Manager Game
 
 **Philosophy:** Build on V4 frontend to add interactive game mechanics. Human becomes portfolio manager competing against AI agents.
 
@@ -1300,7 +1164,7 @@ Key elements:
 
 ---
 
-## V8: Full Integration (+1 week)
+## V8: Full Integration
 
 If you completed V5/V6 (ML/RL) AND V7 (Game):
 - RL agents as game opponents
@@ -1624,20 +1488,8 @@ cargo new crates/tui --lib
 
 ---
 
-## Current Crate Structure (V2.4)
 
-| Crate | Files | Purpose |
-|-------|-------|-------|
-| `types` | `lib.rs`, `order.rs`, `config.rs` | Order, Trade, Price, Symbol, Sector, SymbolConfig |
-| `sim-core` | `lib.rs`, `order_book.rs`, `matching.rs`, `market.rs`, `slippage.rs` | OrderBook, MatchingEngine, Market (multi-symbol) |
-| `agents` | `lib.rs`, `traits.rs`, `context.rs`, `state.rs`, `position_limits.rs`, `borrow_ledger.rs` | Agent trait, StrategyContext, position validation |
-| `agents/strategies` | `mod.rs`, `noise_trader.rs`, `market_maker.rs`, `momentum.rs`, `trend_follower.rs`, `macd_crossover.rs`, `bollinger_reversion.rs`, `vwap_executor.rs` | 7 Tier 1 strategies |
-| `news` | `lib.rs`, `events.rs`, `fundamentals.rs`, `generator.rs`, `config.rs`, `sectors.rs` | Events, Gordon Growth Model, SectorModel |
-| `quant` | `lib.rs`, `engine.rs`, `indicators/`, `risk.rs`, `tracker.rs`, `rolling.rs`, `stats.rs` | SMA, EMA, RSI, MACD, Bollinger, Sharpe, MaxDD, VaR |
-| `simulation` | `lib.rs`, `runner.rs`, `config.rs` | Tick loop, event processing, agent orchestration |
-| `tui` | `lib.rs`, `app.rs`, `widgets/` | Terminal UI with price chart, book depth, agent table, risk panel |
-
-**V3.x Migration Notes:**
+## V3.x Migration Notes
 - **V3.1:** Refactor `state.rs` for multi-symbol positions; update trait in `traits.rs`
 - **V3.2:** Add `tiers.rs`, `tier2/` module with `agent.rs`, `wake_index.rs`, `strategies.rs`; add `orchestrator.rs` to simulation
 - **V3.3:** Add `tier1/strategies/pairs_trading.rs`, `tier2/strategies/sector_rotator.rs`, extend `quant/stats.rs`
