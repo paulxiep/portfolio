@@ -24,7 +24,7 @@ use ratatui::{
 use types::Symbol;
 
 /// Default smoothing window size (number of ticks to average).
-const DEFAULT_SMOOTHING_WINDOW: usize = 3;
+const DEFAULT_SMOOTHING_WINDOW: usize = 1;
 
 /// Colors for multi-symbol overlay mode.
 const OVERLAY_COLORS: &[Color] = &[

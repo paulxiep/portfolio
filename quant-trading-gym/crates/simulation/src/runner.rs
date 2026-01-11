@@ -39,7 +39,7 @@
 //! This differs from continuous matching: all agents see the same market state and
 //! compete in a single auction per tick, rather than sequential price-time priority.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use agents::{
@@ -50,6 +50,7 @@ use parking_lot::Mutex;
 use quant::{
     AgentRiskSnapshot, AgentRiskTracker, IndicatorCache, IndicatorEngine, IndicatorSnapshot,
 };
+use rand::SeedableRng;
 use rand::seq::SliceRandom;
 use sim_core::{Market, MarketView, OrderBook, run_parallel_auctions};
 use types::{
@@ -154,7 +155,8 @@ pub struct Simulation {
     stats: SimulationStats,
 
     /// Historical candles per symbol (V2.3).
-    candles: HashMap<Symbol, Vec<Candle>>,
+    /// Uses VecDeque for O(1) pop_front when limiting history.
+    candles: HashMap<Symbol, VecDeque<Candle>>,
 
     /// Current candle being built per symbol (V2.3).
     current_candles: HashMap<Symbol, CandleBuilder>,
@@ -202,6 +204,9 @@ pub struct Simulation {
     /// Cached symbol-to-sector mapping (V3.8 optimization).
     /// Built once at initialization since it never changes.
     symbol_sectors: HashMap<Symbol, types::Sector>,
+
+    /// RNG for fair value drift (V2.5).
+    drift_rng: rand::rngs::StdRng,
 }
 
 /// Helper for building candles incrementally.
@@ -278,7 +283,7 @@ impl Simulation {
             market.add_symbol_with_price(&symbol_config.symbol, symbol_config.initial_price);
             borrow_ledger.init_symbol(&symbol_config.symbol, symbol_config.borrow_pool_size());
             total_shares_held.insert(symbol_config.symbol.clone(), Quantity::ZERO);
-            candles.insert(symbol_config.symbol.clone(), Vec::new());
+            candles.insert(symbol_config.symbol.clone(), VecDeque::new());
             recent_trades.insert(symbol_config.symbol.clone(), Vec::new());
 
             // Initialize default fundamentals based on initial price (V2.4)
@@ -317,6 +322,9 @@ impl Simulation {
             .map(|sc| (sc.symbol.clone(), sc.sector))
             .collect();
 
+        // V2.5: Initialize RNG for fair value drift (separate from news RNG for determinism)
+        let drift_rng = rand::rngs::StdRng::seed_from_u64(config.seed.wrapping_add(1));
+
         Self {
             market,
             agents: Vec::new(),
@@ -343,6 +351,7 @@ impl Simulation {
             background_pool: None,
             hooks: HookRunner::new(),
             symbol_sectors,
+            drift_rng,
             config,
         }
     }
@@ -420,9 +429,13 @@ impl Simulation {
         // Start with base context
         let base = self.build_hook_context();
 
-        // Build enriched data
+        // Build enriched data (convert VecDeque to Vec for candles)
         let enriched = EnrichedData {
-            candles: self.candles.clone(),
+            candles: self
+                .candles
+                .iter()
+                .map(|(k, v)| (k.clone(), v.iter().cloned().collect()))
+                .collect(),
             indicators: self.build_indicators_for_hook(),
             agent_summaries: self.agent_summaries(),
             risk_metrics: self.risk_tracker.compute_all_metrics(),
@@ -441,14 +454,17 @@ impl Simulation {
         self.market
             .symbols()
             .filter_map(|symbol| {
-                let candles = self.candles.get(symbol)?;
-                if candles.is_empty() {
+                let candles_deque = self.candles.get(symbol)?;
+                if candles_deque.is_empty() {
                     return None;
                 }
 
+                // Convert to Vec for indicator computation
+                let candles: Vec<Candle> = candles_deque.iter().cloned().collect();
+
                 let mut values: HashMap<String, f64> = self
                     .indicator_engine
-                    .compute_all(candles)
+                    .compute_all(&candles)
                     .into_iter()
                     .filter_map(|(itype, v)| {
                         // Convert IndicatorType to canonical key format for REST API
@@ -467,14 +483,14 @@ impl Simulation {
                     .collect();
 
                 // Compute full MACD output
-                if let Some(macd_output) = Macd::standard().calculate_full(candles) {
+                if let Some(macd_output) = Macd::standard().calculate_full(&candles) {
                     values.insert("MACD_line".to_string(), macd_output.macd_line);
                     values.insert("MACD_signal".to_string(), macd_output.signal_line);
                     values.insert("MACD_histogram".to_string(), macd_output.histogram);
                 }
 
                 // Compute full Bollinger Bands output
-                if let Some(bb_output) = BollingerBands::standard().calculate_full(candles) {
+                if let Some(bb_output) = BollingerBands::standard().calculate_full(&candles) {
                     values.insert("BB_upper".to_string(), bb_output.upper);
                     values.insert("BB_middle".to_string(), bb_output.middle);
                     values.insert("BB_lower".to_string(), bb_output.lower);
@@ -686,24 +702,26 @@ impl Simulation {
     }
 
     /// Get historical candles for the primary symbol.
-    pub fn candles(&self) -> &[Candle] {
+    pub fn candles(&mut self) -> &[Candle] {
         let symbol = self.config.symbol().to_string();
         self.candles
-            .get(&symbol)
-            .map(|v| v.as_slice())
+            .get_mut(&symbol)
+            .map(|v| v.make_contiguous())
+            .map(|s| &*s)
             .unwrap_or(&[])
     }
 
     /// Get historical candles for a specific symbol.
-    pub fn candles_for(&self, symbol: &Symbol) -> &[Candle] {
+    pub fn candles_for(&mut self, symbol: &Symbol) -> &[Candle] {
         self.candles
-            .get(symbol)
-            .map(|v| v.as_slice())
+            .get_mut(symbol)
+            .map(|v| v.make_contiguous())
+            .map(|s| &*s)
             .unwrap_or(&[])
     }
 
     /// Get all candles across all symbols.
-    pub fn all_candles(&self) -> &HashMap<Symbol, Vec<Candle>> {
+    pub fn all_candles(&self) -> &HashMap<Symbol, VecDeque<Candle>> {
         &self.candles
     }
 
@@ -726,12 +744,18 @@ impl Simulation {
 
     /// Build indicator snapshot for current tick (all symbols).
     fn build_indicator_snapshot(&mut self) -> IndicatorSnapshot {
+        // Make all candles contiguous for indicator computation
+        for deque in self.candles.values_mut() {
+            deque.make_contiguous();
+        }
+
         let indicators = self
             .candles
             .iter()
             .filter(|(_, symbol_candles)| !symbol_candles.is_empty())
             .filter_map(|(symbol, symbol_candles)| {
-                let values = self.indicator_engine.compute_all(symbol_candles);
+                let (slice, _) = symbol_candles.as_slices();
+                let values = self.indicator_engine.compute_all(slice);
                 (!values.is_empty()).then(|| (symbol.clone(), values))
             })
             .collect();
@@ -739,9 +763,12 @@ impl Simulation {
         IndicatorSnapshot::from_map(self.tick, indicators)
     }
 
-    /// Build candles map for StrategyContext (just return reference).
+    /// Build candles map for StrategyContext (converts VecDeque to Vec).
     fn build_candles_map(&self) -> HashMap<Symbol, Vec<Candle>> {
-        self.candles.clone()
+        self.candles
+            .iter()
+            .map(|(k, v)| (k.clone(), v.iter().cloned().collect()))
+            .collect()
     }
 
     /// Build trades map for StrategyContext (just return reference).
@@ -783,7 +810,7 @@ impl Simulation {
                         .or_else(|| {
                             self.candles
                                 .get(symbol)
-                                .and_then(|c| c.last())
+                                .and_then(|c| c.back())
                                 .map(|c| c.close)
                         })
                         .unwrap_or_else(|| types::Price::from_float(100.0));
@@ -798,11 +825,11 @@ impl Simulation {
             for (symbol, builder) in builders {
                 let candle = builder.finalize(self.tick, self.timestamp);
                 let symbol_candles = self.candles.entry(symbol).or_default();
-                symbol_candles.push(candle);
+                symbol_candles.push_back(candle);
 
-                // Limit candle history per symbol
+                // Limit candle history per symbol (O(1) with VecDeque)
                 if symbol_candles.len() > self.config.max_candles {
-                    symbol_candles.remove(0);
+                    symbol_candles.pop_front();
                 }
             }
         }
@@ -1466,6 +1493,9 @@ impl Simulation {
         // Phase 0: Process news events
         self.process_news_events();
 
+        // Phase 0b (V2.5): Apply fair value drift
+        self.apply_fair_value_drift();
+
         // Phase 1 (V3.6): Hook - tick start
         if !self.hooks.is_empty() {
             let hook_ctx = self.build_hook_context();
@@ -1657,6 +1687,14 @@ impl Simulation {
                 // Sector news is temporary sentiment, not a permanent fundamental change
             }
         }
+    }
+
+    /// Apply fair value drift to all symbols (V2.5).
+    ///
+    /// Should be called once per tick before building the strategy context.
+    fn apply_fair_value_drift(&mut self) {
+        self.fundamentals
+            .apply_drift(&self.config.fair_value_drift, &mut self.drift_rng);
     }
 
     /// Get the currently active news events.

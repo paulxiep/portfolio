@@ -206,6 +206,59 @@ impl Default for SectorNewsConfig {
 }
 
 // =============================================================================
+// FairValueDriftConfig
+// =============================================================================
+
+/// Configuration for fair value drift (V2.5).
+///
+/// Adds a bounded random walk to fair value between news events,
+/// simulating continuous uncertainty about fundamentals.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FairValueDriftConfig {
+    /// Enable fair value drift (default: true for sim, false for tests).
+    pub enabled: bool,
+
+    /// Max drift per tick as fraction (e.g., 0.005 = 0.5%).
+    pub drift_pct: f64,
+
+    /// Floor as fraction of initial fair value (e.g., 0.1 = 10%).
+    pub min_pct: f64,
+
+    /// Cap as multiple of initial fair value (e.g., 10.0 = 10x).
+    pub max_multiple: f64,
+}
+
+impl Default for FairValueDriftConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            drift_pct: 0.01,   // 1% per tick
+            min_pct: 0.1,       // Floor at 10% of initial
+            max_multiple: 10.0, // Cap at 10x initial
+        }
+    }
+}
+
+impl FairValueDriftConfig {
+    /// Create a disabled drift config (for deterministic tests).
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            ..Default::default()
+        }
+    }
+
+    /// Create a config with custom drift percentage.
+    pub fn with_drift_pct(drift_pct: f64) -> Self {
+        Self {
+            enabled: true,
+            drift_pct,
+            ..Default::default()
+        }
+    }
+}
+
+// =============================================================================
 // NewsGeneratorConfig
 // =============================================================================
 

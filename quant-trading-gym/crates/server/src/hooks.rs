@@ -325,7 +325,11 @@ impl DataServiceHook {
             data.candles = enriched.candles.clone();
             data.indicators = enriched.indicators.clone();
             data.prices = prices;
-            data.fair_values = enriched.fair_values.iter().map(|(k, v)| (k.clone(), *v)).collect();
+            data.fair_values = enriched
+                .fair_values
+                .iter()
+                .map(|(k, v)| (k.clone(), *v))
+                .collect();
             data.agents = agents;
             data.risk_metrics = enriched.risk_metrics.clone();
             data.equity_curves = equity_curves;

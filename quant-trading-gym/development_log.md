@@ -1,5 +1,106 @@
 # Development Log
 
+## 2026-01-11: V5.1 Fair Value Drift
+
+### Summary
+Added bounded random walk to fair value between news events, solving the "flat line with occasional jumps" price pattern problem. Previously, prices were unrealistically stable because all agents estimated similar fair values from deterministic Gordon Growth Model parameters. Now fair value drifts ±0.5% per tick (configurable), bounded by 10% floor and 10x ceiling of initial value.
+
+### Files
+
+| File | Changes |
+|------|---------|
+| `crates/news/src/config.rs` | Added `FairValueDriftConfig` struct with enabled, drift_pct, min_pct, max_multiple |
+| `crates/news/src/lib.rs` | Added `FairValueDriftConfig` to re-exports |
+| `crates/news/src/fundamentals.rs` | Added `DriftState` struct, `apply_drift()` method, drift multiplier tracking |
+| `crates/simulation/src/config.rs` | Added `fair_value_drift` field to `SimulationConfig` with builder methods |
+| `crates/simulation/src/runner.rs` | Added `drift_rng` field, `apply_fair_value_drift()` called in Phase 0b of tick |
+
+### Design
+
+**Approach:** Drift the Gordon Growth Model **output** (fair value), not the inputs (EPS, growth, rate). This keeps fundamentals internally consistent while adding realistic uncertainty.
+
+**Drift Mechanics:**
+```rust
+// Each tick, apply small random drift to fair value multiplier
+let drift = rng.gen_range(-drift_pct..drift_pct);
+let new_multiplier = drift_state.multiplier * (1.0 + drift);
+
+// Clamp to bounds based on initial fair value
+let min_fv = initial_fair_value * config.min_pct;    // 10% floor
+let max_fv = initial_fair_value * config.max_multiple; // 10x ceiling
+```
+
+**Configuration:**
+```rust
+pub struct FairValueDriftConfig {
+    pub enabled: bool,        // Default: true (false for tests)
+    pub drift_pct: f64,       // Default: 0.005 (0.5% per tick)
+    pub min_pct: f64,         // Default: 0.1 (10% of initial)
+    pub max_multiple: f64,    // Default: 10.0 (10x initial)
+}
+```
+
+### Tick Loop Integration
+
+```
+Phase 0:  Process news events (apply permanent fundamental changes)
+Phase 0b: Apply fair value drift ← NEW
+Phase 1:  Hook: on_tick_start
+Phase 2:  Determine agents to call
+Phase 3:  Build strategy context (agents see drifted fair values)
+...
+```
+
+**Determinism:** Drift uses separate seeded RNG (`config.seed + 1`) from news generator to maintain reproducibility while keeping drift independent.
+
+### DriftState Tracking
+
+Per-symbol drift state stored in `SymbolFundamentals`:
+```rust
+pub struct DriftState {
+    pub multiplier: f64,         // Current drift multiplier (starts at 1.0)
+    pub initial_fair_value: f64, // For bounds calculation
+}
+```
+
+Fair value calculation now applies drift:
+```rust
+pub fn fair_value(&self, symbol: &Symbol) -> Option<Price> {
+    let base_fv = fundamentals.fair_value(&self.macro_env);
+    let multiplier = self.drift_state.get(symbol).map(|ds| ds.multiplier).unwrap_or(1.0);
+    Some(Price::from_float(base_fv.to_float() * multiplier))
+}
+```
+
+### Test Strategy
+
+- **Disabled drift for existing tests**: Tests use `FairValueDriftConfig::disabled()` to maintain determinism
+- **New drift-specific tests**: Verify drift changes values, respects bounds, and disabled mode works
+
+```rust
+#[test]
+fn test_drift_stays_within_bounds() {
+    // Apply 1000 drifts with extreme 10% drift per tick
+    // Verify fair value never exceeds [50%, 200%] of initial
+}
+```
+
+### Exit Criteria
+```bash
+cargo fmt                           # ✅ Formatted
+cargo clippy --all-features         # ✅ No warnings
+cargo test --all-features --all     # ✅ 335+ tests pass
+cargo test -p news                  # ✅ 23 tests (3 new drift tests)
+cargo test -p simulation            # ✅ 18 tests pass
+```
+
+### Notes
+- Drift adds ~10 LOC to simulation tick hot path (negligible performance impact)
+- Future: Per-symbol drift rates, Ornstein-Uhlenbeck mean reversion, correlated market-wide drift
+- Agents now see gradually wandering fair values, creating realistic bid/ask spread dynamics
+
+---
+
 ## 2026-01-11: V4.4 Simulation Dashboard
 
 ### Summary

@@ -98,6 +98,9 @@ pub struct SimulationConfig {
     /// News event generation configuration (V2.4).
     pub news: news::NewsGeneratorConfig,
 
+    /// Fair value drift configuration (V2.5).
+    pub fair_value_drift: news::FairValueDriftConfig,
+
     /// Random seed for deterministic simulation.
     pub seed: u64,
 
@@ -113,10 +116,11 @@ impl Default for SimulationConfig {
             snapshot_depth: 10,
             max_recent_trades: 100,
             candle_interval: 10, // Candle every 10 ticks
-            max_candles: 1000,   // Keep 1000 candles (~10000 ticks of history)
+            max_candles: 100,    // Keep 100 candles (~1000 ticks of history)
             enforce_position_limits: true,
             verbose: false,
             news: news::NewsGeneratorConfig::default(),
+            fair_value_drift: news::FairValueDriftConfig::default(),
             seed: 42,
             parallelization: ParallelizationConfig::default(),
         }
@@ -257,6 +261,18 @@ impl SimulationConfig {
     /// Disable news event generation.
     pub fn with_news_disabled(mut self) -> Self {
         self.news = news::NewsGeneratorConfig::disabled();
+        self
+    }
+
+    /// Set fair value drift configuration (V2.5).
+    pub fn with_fair_value_drift(mut self, config: news::FairValueDriftConfig) -> Self {
+        self.fair_value_drift = config;
+        self
+    }
+
+    /// Disable fair value drift (for deterministic tests).
+    pub fn with_fair_value_drift_disabled(mut self) -> Self {
+        self.fair_value_drift = news::FairValueDriftConfig::disabled();
         self
     }
 

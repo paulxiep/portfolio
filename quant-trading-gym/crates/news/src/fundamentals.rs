@@ -20,11 +20,20 @@
 //! ```
 //!
 //! When r ≤ g (model undefined), we fall back to a P/E multiple.
+//!
+//! # Fair Value Drift (V2.5)
+//!
+//! Between news events, fair value drifts via a bounded random walk to simulate
+//! continuous uncertainty about fundamentals. The drift multiplier is tracked
+//! per-symbol and applied to the Gordon Growth output.
 
 use std::collections::HashMap;
 
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use types::{Price, Symbol};
+
+use crate::config::FairValueDriftConfig;
 
 // =============================================================================
 // Fundamentals
@@ -178,6 +187,28 @@ impl Default for MacroEnvironment {
 // SymbolFundamentals
 // =============================================================================
 
+/// Per-symbol drift state for fair value random walk (V2.5).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DriftState {
+    /// Current drift multiplier (starts at 1.0, bounded by config).
+    pub multiplier: f64,
+    /// Initial fair value for bounds calculation.
+    pub initial_fair_value: f64,
+    /// Cached drifted fair value (updated each tick by apply_drift).
+    pub cached_fair_value: Price,
+}
+
+impl DriftState {
+    /// Create new drift state with initial fair value.
+    pub fn new(initial_fair_value: f64) -> Self {
+        Self {
+            multiplier: 1.0,
+            initial_fair_value,
+            cached_fair_value: Price::from_float(initial_fair_value),
+        }
+    }
+}
+
 /// Container for all symbol fundamentals and macro environment.
 ///
 /// This is the top-level struct passed to agents for fair value lookups.
@@ -188,6 +219,9 @@ pub struct SymbolFundamentals {
 
     /// Market-wide macro environment.
     pub macro_env: MacroEnvironment,
+
+    /// Per-symbol drift state (V2.5).
+    drift_state: HashMap<Symbol, DriftState>,
 }
 
 impl SymbolFundamentals {
@@ -196,12 +230,21 @@ impl SymbolFundamentals {
         Self {
             data: HashMap::new(),
             macro_env,
+            drift_state: HashMap::new(),
         }
     }
 
     /// Add or update fundamentals for a symbol.
+    ///
+    /// Also initializes drift state if not present.
     pub fn insert(&mut self, symbol: impl Into<Symbol>, fundamentals: Fundamentals) {
-        self.data.insert(symbol.into(), fundamentals);
+        let symbol = symbol.into();
+        // Compute initial fair value for drift bounds
+        let initial_fv = fundamentals.fair_value(&self.macro_env).to_float();
+        self.drift_state
+            .entry(symbol.clone())
+            .or_insert_with(|| DriftState::new(initial_fv));
+        self.data.insert(symbol, fundamentals);
     }
 
     /// Get fundamentals for a symbol.
@@ -217,8 +260,69 @@ impl SymbolFundamentals {
     /// Calculate fair value for a symbol.
     ///
     /// Returns `None` if no fundamentals exist for the symbol.
+    /// When drift is enabled, returns the cached drifted value (V2.5).
     pub fn fair_value(&self, symbol: &Symbol) -> Option<Price> {
+        // Fast path: return cached drifted value if available
+        if let Some(drift_state) = self.drift_state.get(symbol) {
+            return Some(drift_state.cached_fair_value);
+        }
+        // Fallback: compute from fundamentals (no drift)
         self.data.get(symbol).map(|f| f.fair_value(&self.macro_env))
+    }
+
+    /// Apply drift to all symbols' fair values (V2.5).
+    ///
+    /// Should be called once per tick before agent decisions.
+    /// The drift is a bounded random walk that adds realistic price uncertainty.
+    /// Caches the drifted fair value for fast lookup.
+    pub fn apply_drift<R: Rng>(&mut self, config: &FairValueDriftConfig, rng: &mut R) {
+        // Iterate over drift_state keys directly (already initialized at insert time)
+        for (symbol, drift_state) in self.drift_state.iter_mut() {
+            // Get base fair value from fundamentals
+            let Some(fundamentals) = self.data.get(symbol) else {
+                continue;
+            };
+            let base_fv = fundamentals.fair_value(&self.macro_env).to_float();
+
+            if config.enabled {
+                // Apply random drift
+                let drift = rng.gen_range(-config.drift_pct..config.drift_pct);
+                let new_multiplier = drift_state.multiplier * (1.0 + drift);
+
+                // Compute bounds based on initial fair value
+                let min_fv = drift_state.initial_fair_value * config.min_pct;
+                let max_fv = drift_state.initial_fair_value * config.max_multiple;
+
+                // Clamp drifted fair value to bounds
+                let drifted_fv = base_fv * new_multiplier;
+                let clamped_fv = drifted_fv.clamp(min_fv, max_fv);
+
+                // Back-calculate multiplier from clamped value and cache result
+                drift_state.multiplier = if base_fv > 0.0 {
+                    clamped_fv / base_fv
+                } else {
+                    1.0
+                };
+                drift_state.cached_fair_value = Price::from_float(clamped_fv);
+            } else {
+                // No drift - just cache the base fair value
+                drift_state.cached_fair_value = Price::from_float(base_fv);
+            }
+        }
+    }
+
+    /// Reset drift multiplier for a symbol (e.g., after major news event).
+    #[allow(dead_code)]
+    pub fn reset_drift(&mut self, symbol: &Symbol) {
+        if let Some(ds) = self.drift_state.get_mut(symbol) {
+            ds.multiplier = 1.0;
+        }
+    }
+
+    /// Get drift state for debugging/testing.
+    #[allow(dead_code)]
+    pub fn drift_state(&self, symbol: &Symbol) -> Option<&DriftState> {
+        self.drift_state.get(symbol)
     }
 
     /// Get all symbols with fundamentals.
@@ -344,5 +448,82 @@ mod tests {
             (fundamentals.growth_estimate - 0.12).abs() < 1e-10,
             "Expected growth of 12%"
         );
+    }
+
+    #[test]
+    fn test_drift_disabled() {
+        use rand::SeedableRng;
+        let mut sf = SymbolFundamentals::new(MacroEnvironment::default());
+        sf.insert("TEST", Fundamentals::default());
+
+        let initial_fv = sf.fair_value(&"TEST".to_string()).unwrap().to_float();
+
+        // Apply drift with disabled config
+        let config = FairValueDriftConfig::disabled();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        sf.apply_drift(&config, &mut rng);
+
+        let after_fv = sf.fair_value(&"TEST".to_string()).unwrap().to_float();
+        assert!(
+            (initial_fv - after_fv).abs() < 1e-10,
+            "Fair value should not change when drift is disabled"
+        );
+    }
+
+    #[test]
+    fn test_drift_changes_fair_value() {
+        use rand::SeedableRng;
+        let mut sf = SymbolFundamentals::new(MacroEnvironment::default());
+        sf.insert("TEST", Fundamentals::default());
+
+        let initial_fv = sf.fair_value(&"TEST".to_string()).unwrap().to_float();
+
+        // Apply drift multiple times
+        let config = FairValueDriftConfig::default();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+
+        for _ in 0..10 {
+            sf.apply_drift(&config, &mut rng);
+        }
+
+        let after_fv = sf.fair_value(&"TEST".to_string()).unwrap().to_float();
+
+        // Fair value should have changed (statistically very likely after 10 drifts)
+        assert!(
+            (initial_fv - after_fv).abs() > 0.01,
+            "Fair value should change after drift: initial={initial_fv}, after={after_fv}"
+        );
+    }
+
+    #[test]
+    fn test_drift_stays_within_bounds() {
+        use rand::SeedableRng;
+        let mut sf = SymbolFundamentals::new(MacroEnvironment::default());
+        sf.insert("TEST", Fundamentals::default());
+
+        let base_fv = Fundamentals::default()
+            .fair_value(&MacroEnvironment::default())
+            .to_float();
+        let config = FairValueDriftConfig {
+            enabled: true,
+            drift_pct: 0.1,    // 10% drift per tick (extreme for testing)
+            min_pct: 0.5,      // Floor at 50% of initial
+            max_multiple: 2.0, // Cap at 2x initial
+        };
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+
+        // Apply many drifts to hit bounds
+        for _ in 0..1000 {
+            sf.apply_drift(&config, &mut rng);
+
+            let fv = sf.fair_value(&"TEST".to_string()).unwrap().to_float();
+            let min_bound = base_fv * config.min_pct;
+            let max_bound = base_fv * config.max_multiple;
+
+            assert!(
+                fv >= min_bound - 0.01 && fv <= max_bound + 0.01,
+                "Fair value {fv} should be within bounds [{min_bound}, {max_bound}]"
+            );
+        }
     }
 }

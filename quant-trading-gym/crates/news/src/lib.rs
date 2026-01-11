@@ -52,7 +52,7 @@ pub mod sectors;
 // Re-exports
 // =============================================================================
 
-pub use config::{EventFrequency, NewsGeneratorConfig};
+pub use config::{EventFrequency, FairValueDriftConfig, NewsGeneratorConfig};
 pub use events::{FundamentalEvent, NewsEvent};
 pub use fundamentals::{Fundamentals, MacroEnvironment, SymbolFundamentals};
 pub use generator::NewsGenerator;
