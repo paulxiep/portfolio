@@ -38,7 +38,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use types::{Order, Price, Quantity, Symbol, Tick, Timestamp, Trade};
+use quant::AgentRiskSnapshot;
+use types::{AgentId, Candle, Cash, Order, Price, Quantity, Symbol, Tick, Timestamp, Trade};
 
 use crate::SimulationStats;
 
@@ -113,6 +114,50 @@ impl MarketSnapshot {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Enriched Data (V4.4)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Agent summary tuple: (name, positions, cash, total_pnl).
+pub type AgentSummary = (String, HashMap<Symbol, i64>, Cash, Cash);
+
+/// Enriched simulation data for hooks (V4.4).
+///
+/// Contains optional snapshots of candles, indicators, agents, etc.
+/// Set by the simulation runner when calling `on_tick_end`.
+#[derive(Debug, Clone, Default)]
+pub struct EnrichedData {
+    /// Historical candles per symbol.
+    pub candles: HashMap<Symbol, Vec<Candle>>,
+    /// Indicator values per symbol: indicator_name → value.
+    pub indicators: HashMap<Symbol, HashMap<String, f64>>,
+    /// Agent summaries: (name, positions, cash, total_pnl).
+    pub agent_summaries: Vec<AgentSummary>,
+    /// Risk metrics per agent.
+    pub risk_metrics: HashMap<AgentId, AgentRiskSnapshot>,
+    /// Fair values per symbol from factor engine.
+    pub fair_values: HashMap<Symbol, Price>,
+    /// Active news events.
+    pub news_events: Vec<NewsEventSnapshot>,
+}
+
+/// Snapshot of a news event for hooks.
+#[derive(Debug, Clone)]
+pub struct NewsEventSnapshot {
+    /// Event ID.
+    pub id: u64,
+    /// The underlying fundamental event.
+    pub event: news::FundamentalEvent,
+    /// Sentiment (-1.0 to 1.0).
+    pub sentiment: f64,
+    /// Magnitude (0.0 to 1.0).
+    pub magnitude: f64,
+    /// Tick when event started.
+    pub start_tick: Tick,
+    /// Duration in ticks.
+    pub duration_ticks: u64,
+}
+
 /// Context passed to hooks at each lifecycle point.
 ///
 /// Contains owned snapshots of simulation state at the time of the hook call.
@@ -131,6 +176,8 @@ pub struct HookContext {
     pub tier2_count: usize,
     /// Number of T3 background pool agents.
     pub tier3_count: usize,
+    /// Enriched data for V4.4 hooks (candles, indicators, agents, etc.)
+    pub enriched: Option<EnrichedData>,
 }
 
 impl HookContext {
@@ -143,6 +190,7 @@ impl HookContext {
             tier1_count: 0,
             tier2_count: 0,
             tier3_count: 0,
+            enriched: None,
         }
     }
 
@@ -157,6 +205,12 @@ impl HookContext {
         self.tier1_count = t1;
         self.tier2_count = t2;
         self.tier3_count = t3;
+        self
+    }
+
+    /// Set enriched data (V4.4).
+    pub fn with_enriched(mut self, enriched: EnrichedData) -> Self {
+        self.enriched = Some(enriched);
         self
     }
 }

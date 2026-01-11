@@ -43,6 +43,7 @@ use news::config::{
 };
 use rand::Rng;
 use rand::prelude::SliceRandom;
+use server::{BroadcastHook, DataServiceHook, ServerState, create_app};
 use simulation::{Simulation, SimulationConfig};
 use storage::{StorageConfig, StorageHook};
 use tui::{AgentInfo, RiskInfo, SimCommand, SimUpdate, TuiApp};
@@ -59,6 +60,14 @@ struct Args {
     /// Run without TUI (headless mode for benchmarks/CI/Docker)
     #[arg(long, env = "SIM_HEADLESS")]
     headless: bool,
+
+    /// Run with HTTP/WebSocket server for React frontend (V4.2)
+    #[arg(long, env = "SIM_SERVER")]
+    server: bool,
+
+    /// Server port (default: 8001)
+    #[arg(long, env = "SIM_SERVER_PORT", default_value = "8001")]
+    server_port: u16,
 
     /// Total ticks to run (0 = infinite in TUI mode)
     #[arg(long, env = "SIM_TICKS")]
@@ -1202,7 +1211,14 @@ fn main() {
     eprintln!("╚═══════════════════════════════════════════════════════════════════════╝");
     eprintln!();
 
-    if args.headless {
+    if args.server {
+        // ─────────────────────────────────────────────────────────────────────
+        // Server mode: HTTP/WebSocket server for React frontend (V4.2)
+        // ─────────────────────────────────────────────────────────────────────
+        eprintln!("  Starting server on port {}...", args.server_port);
+        eprintln!();
+        run_with_server(config, args);
+    } else if args.headless {
         // ─────────────────────────────────────────────────────────────────────
         // Headless mode: run simulation without TUI
         // ─────────────────────────────────────────────────────────────────────
@@ -1322,5 +1338,157 @@ fn run_with_tui(config: SimConfig, args: Args) {
     }
 
     // Wait for simulation to finish
+    let _ = sim_handle.join();
+}
+
+/// Run simulation with HTTP/WebSocket server (V4.2).
+///
+/// This mode replaces TUI with an Axum server that:
+/// - Broadcasts tick updates via WebSocket
+/// - Provides REST endpoints for status/commands
+/// - Serves as backend for React frontend
+#[tokio::main]
+async fn run_with_server(config: SimConfig, args: Args) {
+    use tokio::sync::broadcast;
+
+    let total_ticks = config.total_ticks;
+    let tick_delay_ms = config.tick_delay_ms;
+    let server_port = args.server_port;
+
+    // Create channels for sync-async bridge
+    let (tick_tx, _) = broadcast::channel::<server::TickData>(64);
+    let (cmd_tx, cmd_rx) = crossbeam_channel::bounded::<server::SimCommand>(32);
+
+    // Create broadcast hook for simulation
+    let broadcast_hook = Arc::new(BroadcastHook::new(tick_tx.clone()));
+
+    // Create server state
+    let state = ServerState::new(tick_tx, cmd_tx);
+
+    // Build simulation
+    let sim_config = build_simulation_config(&config, &args);
+    let mut sim = Simulation::new(sim_config);
+
+    let all_symbols: Vec<_> = config.get_symbols().to_vec();
+    let mut rng = rand::thread_rng();
+
+    // Spawn all agents
+    let mut next_id = spawn_all_tier1_agents(&mut sim, &config, &all_symbols, &mut rng);
+    spawn_tier2_agents(&mut sim, &mut next_id, &config, &all_symbols, &mut rng);
+    spawn_sector_rotators(&mut sim, &mut next_id, &config, &all_symbols);
+    setup_background_pool(&mut sim, &config, &all_symbols);
+
+    // Register hooks
+    sim.add_hook(broadcast_hook.clone());
+
+    // V4.4: Register data service hook for REST API data
+    let data_service_hook = Arc::new(DataServiceHook::new(state.sim_data.clone()));
+    sim.add_hook(data_service_hook);
+
+    // V3.9: Register storage hook if path provided
+    if let Some(ref storage_path) = args.storage_path {
+        let storage_config = StorageConfig::from_path(storage_path);
+        match StorageHook::new(storage_config) {
+            Ok(hook) => {
+                eprintln!("Storage enabled: {}", storage_path);
+                sim.add_hook(Arc::new(hook));
+            }
+            Err(e) => {
+                eprintln!("Failed to initialize storage at {}: {}", storage_path, e);
+            }
+        }
+    }
+
+    // Update metrics with agent count
+    let total_agents = config.total_agents();
+    state
+        .metrics
+        .update_from_tick(0, total_agents as u64, false, false);
+
+    // Spawn simulation in background thread (sync)
+    let state_clone = state.clone();
+    let sim_handle = thread::spawn(move || {
+        eprintln!("Simulation thread started");
+
+        // Wait for start command or auto-start after 1 second
+        let mut running = false;
+        let mut tick = 0u64;
+
+        loop {
+            // Check for commands
+            while let Ok(cmd) = cmd_rx.try_recv() {
+                match cmd {
+                    server::SimCommand::Start => running = true,
+                    server::SimCommand::Pause => running = false,
+                    server::SimCommand::Toggle => running = !running,
+                    server::SimCommand::Step => {
+                        sim.step();
+                        tick += 1;
+                        state_clone.metrics.update_from_tick(
+                            tick,
+                            total_agents as u64,
+                            running,
+                            false,
+                        );
+                    }
+                    server::SimCommand::Quit => {
+                        eprintln!("Simulation received quit command");
+                        return;
+                    }
+                }
+            }
+
+            if !running {
+                thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+
+            // Check if finished
+            if total_ticks > 0 && tick >= total_ticks {
+                state_clone
+                    .metrics
+                    .update_from_tick(tick, total_agents as u64, false, true);
+                eprintln!("Simulation finished at tick {}", tick);
+                return;
+            }
+
+            // Run simulation step
+            sim.step();
+            tick += 1;
+            state_clone
+                .metrics
+                .update_from_tick(tick, total_agents as u64, running, false);
+
+            if tick_delay_ms > 0 {
+                thread::sleep(Duration::from_millis(tick_delay_ms));
+            }
+        }
+    });
+
+    // Build and run Axum server
+    let app = create_app(state);
+    let addr = format!("0.0.0.0:{}", server_port);
+
+    eprintln!("╔═══════════════════════════════════════════════════════════════════════╗");
+    eprintln!("║  Server Mode (V4.2)                                                   ║");
+    eprintln!("╠═══════════════════════════════════════════════════════════════════════╣");
+    eprintln!("║  Endpoints:                                                           ║");
+    eprintln!("║    GET  /health       - Health check                                  ║");
+    eprintln!("║    GET  /health/ready - Readiness probe                               ║");
+    eprintln!("║    GET  /ws           - WebSocket for tick stream                     ║");
+    eprintln!("║    GET  /api/status   - Simulation status                             ║");
+    eprintln!("║    POST /api/command  - Send command (Start/Pause/Toggle)             ║");
+    eprintln!("╠═══════════════════════════════════════════════════════════════════════╣");
+    eprintln!("║  Listening on: http://0.0.0.0:{:<43} ║", server_port);
+    eprintln!("╚═══════════════════════════════════════════════════════════════════════╝");
+    eprintln!();
+    eprintln!("Send POST /api/command with {{\"command\": \"Start\"}} to begin simulation.");
+    eprintln!("Connect to /ws for real-time tick updates.");
+    eprintln!();
+
+    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+
+    // Wait for simulation thread (won't reach here unless server stops)
     let _ = sim_handle.join();
 }

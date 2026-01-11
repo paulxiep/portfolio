@@ -3,3 +3,30 @@ target/
 *_cache*
 *.lance*
 sim.db*
+
+# Frontend (quant-trading-gym)
+quant-trading-gym/frontend/node_modules/
+quant-trading-gym/frontend/dist/
+quant-trading-gym/frontend/.env.local
+quant-trading-gym/frontend/.env.*.local
+
+# IDE
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Profiling
+*.profraw

@@ -1,5 +1,452 @@
 # Development Log
 
+## 2026-01-11: V4.4 Simulation Dashboard
+
+### Summary
+Implemented full simulation dashboard with real-time visualization components. Created DataServiceHook to populate REST API caches, including pre-auction order distribution capture before batch auction clearing. Built complete React component library: price charts, indicator panels, order depth, factor gauges, risk metrics, news feed, agent explorer with sortable PnL table, and time controls.
+
+### Files
+
+| File | Changes |
+|------|---------|
+| `crates/server/src/hooks.rs` | Added `DataServiceHook` with `on_orders_collected` and `on_tick_end` |
+| `crates/server/src/state.rs` | Added `OrderDistribution` struct for pre-auction bid/ask levels |
+| `crates/server/src/lib.rs` | Exported `DataServiceHook`, `OrderDistribution` |
+| `crates/server/Cargo.toml` | Added `parking_lot` dependency |
+| `frontend/src/types/api.ts` | Updated types: `Candle`, `IndicatorsResponse`, `FactorSnapshot`, `AgentData`, `RiskMetricsResponse`, `NewsEventData`, `OrderDistributionResponse` |
+| `frontend/src/hooks/useDataService.ts` | New: REST API hooks with auto-refresh |
+| `frontend/src/hooks/index.ts` | Added useDataService exports |
+| `frontend/src/components/dashboard/PriceChart.tsx` | New: SVG candlestick chart |
+| `frontend/src/components/dashboard/IndicatorPanel.tsx` | New: Technical indicator display |
+| `frontend/src/components/dashboard/OrderDepthChart.tsx` | New: Pre-auction bid/ask distribution |
+| `frontend/src/components/dashboard/FactorGauges.tsx` | New: Macro factor gauges |
+| `frontend/src/components/dashboard/RiskPanel.tsx` | New: VaR, drawdown, Sharpe display |
+| `frontend/src/components/dashboard/NewsFeed.tsx` | New: Active news events feed |
+| `frontend/src/components/dashboard/AgentTable.tsx` | New: Sortable agent explorer |
+| `frontend/src/components/dashboard/TimeControls.tsx` | New: Play/pause/step controls |
+| `frontend/src/components/dashboard/index.ts` | New: Dashboard components barrel |
+| `frontend/src/components/index.ts` | Added dashboard exports |
+| `frontend/src/pages/SimulationPage.tsx` | Replaced placeholder with full dashboard |
+
+### DataServiceHook Architecture
+
+**Pre-Auction Order Capture:**
+The simulation uses batch auction where order book is cleared after each tick. To visualize order flow, `DataServiceHook` captures orders at `on_orders_collected` (Phase 6) before auction clearing.
+
+```rust
+impl SimulationHook for DataServiceHook {
+    fn on_orders_collected(&mut self, orders: Vec<Order>) {
+        // Capture pre-auction bid/ask distribution
+        self.update_order_distribution(orders);
+    }
+
+    fn on_tick_end(&mut self, tick: u64, ...) {
+        // Update candles, indicators, agents, etc.
+        self.update_sim_data(tick, ...);
+    }
+}
+```
+
+**Order Distribution Structure:**
+```rust
+pub struct OrderDistribution {
+    pub bids: Vec<(Price, u64)>,  // Descending by price
+    pub asks: Vec<(Price, u64)>,  // Ascending by price
+}
+```
+
+### Dashboard Components
+
+**Charts:**
+- `PriceChart`: SVG candlestick with price axis, green/red coloring
+- `IndicatorPanel`: SMA, EMA, RSI, MACD, Bollinger, ATR values
+- `OrderDepthChart`: Horizontal bar chart showing bid/ask imbalance
+
+**Panels:**
+- `FactorGauges`: Visual gauges for macro factors (rate, volatility, momentum)
+- `RiskPanel`: VaR 95%, max drawdown, Sharpe ratio with risk level badge
+- `NewsFeed`: Active news cards with impact badges and duration progress
+
+**Tables:**
+- `AgentTable`: Sortable columns (ID, type, cash, positions, PnL), pagination
+
+**Controls:**
+- `TimeControls`: WebSocket connection status, tick counter, play/pause/step buttons
+
+### useDataService Hooks
+
+```typescript
+// Factory pattern for consistent API hooks
+const useCandles = createDataHook<CandlesResponse>('/api/candles');
+const useIndicators = createDataHook<IndicatorsResponse>('/api/indicators');
+const useFactors = createDataHook<FactorsResponse>('/api/factors');
+const useAgents = createDataHook<AgentsResponse>('/api/agents');
+const useRiskMetrics = createDataHook<RiskMetricsResponse>('/api/risk');
+const useActiveNews = createDataHook<ActiveNewsResponse>('/api/news');
+const useOrderDistribution = createDataHook<OrderDistributionResponse>('/api/order-distribution');
+
+// Composite hook for dashboard
+const useDashboardData = (config, refresh) => ({
+  candles: useCandles(config, refresh),
+  indicators: useIndicators(config, refresh),
+  // ...all data hooks
+});
+```
+
+### SimulationPage Layout
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Header: Logo ← | Configure button                          │
+├─────────────────────────────────────────────────────────────┤
+│ TimeControls: [●Connected] Tick: 1,234 | ▶ ⏸ ⏭ ■          │
+├─────────────────────────────────────────────────────────────┤
+│ Tabs: [Dashboard] [Agents] [Order Flow]                    │
+├─────────────────────────────────────────────────────────────┤
+│                                      │                     │
+│  PriceChart (8 cols)                 │  IndicatorPanel     │
+│  ┌─────────────────────────────┐    │  (4 cols)           │
+│  │ AAPL  150.25 +0.50 (+0.33%) │    │  ┌───────────────┐  │
+│  │ ╭───╮  ╭───╮                │    │  │ SMA-20: 149.8 │  │
+│  │ │   │──│   │                │    │  │ RSI: 55.3     │  │
+│  │ ╰───╯  ╰───╯                │    │  │ MACD: +0.4    │  │
+│  └─────────────────────────────┘    │  └───────────────┘  │
+│                                      │                     │
+│  OrderDepthChart                     │  FactorGauges       │
+│  ┌─────────────────────────────┐    │  ┌───────────────┐  │
+│  │ BIDS ████░░░░ ASKS          │    │  │ Rate: ███░░   │  │
+│  │ 150.10 ██████               │    │  │ Vol:  ████░   │  │
+│  │ 150.05 ████                 │    │  └───────────────┘  │
+│  └─────────────────────────────┘    │                     │
+├──────────────────────────────────────┼─────────────────────┤
+│  RiskPanel (6 cols)                  │  NewsFeed (6 cols)  │
+│  ┌─────────────────────┐             │  ┌────────────────┐ │
+│  │ [LOW RISK]          │             │  │ 📊 Earnings    │ │
+│  │ VaR 95%: 1.5%       │             │  │    +2.5%       │ │
+│  │ Drawdown: 3.2%      │             │  │ 🏛️ Fed Rate   │ │
+│  │ Sharpe: 1.8         │             │  │    -0.1%       │ │
+│  └─────────────────────┘             │  └────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Design Principles
+- **Declarative**: Components driven by props from hooks, no internal state mutations
+- **Modular**: Each component is self-contained with single responsibility
+- **SoC**: Data fetching (hooks) separated from display (components) separated from layout (page)
+
+### Exit Criteria
+```bash
+cargo build --package server     # ✅ Compiles
+docker compose -f docker-compose.frontend.yaml run --rm typecheck  # ✅ No errors
+docker compose -f docker-compose.frontend.yaml run --rm format     # ✅ Formatted
+```
+
+### Notes
+- Pre-auction order capture enables "order book depth" visualization even in batch auction model
+- All charts use pure SVG/CSS - no external charting library dependencies
+- Auto-refresh interval configurable via `useDataService` hooks
+- Agent table supports sorting by any numeric field, pagination for large agent counts
+
+---
+
+## 2026-01-10: V4.3 Data Service
+
+### Summary
+Implemented REST API endpoints for analytics, portfolio, risk, and news data. The Data Service provides comprehensive query APIs for the React frontend to fetch simulation state, enabling the V4.4 Simulation Dashboard. All endpoints read from a shared `SimData` cache updated by a hook on each tick.
+
+### Files
+
+| File | Changes |
+|------|---------|
+| `crates/server/src/routes/data.rs` | New: 7 data service endpoints with typed request/response |
+| `crates/server/src/routes/mod.rs` | Added `data` module export |
+| `crates/server/src/state.rs` | Added `SimData`, `AgentData`, `AgentPosition`, `NewsEventSnapshot` |
+| `crates/server/src/app.rs` | Wired 7 new routes to router |
+| `crates/server/src/lib.rs` | Updated exports for new types |
+| `crates/server/Cargo.toml` | Added `quant` and `news` crate dependencies |
+
+### Data Service Endpoints
+
+**Analytics:**
+- `GET /api/analytics/candles?symbol=X&limit=N` - OHLCV candle data
+- `GET /api/analytics/indicators?symbol=X` - Technical indicators (SMA, EMA, RSI, MACD, Bollinger, ATR)
+- `GET /api/analytics/factors?symbol=X` - Factor scores (momentum, value, volatility)
+
+**Portfolio:**
+- `GET /api/portfolio/agents` - List all agents with P&L summary
+- `GET /api/portfolio/agents/{agent_id}` - Detailed agent portfolio (positions, equity curve)
+
+**Risk:**
+- `GET /api/risk/{agent_id}` - Risk metrics (Sharpe, Sortino, VaR, max drawdown, volatility)
+
+**News:**
+- `GET /api/news/active` - Active news events with sentiment and decay
+
+### Architecture
+
+**SimData Cache:**
+```
+SimData (Arc<RwLock<...>>)
+├── tick: u64
+├── candles: HashMap<Symbol, Vec<Candle>>
+├── indicators: HashMap<Symbol, HashMap<String, f64>>
+├── prices: HashMap<Symbol, Price>
+├── fair_values: HashMap<Symbol, Price>
+├── agents: Vec<AgentData>
+├── risk_metrics: HashMap<AgentId, AgentRiskSnapshot>
+├── equity_curves: HashMap<AgentId, Vec<f64>>
+└── active_events: Vec<NewsEventSnapshot>
+```
+
+**Data Flow:**
+```
+Simulation Thread                    Axum Server
+       │                                  │
+       │── DataServiceHook ───────────────▶│ Update SimData
+       │   (on_tick_end)                  │
+       │                                  │
+       │                                  │◀── GET /api/... ────
+       │                                  │    Read SimData
+```
+
+### Response Types
+
+**CandlesResponse:**
+```json
+{
+  "candles": {
+    "AAPL": [{ "tick": 100, "open": 150.0, "high": 155.0, ... }]
+  },
+  "total": 100
+}
+```
+
+**IndicatorsResponse:**
+```json
+{
+  "symbol": "AAPL",
+  "indicators": {
+    "sma": { "10": 150.5, "20": 149.8, "50": 148.2 },
+    "rsi_14": 55.3,
+    "macd": { "macd_line": 1.2, "signal_line": 0.8, "histogram": 0.4 },
+    "bollinger": { "upper": 160.0, "middle": 150.0, "lower": 140.0 }
+  }
+}
+```
+
+**AgentsResponse:**
+```json
+{
+  "agents": [
+    { "agent_id": 1, "name": "MM-001", "total_pnl": 1234.56, "equity": 105000.0, "tier": 1 }
+  ],
+  "total_count": 25000
+}
+```
+
+**RiskMetricsResponse:**
+```json
+{
+  "agent_id": 1,
+  "sharpe": 1.5,
+  "sortino": 2.1,
+  "max_drawdown": 0.05,
+  "var_95": 0.02,
+  "volatility": 0.15,
+  "total_return": 0.05
+}
+```
+
+### Design Principles
+- **Declarative**: Typed request/response structs, pure handler functions
+- **Modular**: Data service isolated from control endpoints (api.rs)
+- **SoC**: Handlers extract from state, computation in simulation thread
+
+### Exit Criteria
+```
+cargo build --package server  # ✅ Compiles without errors
+cargo test --package server   # ✅ 20 tests pass
+```
+
+### Notes
+- SimData hook implementation deferred to V4.4 (requires simulation thread integration)
+- All endpoints return empty data until hook populates SimData
+- Axum 0.8 uses `{param}` syntax instead of `:param` for path parameters
+- V4.4 will implement real-time data population and WebSocket `/stream` endpoint
+
+---
+
+## 2026-01-10: V4.2 Services Foundation
+
+### Summary
+Implemented Axum async server as bridge between sync simulation and React frontend. New `server` crate provides HTTP/WebSocket endpoints for real-time tick streaming, health checks, and simulation control. Server runs simulation in background thread, broadcasts updates via tokio broadcast channels. Frontend hook `useWebSocket` connects to tick stream.
+
+### Files
+
+| File | Changes |
+|------|---------|
+| `crates/server/Cargo.toml` | New crate with axum 0.8, tokio, tower-http, serde |
+| `crates/server/src/lib.rs` | Module exports, crate documentation |
+| `crates/server/src/app.rs` | Axum router with routes, CORS, tracing middleware |
+| `crates/server/src/state.rs` | `ServerState` with broadcast channels, metrics |
+| `crates/server/src/error.rs` | `AppError` with HTTP status mapping |
+| `crates/server/src/bridge.rs` | `TickData`, `SimUpdate`, `SimCommand` message types |
+| `crates/server/src/hooks.rs` | `BroadcastHook` implementing `SimulationHook` |
+| `crates/server/src/routes/mod.rs` | Route module organization |
+| `crates/server/src/routes/health.rs` | `/health`, `/health/ready` endpoints |
+| `crates/server/src/routes/ws.rs` | `/ws` WebSocket upgrade handler |
+| `crates/server/src/routes/api.rs` | `/api/status`, `/api/command` REST endpoints |
+| `src/main.rs` | Added `--server` mode with `run_with_server()` function |
+| `Cargo.toml` (workspace) | Added server crate, tokio 1.42 |
+| `docker-compose.yaml` | Added `server` and `frontend` services, profiles for tui/headless |
+| `dockerfile/Dockerfile.server` | Multi-stage build for server mode |
+| `frontend/src/hooks/useWebSocket.ts` | React hook for WebSocket connection |
+| `frontend/src/hooks/index.ts` | Hooks barrel file |
+
+### Server Architecture
+
+**Endpoints:**
+- `GET /health` - Liveness probe (tick, agents, uptime, ws_connections)
+- `GET /health/ready` - Readiness probe (ready, reason, sim_running, sim_finished)
+- `GET /ws` - WebSocket upgrade for real-time tick stream
+- `GET /api/status` - Current simulation state
+- `POST /api/command` - Send command (Start/Pause/Toggle/Step/Quit)
+
+**Channel Bridge:**
+```
+Simulation (sync thread)      Server (async tokio)
+       |                            |
+       |-- BroadcastHook ---------->|-- broadcast::Sender<TickData>
+       |      on_tick_end()         |       to WebSocket clients
+       |                            |
+       |<-- crossbeam::Receiver ----|-- SimCommand from clients
+```
+
+**Design Principles:**
+- Declarative: Routes via Axum type-safe routing, message types define protocol
+- Modular: Server crate independent of TUI, hooks decoupled from server internals
+- SoC: Simulation runs sync loop, server observes via hooks, clients receive via WS
+
+### Usage
+
+```bash
+# Run with server mode (replaces TUI)
+cargo run -- --server --server-port 8001
+
+# With docker
+docker compose up server frontend
+```
+
+### Frontend Integration
+
+New `useWebSocket` hook provides:
+```typescript
+const { tickData, connectionState, sendCommand } = useWebSocket();
+
+// Start simulation
+sendCommand('Start');
+
+// Access real-time data
+if (tickData) {
+  console.log(`Tick: ${tickData.tick}, Trades: ${tickData.total_trades}`);
+}
+```
+
+### Exit Criteria
+- `cargo build --release` passes with server crate
+- `cargo run -- --server` starts Axum server on port 8001
+- `/health` returns JSON with tick/agents/uptime
+- `/ws` accepts WebSocket connections
+- Frontend hook connects and receives tick updates
+
+### Notes
+- V4.2 is read-only: server observes simulation state, no order submission
+- WebSocket uses tokio broadcast channel (lagged clients skip messages)
+- Simulation starts paused; send `{"command": "Start"}` to `/api/command`
+- TUI and headless modes still available via `--headless` flag (no `--server`)
+
+---
+
+## 2026-01-10: V4.1 Web Frontend Landing & Config Pages
+
+### Summary
+Implemented React frontend with Landing and Config pages as first step toward V4 Web Frontend. Uses Vite + TypeScript + Tailwind CSS. Dockerized development workflow with hot reload, Prettier formatting, and production builds. Config page mirrors `src/config.rs` SimConfig structure with preset system (6 built-in presets + custom localStorage-backed presets).
+
+### Files
+
+| File | Changes |
+|------|---------|
+| `frontend/package.json` | React 19, React Router 7, Vite 6, TypeScript 5.7, Tailwind 3.4 |
+| `frontend/vite.config.ts` | Dev server config with API proxy to port 8001 |
+| `frontend/tailwind.config.ts` | Trading-themed colors (primary blue, accent green/red) |
+| `frontend/src/types/config.ts` | `SimConfig`, `Sector`, `MarketRegime` types matching Rust |
+| `frontend/src/config/defaults.ts` | `DEFAULT_CONFIG` + 5 built-in presets (Demo, Stress Test, etc.) |
+| `frontend/src/components/ui/` | Accordion, Button, Input components (Tailwind-styled) |
+| `frontend/src/components/config/` | 9 config sections, SymbolsEditor for multi-symbol management |
+| `frontend/src/pages/LandingPage.tsx` | Hero section with feature bullets, Run Simulation + Configure CTAs |
+| `frontend/src/pages/ConfigPage.tsx` | Full SimConfig form with collapsible sections, preset load/save |
+| `frontend/src/pages/SimulationPage.tsx` | Placeholder for V4.2 |
+| `dockerfile/Dockerfile.frontend` | Multi-stage: deps, dev, format, typecheck, builder, prod |
+| `dockerfile/nginx.frontend.conf` | SPA fallback + API/WebSocket proxy to data-service |
+| `docker-compose.frontend.yaml` | FE development: dev server, format, typecheck, build services |
+| `docker-compose.tui.yaml` | Renamed from docker-compose.yaml (TUI-only simulation) |
+
+### Frontend Architecture
+
+**Stack:**
+- React 19 + React Router 7 (SPA with client-side routing)
+- Vite 6 (fast HMR, TypeScript, Tailwind integration)
+- Tailwind CSS 3.4 (utility-first, custom trading theme)
+- Prettier 3.4 (code formatting via Docker)
+
+**Page Structure:**
+- `/` - Landing: Hero, feature bullets, "Run Simulation" and "Configure" buttons
+- `/config` - Config: Preset selector, 9 collapsible config sections, save preset
+- `/sim` - Simulation: Placeholder (V4.2 will add WebSocket charts)
+
+**Config Sections:**
+1. Simulation Control (ticks, tick_ms, initial_cash, seed)
+2. Symbols Editor (add/remove symbols with sector dropdown)
+3. Tier 1 Agents (fundamental traders count/cash)
+4. Tier 2 Agents (reactive traders count/cash, wake conditions)
+5. Tier 3 Pool (noise traders count/cash)
+6. Market Maker (spread, inventory limits, quote refresh)
+7. Noise Trader (order size range, hold ticks)
+8. Quant Strategy (momentum/mean-reversion/breakout weights)
+9. Events (news frequency, earnings calendar)
+
+### Docker Development Workflow
+
+```powershell
+# Start dev server with hot reload (port 5173)
+docker compose -f docker-compose.frontend.yaml up frontend-dev
+
+# Format all TypeScript files with Prettier
+docker compose -f docker-compose.frontend.yaml run --rm format
+
+# TypeScript type checking
+docker compose -f docker-compose.frontend.yaml run --rm typecheck
+
+# Production build (outputs to frontend/dist/)
+docker compose -f docker-compose.frontend.yaml run --rm build
+```
+
+### Exit Criteria
+```
+docker compose -f docker-compose.frontend.yaml run --rm typecheck  # ✅ tsc passes
+docker compose -f docker-compose.frontend.yaml run --rm build      # ✅ Vite bundles (252KB JS, 13KB CSS)
+docker compose -f docker-compose.frontend.yaml run --rm format     # ✅ 21 files formatted
+docker compose -f docker-compose.frontend.yaml up frontend-dev     # ✅ Dev server on :5173
+```
+
+### Notes
+- Desktop-only design (min-width 1024px assumed)
+- Preset storage: Built-in presets in code, custom presets in localStorage (SQLite backend in V4.2+)
+- No form validation in V4.1 (deferred to later)
+- SimConfig types match Rust `src/config.rs` structure for future API integration
+
+---
+
 ## 2026-01-09: V3.9 Minimal Storage Infrastructure
 
 ### Summary

@@ -17,11 +17,14 @@ use crate::schema::{StorageConfig, init_schema};
 
 /// Storage hook for persisting simulation data
 ///
-/// Uses interior mutability (Mutex) because SimulationHook requires &self
+/// Uses interior mutability (Mutex) because SimulationHook requires &self.
+/// Buffers trades and flushes every `trade_write_interval` ticks for performance.
 pub struct StorageHook {
     config: StorageConfig,
     conn: Mutex<Connection>,
     aggregators: Mutex<HashMap<u64, CandleAggregator>>,
+    /// Buffered trades waiting to be flushed (tick, trade)
+    trade_buffer: Mutex<Vec<(u64, Trade)>>,
 }
 
 impl StorageHook {
@@ -46,6 +49,7 @@ impl StorageHook {
             config,
             conn: Mutex::new(conn),
             aggregators: Mutex::new(aggregators),
+            trade_buffer: Mutex::new(Vec::with_capacity(10_000)), // Pre-allocate for performance
         })
     }
 
@@ -54,21 +58,34 @@ impl StorageHook {
         Self::new(StorageConfig::from_path(path))
     }
 
-    /// Persist a single trade
-    fn persist_trade(&self, tick: u64, trade: &Trade) -> rusqlite::Result<()> {
+    /// Persist trades in a single batched transaction (V4.5 fix)
+    fn flush_trade_buffer(&self) -> rusqlite::Result<()> {
+        let mut buffer = self.trade_buffer.lock();
+        if buffer.is_empty() {
+            return Ok(());
+        }
+
         let conn = self.conn.lock();
-        conn.execute(
-            "INSERT INTO trades (tick, symbol, price, quantity, buyer_id, seller_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params![
-                tick as i64,
-                trade.symbol.as_str(),
-                trade.price.0,
-                i64::try_from(trade.quantity.0).unwrap(),
-                i64::try_from(trade.buyer_id.0).unwrap(),
-                i64::try_from(trade.seller_id.0).unwrap(),
-            ],
-        )?;
+        // Use a transaction for batch insert (much faster than individual inserts)
+        conn.execute("BEGIN TRANSACTION", [])?;
+
+        for (tick, trade) in buffer.iter() {
+            conn.execute(
+                "INSERT INTO trades (tick, symbol, price, quantity, buyer_id, seller_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![
+                    *tick as i64,
+                    trade.symbol.as_str(),
+                    trade.price.0,
+                    i64::try_from(trade.quantity.0).unwrap_or(0),
+                    i64::try_from(trade.buyer_id.0).unwrap_or(0),
+                    i64::try_from(trade.seller_id.0).unwrap_or(0),
+                ],
+            )?;
+        }
+
+        conn.execute("COMMIT", [])?;
+        buffer.clear(); // Clear buffer after successful flush
         Ok(())
     }
 
@@ -141,14 +158,17 @@ impl SimulationHook for StorageHook {
     }
 
     fn on_trades(&self, trades: Vec<Trade>, ctx: &HookContext) {
-        // Persist trades
-        for trade in &trades {
-            if let Err(e) = self.persist_trade(ctx.tick, trade) {
-                eprintln!("[StorageHook] Failed to persist trade: {}", e);
+        // Buffer trades for batched writing (V4.5 perf fix)
+        {
+            let mut buffer = self.trade_buffer.lock();
+            for trade in trades.iter().cloned() {
+                buffer.push((ctx.tick, trade));
             }
+        }
 
-            // Update candle aggregators
-            let mut aggregators = self.aggregators.lock();
+        // Update candle aggregators (always, for real-time candle generation)
+        let mut aggregators = self.aggregators.lock();
+        for trade in &trades {
             for agg in aggregators.values_mut() {
                 agg.process_trade(ctx.tick, trade.symbol.clone(), trade.price, trade.quantity);
             }
@@ -156,6 +176,14 @@ impl SimulationHook for StorageHook {
     }
 
     fn on_tick_end(&self, stats: &SimulationStats, _ctx: &HookContext) {
+        // Flush trade buffer at configured interval (every N ticks)
+        if stats.tick > 0
+            && stats.tick.is_multiple_of(self.config.trade_write_interval)
+            && let Err(e) = self.flush_trade_buffer()
+        {
+            eprintln!("[StorageHook] Failed to flush trades: {}", e);
+        }
+
         // Flush completed candles
         if let Err(e) = self.flush_candles() {
             eprintln!("[StorageHook] Failed to flush candles: {}", e);
@@ -170,7 +198,11 @@ impl SimulationHook for StorageHook {
     }
 
     fn on_simulation_end(&self, _final_stats: &SimulationStats) {
-        // Final flush
+        // Final flush of any remaining buffered trades
+        if let Err(e) = self.flush_trade_buffer() {
+            eprintln!("[StorageHook] Failed final trade flush: {}", e);
+        }
+        // Final candle flush
         if let Err(e) = self.flush_candles() {
             eprintln!("[StorageHook] Failed final candle flush: {}", e);
         }

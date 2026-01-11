@@ -113,7 +113,7 @@ impl Default for SimulationConfig {
             snapshot_depth: 10,
             max_recent_trades: 100,
             candle_interval: 10, // Candle every 10 ticks
-            max_candles: 200,    // Keep 200 candles (~2000 ticks of history)
+            max_candles: 1000,   // Keep 1000 candles (~10000 ticks of history)
             enforce_position_limits: true,
             verbose: false,
             news: news::NewsGeneratorConfig::default(),

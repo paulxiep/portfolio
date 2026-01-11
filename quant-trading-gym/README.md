@@ -3,14 +3,15 @@
 ### Keywords
 *Extracted by GitHub Copilot*
 
-- **Language:** `Rust`
+- **Language:** `Rust` · `TypeScript`
 - **Architecture & Patterns:** `Trait-Based Polymorphism` · `Separation of Concerns (SoC)` · `Plugin Architecture` · `Tick-Based Event Loop` · `Strategy Pattern` · `Builder Pattern (Config structs)` · `Dependency Injection via Traits` · `Layered Architecture` · `Agent Trait Interface` · `Context Object Pattern` · `Command Pattern (AgentAction)` · `Hook Pattern (SimulationHook)`
 - **Market Simulation:** `Trading Simulation` · `Order Book` · `Limit Order Book (LOB)` · `Matching Engine` · `Price-Time Priority` · `Market Microstructure` · `Slippage Modeling` · `Batch Auction` · `Clearing Price Algorithm`
 - **Quantitative Finance:** `Technical Indicators (SMA, EMA, RSI, MACD, Bollinger Bands, ATR)` · `Risk Metrics (VaR, Sharpe Ratio, Sortino Ratio, Max Drawdown)` · `VWAP Execution` · `Market Making` · `Bid-Ask Spread` · `Inventory Management` · `Fair Value Models` · `Gordon Growth Model` · `Pairs Trading` · `Statistical Arbitrage`
 - **Agent Architecture:** `Reinforcement Learning` · `Tiered Agent Architecture` · `Multi-Agent Systems` · `Event-Driven Architecture` · `Reactive Agents (Wake Conditions)` · `Background Liquidity Pool`
-- **Rust Ecosystem:** `Cargo Workspaces` · `Modular Crate Design` · `TUI (Ratatui/Crossterm)` · `Rayon (Parallel Iterators)` · `rusqlite` · `clap (CLI)` · *`PyO3 Python Bindings (planned)`*
+- **Web & Real-Time:** `Axum 0.8` · `WebSocket` · `REST API` · `React 19` · `Vite 6` · `Tailwind CSS` · `Real-Time Dashboard` · `Tower HTTP` · `CORS` · `Recharts` · `React Query (TanStack)`
+- **Rust Ecosystem:** `Cargo Workspaces` · `Modular Crate Design` · `Tokio (Async Runtime)` · `TUI (Ratatui/Crossterm)` · `Rayon (Parallel Iterators)` · `Serde` · `rusqlite` · `clap (CLI)` · `tracing` · *`PyO3 Python Bindings (planned)`*
 - **Performance:** `High-Performance Computing` · `Fixed-Point Arithmetic` · `Financial Precision (i64)` · `Rolling Windows` · `Statistical Analysis` · `Parallel Execution` · `Two-Phase Tick Architecture`
-- **Persistence & DevOps:** `SQLite` · `OHLCV Candle Aggregation` · `Time-Series Data` · `Docker` · `Distroless Containers` · `Headless Mode` · `CLI Configuration`
+- **Persistence & DevOps:** `SQLite` · `OHLCV Candle Aggregation` · `Time-Series Data` · `Docker` · `Docker Compose` · `Distroless Containers` · `Headless Mode` · `CLI Configuration`
 
 ---
 
@@ -45,12 +46,12 @@ The project is built vertically in iterative stages, ensuring a runnable simulat
 | **V1** (completed) | **Quant Strategy Agents** | Add indicators (SMA, RSI), risk metrics (Sharpe, Drawdown), and real strategies. |
 | **V2** (completed) | **Market Realism & Events** | Implement multi-symbol and random events. |
 | **V3** (completed) | **Persistence & Agent Scaling** | SQLite for trade history and tiered architecture for 100k+ agent scale. |
-| **V4** | **Web frontend** | Axum and React Frontend |
+| **V4** (completed) | **Web frontend** | Axum and React TS Frontend with Dashboard |
 | **V5** | **Feature Engineering ML** |  PyO3 bindings, training for traditional ML, feature engineering. |
 | **V6** | **Reinforcement Learning** |  Gym env, RL training. |
 | **V7** | **Portfolio manager game** | Services, API for portfolio manager game. |
 
-![v3](qtgv3.jpg)
+![v4](qtgv4.jpg)
 
 ## Key Features
 

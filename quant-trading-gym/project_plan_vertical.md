@@ -763,25 +763,100 @@ reward = realized_pnl
 
 ---
 
-## V4: Web Frontend (+3 weeks)
 
-**Philosophy:** Build rich data visualization with Axum backend and React frontend. This provides the foundation for V7 game features.
+
+## V4-V7 Design Decisions Summary
+
+### Decoupling Strategy
+
+**V3.9 completes shared infrastructure.** After V3.9:
+- RL path extends: `crates/gym/`, PyO3 bindings, Python scripts — **no simulation changes**
+- Game path extends: `services/`, frontend, APIs — **no simulation changes**
+- **Zero file conflicts** — paths are entirely independent
+
+### Key Design Choices
+
+| Decision | Rationale |
+|----------|-----------|
+| **Ensemble ML over Deep RL** | CPU-only, fast iteration, interpretable, proven in quant finance |
+| **Optional Deep RL (V6.2)** | Only if ensemble plateaus; requires GPU (1-2 agents max) |
+| **Idle game model** | Human is portfolio manager, not tick trader; adjusts formulas, uses VWAP execution |
+| **Formula builder as core mechanic** | Human combines metrics (RSI, momentum, etc.) with adjustable weights |
+| **Time controls required** | Pause/step/speed control essential for analysis |
+| **Single-symbol MVP** | Simplifies initial gameplay; multi-symbol as advanced mode |
+| **No save/resume in MVP** | Session-based gameplay (like idle games); can add later if needed |
+| **No chatbot in MVP** | Direct UI controls sufficient; defer to V8 or post-launch |
+
+### Technical Architecture Decisions
+
+| Component | Decision | Why |
+|-----------|----------|-----|
+| **Storage (V3.9)** | Minimal: trades, candles, snapshots only | Both paths read from same data; avoid path-specific features |
+| **ML Inference** | JSON export (trees/models) → Rust native | No ONNX needed for ensemble ML; only for optional Deep RL |
+| **Services** | 3 services (Data, Game, Storage) | Removed Chatbot from MVP; Game Service is BFF |
+| **Frontend** | React/TypeScript | Standard web stack; reuses existing TUI time control architecture |
+
+### Validation Strategy
+
+**RL path validates simulation realism:**
+- If ML agents can profit → simulation is realistic → safe to build Game path
+- If ML agents fail → debug features/simulation before Game investment
+- Feature importance reveals which indicators matter → informs Game dashboard priorities
+
+**Game path validates UX:**
+- Formula builder tests if "portfolio manager" gameplay is engaging
+- Leaderboard tests if Sharpe ratio competition motivates players
+- Time controls test if speed control enables comprehension
+
+### Dependency Graph
+
+```
+V3.9 (Storage) ← Last common ancestor
+    │
+    ├─► V4 (Web Frontend)
+    │    │
+    │    └─► Produces: Data visualization dashboard
+    │
+    ├─► V5 (Feature Engineering ML)
+    │    │
+    │    └─► Produces: PyO3 bindings, feature extraction, ensemble agents
+    │
+    ├─► V6 (Reinforcement Learning)
+    │    │
+    │    └─► Produces: Trained agents (EnsembleAgent, optionally NeuralAgent)
+    │
+    └─► V7 (Portfolio Manager Game) [requires V4]
+         │
+         └─► Requires: Agents to compete against (can use existing Tier 1, better with V5/V6 agents)
+
+V8: Integration (if V5/V6 + V7 complete)
+    └─► RL agents populate Game as intelligent opponents
+```
+
+**Recommendation:** V4 should be completed first as foundation for V7. V5/V6 can proceed independently and enhance V7 experience later.
+
+---
+
+## V4: Web Frontend (+4 weeks)
+
+**Philosophy:** Build rich data visualization with Axum backend and React frontend. This provides the foundation for V7 game features. Start with Landing + Config pages to establish frontend infrastructure, then add simulation dashboard.
 
 **Development Priority:**
-1. **Phase 1 (Week 1):** Services Foundation — Axum async services, channel bridge
-2. **Phase 2 (Week 2):** Data Service — REST APIs for analytics, portfolio, risk
-3. **Phase 3 (Week 3):** Frontend Dashboard — React/TypeScript visualization
+1. **Phase 1 (V4.1):** Landing & Config Pages — React/Vite setup, preset management, config form
+2. **Phase 2 (V4.2):** Services Foundation — Axum async services, channel bridge
+3. **Phase 3 (V4.3):** Data Service — REST APIs for analytics, portfolio, risk
+4. **Phase 4 (V4.4):** Simulation Dashboard — Real-time visualization, agent explorer
 
-**Why Visualization-First:**
-- Validates data pipeline (V3.9 storage → REST APIs → frontend) before adding complexity
-- Produces portfolio-worthy demo earlier (rich dashboard showing 100k agents trading)
-- Game mechanics can be tested internally before committing to full implementation
-- Lower risk: if formula builder gameplay isn't engaging, still have valuable visualization tool
+**Why Config-First:**
+- Establishes frontend tooling (Vite, React Router, TypeScript) before complex visualizations
+- Validates backend API patterns with simple CRUD (presets) before real-time data
+- Allows simulation parameter tweaking from browser immediately
+- Lower risk: if WebSocket/charting proves difficult, still have functional config UI
 
 **Service Architecture:** 2 services initially (Data + Storage), Game Service added in V7
 
 ```
-V4: Web Frontend (Weeks 1-3)
+V4: Web Frontend (Weeks 1-4)
 ┌─────────────────────────────────────────────────────────────┐
 │                      SIMULATION                             │
 │  (sync, computes everything for agents)                     │
@@ -796,9 +871,11 @@ V4: Web Frontend (Weeks 1-3)
          │ SERVICE │           │ SERVICE │
          │  :8001  │           │  :8003  │
          │         │           │         │
-         │/analytics│           │/storage/*│
-         │/portfolio│           │ Queries  │
-         │  /risk/* │           │ History  │
+         │/api/config│         │/storage/*│
+         │/api/presets│        │ Queries  │
+         │/analytics│           │ History  │
+         │/portfolio│           │          │
+         │  /risk/* │           │          │
          │  /news/* │           │          │
          │WebSocket│           │          │
          └─────────┘           └─────────┘
@@ -806,8 +883,11 @@ V4: Web Frontend (Weeks 1-3)
               ▼
       ┌──────────────┐
       │   FRONTEND   │
-      │ (Read-Only)  │
       │ React/TS UI  │
+      │  3 Screens:  │
+      │  - Landing   │
+      │  - Config    │
+      │  - Simulation│
       └──────────────┘
 
 V7: Add Game Service (after V4)
@@ -825,14 +905,48 @@ V7: Add Game Service (after V4)
 #### V4 Implementation Details
 
 ```
-V4.1: Services Foundation (~1 wk)
+V4.1: Landing & Config Pages (~1 wk)
+    └─► React/Vite/TypeScript scaffold
+        - Vite for fast HMR and build
+        - React Router: / (Landing), /config (Config), /sim (Simulation placeholder)
+        - Tailwind CSS for styling (desktop-only, min-width: 1024px)
+    └─► Landing Page:
+        - Hero: "Quant Trading Gym" title + tagline
+        - "Quick Start" button → loads default preset, navigates to /sim
+        - "Configure" button → navigates to /config
+        - Brief feature list (3-4 bullets)
+    └─► Config Page:
+        - Preset selector dropdown (built-in: Default, Demo, Stress Test, Low Activity, 
+          High Volatility, Quant Heavy + custom presets from SQLite)
+        - Accordion sections mirroring SimConfig:
+          • Simulation Control: total_ticks, tick_delay_ms, max_cpu_percent, events_enabled
+          • Symbols: editable list (name, initial_price, sector dropdown)
+          • Tier 1 Agents: num_market_makers, num_noise_traders, num_momentum_traders, etc.
+          • Tier 2 Agents: num_tier2_agents, t2_initial_cash, thresholds (collapsed by default)
+          • Tier 3 Pool: enable_background_pool, background_pool_size, regime (collapsed)
+          • Market Maker Params: mm_initial_cash, mm_half_spread, etc. (collapsed)
+          • Noise Trader Params: nt_initial_cash, nt_order_probability, etc. (collapsed)
+        - "Save Preset" button: name input, saves to SQLite via POST /api/presets
+        - "Run Simulation" button: POST /api/config → navigates to /sim
+    └─► Axum endpoints (minimal for V4.1):
+        - GET /api/presets → list preset names (built-in + custom)
+        - GET /api/presets/:name → full SimConfig JSON
+        - POST /api/presets → save custom preset to SQLite
+        - POST /api/config → accepts SimConfig, prepares simulation (V4.2 wires to runner)
+        - Serves React build at / (SPA fallback)
+    └─► SQLite preset storage:
+        - Table: presets (name TEXT PRIMARY KEY, config_json TEXT, is_builtin BOOL)
+        - Seed built-in presets from SimConfig::default(), ::demo(), etc.
+    └─► No form validation in V4.1 (defer to V4.4 polish)
+
+V4.2: Services Foundation (~1 wk)
     └─► Axum async services base
     └─► Channel bridge: Simulation (sync) ↔ Services (async)
     └─► Error handling, logging
     └─► Health check endpoints
     └─► WebSocket infrastructure for real-time updates
 
-V4.2: Data Service (~1 wk)
+V4.3: Data Service (~1 wk)
     └─► /analytics/candles (OHLCV from V3.9 storage)
     └─► /analytics/indicators (SMA, RSI, MACD, Bollinger, ATR)
     └─► /analytics/factors (momentum score, value score, volatility)
@@ -843,8 +957,7 @@ V4.2: Data Service (~1 wk)
     └─► WebSocket /stream (real-time tick updates)
     └─► All endpoints query V3.9 storage + live simulation state
 
-V4.3: Frontend Dashboard (~1 wk)
-    └─► React/TypeScript base setup
+V4.4: Simulation Dashboard (~1 wk)
     └─► WebSocket connection to Data Service
     └─► Real-time data visualization:
         - Price chart (candlestick + line modes)
@@ -861,6 +974,7 @@ V4.3: Frontend Dashboard (~1 wk)
         - Speed slider (1x, 10x, 100x, unlimited)
         - Step button (single tick advance)
     └─► Read-only mode: No human interaction yet
+    └─► Form validation polish for Config page
 ```
 
 **V4 Deliverable:** Portfolio-worthy demo showing 100k agents trading with full quant dashboard. Can showcase to stakeholders or use for analysis.
@@ -1198,78 +1312,6 @@ If you completed V5/V6 (ML/RL) AND V7 (Game):
 
 ---
 
-## V4-V7 Design Decisions Summary
-
-### Decoupling Strategy
-
-**V3.9 completes shared infrastructure.** After V3.9:
-- RL path extends: `crates/gym/`, PyO3 bindings, Python scripts — **no simulation changes**
-- Game path extends: `services/`, frontend, APIs — **no simulation changes**
-- **Zero file conflicts** — paths are entirely independent
-
-### Key Design Choices
-
-| Decision | Rationale |
-|----------|-----------|
-| **Ensemble ML over Deep RL** | CPU-only, fast iteration, interpretable, proven in quant finance |
-| **Optional Deep RL (V6.2)** | Only if ensemble plateaus; requires GPU (1-2 agents max) |
-| **Idle game model** | Human is portfolio manager, not tick trader; adjusts formulas, uses VWAP execution |
-| **Formula builder as core mechanic** | Human combines metrics (RSI, momentum, etc.) with adjustable weights |
-| **Time controls required** | Pause/step/speed control essential for analysis |
-| **Single-symbol MVP** | Simplifies initial gameplay; multi-symbol as advanced mode |
-| **No save/resume in MVP** | Session-based gameplay (like idle games); can add later if needed |
-| **No chatbot in MVP** | Direct UI controls sufficient; defer to V8 or post-launch |
-
-### Technical Architecture Decisions
-
-| Component | Decision | Why |
-|-----------|----------|-----|
-| **Storage (V3.9)** | Minimal: trades, candles, snapshots only | Both paths read from same data; avoid path-specific features |
-| **ML Inference** | JSON export (trees/models) → Rust native | No ONNX needed for ensemble ML; only for optional Deep RL |
-| **Services** | 3 services (Data, Game, Storage) | Removed Chatbot from MVP; Game Service is BFF |
-| **Frontend** | React/TypeScript | Standard web stack; reuses existing TUI time control architecture |
-
-### Validation Strategy
-
-**RL path validates simulation realism:**
-- If ML agents can profit → simulation is realistic → safe to build Game path
-- If ML agents fail → debug features/simulation before Game investment
-- Feature importance reveals which indicators matter → informs Game dashboard priorities
-
-**Game path validates UX:**
-- Formula builder tests if "portfolio manager" gameplay is engaging
-- Leaderboard tests if Sharpe ratio competition motivates players
-- Time controls test if speed control enables comprehension
-
-### Dependency Graph
-
-```
-V3.9 (Storage) ← Last common ancestor
-    │
-    ├─► V4 (Web Frontend)
-    │    │
-    │    └─► Produces: Data visualization dashboard
-    │
-    ├─► V5 (Feature Engineering ML)
-    │    │
-    │    └─► Produces: PyO3 bindings, feature extraction, ensemble agents
-    │
-    ├─► V6 (Reinforcement Learning)
-    │    │
-    │    └─► Produces: Trained agents (EnsembleAgent, optionally NeuralAgent)
-    │
-    └─► V7 (Portfolio Manager Game) [requires V4]
-         │
-         └─► Requires: Agents to compete against (can use existing Tier 1, better with V5/V6 agents)
-
-V8: Integration (if V5/V6 + V7 complete)
-    └─► RL agents populate Game as intelligent opponents
-```
-
-**Recommendation:** V4 should be completed first as foundation for V7. V5/V6 can proceed independently and enhance V7 experience later.
-
----
-
 ## Architectural Considerations (V2+)
 
 ### Multi-Symbol Support (V2)
@@ -1359,8 +1401,8 @@ impl TieredOrchestrator {
 | V0 | MVP Simulation | ✅ Complete |
 | V1 | Quant Strategy Agents | ✅ Complete |
 | V2 | Multi-Symbol & Events | ✅ Complete |
-| V3 | Scaling & Persistence | 🔲 Planned |
-| V4 | Web Frontend | 🔲 Planned |
+| V3 | Scaling & Persistence | ✅ Complete |
+| V4 | Web Frontend | ✅ Complete |
 | V5 | Feature Engineering ML | 🔲 Planned |
 | V6 | Reinforcement Learning | 🔲 Planned |
 | V7 | Portfolio Manager Game | 🔲 Planned |

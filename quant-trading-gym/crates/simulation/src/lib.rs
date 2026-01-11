@@ -87,5 +87,8 @@ pub use config::{ParallelizationConfig, SimulationConfig};
 pub use runner::{Simulation, SimulationStats};
 
 // Re-export hook types
-pub use hooks::{BookSnapshot, HookContext, HookRunner, MarketSnapshot, NoOpHook, SimulationHook};
+pub use hooks::{
+    AgentSummary, BookSnapshot, EnrichedData, HookContext, HookRunner, MarketSnapshot,
+    NewsEventSnapshot, NoOpHook, SimulationHook,
+};
 pub use metrics::{MetricsHook, MetricsSnapshot};
