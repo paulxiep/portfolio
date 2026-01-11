@@ -43,7 +43,7 @@ use news::config::{
 };
 use rand::Rng;
 use rand::prelude::SliceRandom;
-use server::{BroadcastHook, ServerState, create_app};
+use server::{BroadcastHook, DataServiceHook, ServerState, create_app};
 use simulation::{Simulation, SimulationConfig};
 use storage::{StorageConfig, StorageHook};
 use tui::{AgentInfo, RiskInfo, SimCommand, SimUpdate, TuiApp};
@@ -1380,6 +1380,10 @@ async fn run_with_server(config: SimConfig, args: Args) {
 
     // Register hooks
     sim.add_hook(broadcast_hook.clone());
+
+    // V4.4: Register data service hook for REST API data
+    let data_service_hook = Arc::new(DataServiceHook::new(state.sim_data.clone()));
+    sim.add_hook(data_service_hook);
 
     // V3.9: Register storage hook if path provided
     if let Some(ref storage_path) = args.storage_path {

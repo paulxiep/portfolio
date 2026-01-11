@@ -52,5 +52,7 @@ pub mod state;
 pub use app::create_app;
 pub use bridge::{SimCommand, SimUpdate, TickData};
 pub use error::AppError;
-pub use hooks::BroadcastHook;
-pub use state::{AgentData, AgentPosition, NewsEventSnapshot, ServerState, SimData};
+pub use hooks::{BroadcastHook, DataServiceHook};
+pub use state::{
+    AgentData, AgentPosition, NewsEventSnapshot, OrderDistribution, ServerState, SimData,
+};

@@ -1,33 +1,38 @@
-# Quant Trading Gym - Docker Compose
-# V4.2: Server + Frontend for React-based UI
+# Quant Trading Gym - Development Mode
+# Usage: docker compose -f docker-compose.dev.yaml up
 
 services:
   # ─────────────────────────────────────────────────────────────────────────
-  # Server Service: HTTP/WebSocket backend for React frontend (V4.2)
+  # Server Service: HTTP/WebSocket backend for React frontend
   # ─────────────────────────────────────────────────────────────────────────
   server:
     build:
       context: .
       dockerfile: dockerfile/server/Dockerfile
     ports:
-      - "8001:8001"  # API/WebSocket server
+      - "8001:8001"
     volumes:
       - ./data:/data
     environment:
       - SIM_SERVER=true
-      - SIM_TICKS=0  # Run indefinitely
-      - STORAGE_PATH=/data/sim.db  # V4.5: Re-enabled with batched writes
+      - SIM_TICKS=0
+      - STORAGE_PATH=/data/sim.db
       - SIM_SERVER_PORT=8001
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Frontend Service: Production nginx server (V4.6)
+  # Frontend Service: Vite dev server with hot reload
   # ─────────────────────────────────────────────────────────────────────────
   frontend:
     build:
       context: .
       dockerfile: dockerfile/frontend/Dockerfile
-      target: prod
+      target: dev
     ports:
-      - "80:80"
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - VITE_API_URL=http://localhost:8001
     depends_on:
       - server

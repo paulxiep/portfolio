@@ -8,7 +8,7 @@ services:
   tui:
     build:
       context: .
-      dockerfile: dockerfile/Dockerfile.tui
+      dockerfile: dockerfile/tui/Dockerfile
     ports:
       - "7681:7681"  # ttyd web interface
     volumes:
@@ -34,7 +34,7 @@ services:
   simulation:
     build:
       context: .
-      dockerfile: dockerfile/Dockerfile.simulation
+      dockerfile: dockerfile/simulation/Dockerfile
     volumes:
       - ./data:/data  # V3.9: Persistent storage
     environment:

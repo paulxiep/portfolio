@@ -5,6 +5,9 @@
 //!
 //! # Endpoints
 //!
+//! ## Symbols
+//! - `GET /api/symbols` - List all available symbols
+//!
 //! ## Analytics
 //! - `GET /api/analytics/candles?symbol=X&timeframe=Y` - OHLCV candles
 //! - `GET /api/analytics/indicators?symbol=X` - Technical indicators
@@ -63,8 +66,10 @@ pub struct CandleData {
 /// Response for /api/analytics/candles.
 #[derive(Debug, Serialize)]
 pub struct CandlesResponse {
-    /// Candles grouped by symbol.
-    pub candles: HashMap<String, Vec<CandleData>>,
+    /// Symbol for these candles.
+    pub symbol: String,
+    /// Candle data array.
+    pub candles: Vec<CandleData>,
     /// Total candle count.
     pub total: usize,
 }
@@ -72,8 +77,8 @@ pub struct CandlesResponse {
 /// Query parameters for indicators endpoint.
 #[derive(Debug, Deserialize)]
 pub struct IndicatorsQuery {
-    /// Symbol to query.
-    pub symbol: String,
+    /// Symbol to query (optional, defaults to first available).
+    pub symbol: Option<String>,
 }
 
 /// Technical indicator values.
@@ -120,28 +125,31 @@ pub struct IndicatorsResponse {
 /// Query parameters for factors endpoint.
 #[derive(Debug, Deserialize)]
 pub struct FactorsQuery {
-    /// Symbol to query.
-    pub symbol: String,
+    /// Symbol to query (optional, defaults to first available).
+    pub symbol: Option<String>,
 }
 
 /// Factor scores for a symbol.
+/// Individual factor for gauge display.
 #[derive(Debug, Clone, Serialize)]
-pub struct FactorData {
-    /// Momentum score (-1 to +1).
-    pub momentum_score: f64,
-    /// Value score (-1 to +1).
-    pub value_score: f64,
-    /// Volatility score (0 to 1).
-    pub volatility_score: f64,
-    /// Current price vs fair value ratio.
-    pub price_to_fair_value: Option<f64>,
+pub struct FactorSnapshot {
+    /// Factor name.
+    pub name: String,
+    /// Current value.
+    pub value: f64,
+    /// Minimum value.
+    pub min: f64,
+    /// Maximum value.
+    pub max: f64,
+    /// Neutral value.
+    pub neutral: f64,
 }
 
 /// Response for /api/analytics/factors.
 #[derive(Debug, Serialize)]
 pub struct FactorsResponse {
     pub symbol: String,
-    pub factors: FactorData,
+    pub factors: Vec<FactorSnapshot>,
     pub tick: u64,
 }
 
@@ -237,11 +245,13 @@ pub struct RiskMetricsResponse {
 #[derive(Debug, Clone, Serialize)]
 pub struct NewsEventData {
     pub id: u64,
+    pub headline: String,
     pub event_type: String,
     pub symbol: Option<String>,
     pub sector: Option<String>,
     pub sentiment: f64,
     pub magnitude: f64,
+    pub impact: f64,
     pub start_tick: u64,
     pub duration_ticks: u64,
     pub effective_sentiment: f64,
@@ -256,6 +266,28 @@ pub struct ActiveNewsResponse {
     pub tick: u64,
 }
 
+/// Response for /api/symbols.
+#[derive(Debug, Serialize)]
+pub struct SymbolsResponse {
+    pub symbols: Vec<String>,
+    pub count: usize,
+}
+
+// =============================================================================
+// Handlers - Symbols
+// =============================================================================
+
+/// Get available symbols: `GET /api/symbols`
+pub async fn get_symbols(State(state): State<ServerState>) -> AppResult<Json<SymbolsResponse>> {
+    let sim_data = state.sim_data.read().await;
+
+    let mut symbols: Vec<String> = sim_data.candles.keys().cloned().collect();
+    symbols.sort(); // Alphabetical order for consistency
+
+    let count = symbols.len();
+    Ok(Json(SymbolsResponse { symbols, count }))
+}
+
 // =============================================================================
 // Handlers - Analytics
 // =============================================================================
@@ -266,62 +298,47 @@ pub async fn get_candles(
     Query(query): Query<CandlesQuery>,
 ) -> AppResult<Json<CandlesResponse>> {
     let sim_data = state.sim_data.read().await;
-    let limit = query.limit.unwrap_or(100);
+    let limit = query.limit.unwrap_or(500);
 
-    let candles: HashMap<String, Vec<CandleData>> = match query.symbol {
-        Some(ref symbol) => {
-            let symbol_candles = sim_data
-                .candles
-                .get(symbol)
-                .map(|candles| {
-                    candles
-                        .iter()
-                        .rev()
-                        .take(limit)
-                        .rev()
-                        .map(|c| CandleData {
-                            symbol: c.symbol.clone(),
-                            tick: c.tick,
-                            open: c.open.to_float(),
-                            high: c.high.to_float(),
-                            low: c.low.to_float(),
-                            close: c.close.to_float(),
-                            volume: c.volume.raw(),
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            let mut map = HashMap::new();
-            map.insert(symbol.clone(), symbol_candles);
-            map
-        }
-        None => sim_data
+    // Get symbol from query or use first available
+    let symbol = query.symbol.unwrap_or_else(|| {
+        sim_data
             .candles
-            .iter()
-            .map(|(sym, candles)| {
-                let data = candles
-                    .iter()
-                    .rev()
-                    .take(limit)
-                    .rev()
-                    .map(|c| CandleData {
-                        symbol: c.symbol.clone(),
-                        tick: c.tick,
-                        open: c.open.to_float(),
-                        high: c.high.to_float(),
-                        low: c.low.to_float(),
-                        close: c.close.to_float(),
-                        volume: c.volume.raw(),
-                    })
-                    .collect();
-                (sym.clone(), data)
-            })
-            .collect(),
-    };
+            .keys()
+            .next()
+            .cloned()
+            .unwrap_or_else(|| "UNKNOWN".to_string())
+    });
 
-    let total = candles.values().map(|v| v.len()).sum();
+    let candles: Vec<CandleData> = sim_data
+        .candles
+        .get(&symbol)
+        .map(|candles| {
+            candles
+                .iter()
+                .rev()
+                .take(limit)
+                .rev()
+                .map(|c| CandleData {
+                    symbol: c.symbol.clone(),
+                    tick: c.tick,
+                    open: c.open.to_float(),
+                    high: c.high.to_float(),
+                    low: c.low.to_float(),
+                    close: c.close.to_float(),
+                    volume: c.volume.raw(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
-    Ok(Json(CandlesResponse { candles, total }))
+    let total = candles.len();
+
+    Ok(Json(CandlesResponse {
+        symbol,
+        candles,
+        total,
+    }))
 }
 
 /// Get technical indicators: `GET /api/analytics/indicators`
@@ -330,10 +347,23 @@ pub async fn get_indicators(
     Query(query): Query<IndicatorsQuery>,
 ) -> AppResult<Json<IndicatorsResponse>> {
     let sim_data = state.sim_data.read().await;
-    let symbol = &query.symbol;
+
+    // Get symbol from query or use first available
+    let symbol = query.symbol.unwrap_or_else(|| {
+        sim_data
+            .indicators
+            .keys()
+            .next()
+            .cloned()
+            .unwrap_or_else(|| "UNKNOWN".to_string())
+    });
 
     // Get indicator values from snapshot
-    let indicators = sim_data.indicators.get(symbol).cloned().unwrap_or_default();
+    let indicators = sim_data
+        .indicators
+        .get(&symbol)
+        .cloned()
+        .unwrap_or_default();
 
     // Build SMA map
     let mut sma = HashMap::new();
@@ -402,34 +432,42 @@ pub async fn get_factors(
     Query(query): Query<FactorsQuery>,
 ) -> AppResult<Json<FactorsResponse>> {
     let sim_data = state.sim_data.read().await;
-    let symbol = &query.symbol;
+
+    // Get symbol from query or use first available
+    let symbol = query.symbol.unwrap_or_else(|| {
+        sim_data
+            .indicators
+            .keys()
+            .next()
+            .cloned()
+            .unwrap_or_else(|| "UNKNOWN".to_string())
+    });
 
     // Compute momentum score from RSI and SMA crossover
     let rsi = sim_data
         .indicators
-        .get(symbol)
+        .get(&symbol)
         .and_then(|ind| ind.get("RSI_14"))
         .copied()
         .unwrap_or(50.0);
-    let momentum_score = (rsi - 50.0) / 50.0; // Normalize RSI to -1 to +1
+    let momentum_score = ((rsi - 50.0) / 50.0).clamp(-1.0, 1.0); // Normalize RSI to -1 to +1
 
     // Compute value score from price vs fair value
-    let current_price = sim_data.prices.get(symbol).map(|p| p.to_float());
-    let fair_value = sim_data.fair_values.get(symbol).map(|p| p.to_float());
-    let (value_score, price_to_fair_value) = match (current_price, fair_value) {
+    let current_price = sim_data.prices.get(&symbol).map(|p| p.to_float());
+    let fair_value = sim_data.fair_values.get(&symbol).map(|p| p.to_float());
+    let value_score = match (current_price, fair_value) {
         (Some(price), Some(fv)) if fv > 0.0 => {
             let ratio = price / fv;
             // If price < fair value, positive score (undervalued)
-            let score = ((1.0 / ratio) - 1.0).clamp(-1.0, 1.0);
-            (score, Some(ratio))
+            ((1.0 / ratio) - 1.0).clamp(-1.0, 1.0)
         }
-        _ => (0.0, None),
+        _ => 0.0,
     };
 
     // Compute volatility score from ATR
     let atr = sim_data
         .indicators
-        .get(symbol)
+        .get(&symbol)
         .and_then(|ind| ind.get("ATR_14"))
         .copied()
         .unwrap_or(0.0);
@@ -440,15 +478,33 @@ pub async fn get_factors(
         0.0
     };
 
-    let factors = FactorData {
-        momentum_score: momentum_score.clamp(-1.0, 1.0),
-        value_score,
-        volatility_score,
-        price_to_fair_value,
-    };
+    // Build factor snapshots array matching frontend FactorSnapshot type
+    let factors = vec![
+        FactorSnapshot {
+            name: "Momentum".to_string(),
+            value: momentum_score,
+            min: -1.0,
+            max: 1.0,
+            neutral: 0.0,
+        },
+        FactorSnapshot {
+            name: "Value".to_string(),
+            value: value_score,
+            min: -1.0,
+            max: 1.0,
+            neutral: 0.0,
+        },
+        FactorSnapshot {
+            name: "Volatility".to_string(),
+            value: volatility_score,
+            min: 0.0,
+            max: 1.0,
+            neutral: 0.2,
+        },
+    ];
 
     Ok(Json(FactorsResponse {
-        symbol: symbol.clone(),
+        symbol,
         factors,
         tick: sim_data.tick,
     }))
@@ -583,6 +639,60 @@ pub async fn get_risk_metrics(
     }))
 }
 
+/// Aggregate risk metrics response (no agent_id).
+#[derive(Debug, Serialize)]
+pub struct AggregateRiskResponse {
+    pub var_95: Option<f64>,
+    pub var_99: Option<f64>,
+    pub max_drawdown: f64,
+    pub current_drawdown: f64,
+    pub sharpe_ratio: Option<f64>,
+    pub sortino_ratio: Option<f64>,
+    pub volatility: Option<f64>,
+    pub tick: u64,
+}
+
+/// Get aggregate risk metrics: `GET /api/risk/aggregate`
+pub async fn get_aggregate_risk(
+    State(state): State<ServerState>,
+) -> AppResult<Json<AggregateRiskResponse>> {
+    let sim_data = state.sim_data.read().await;
+
+    // Aggregate risk metrics across all agents (or use market-wide stats)
+    // For now, compute averages from available agent risk data
+    let mut total_drawdown: f64 = 0.0;
+    let mut total_sharpe: f64 = 0.0;
+    let mut sharpe_count = 0;
+    let mut max_dd: f64 = 0.0;
+
+    for risk in sim_data.risk_metrics.values() {
+        max_dd = max_dd.max(risk.max_drawdown);
+        total_drawdown += risk.max_drawdown;
+        if let Some(s) = risk.sharpe {
+            total_sharpe += s;
+            sharpe_count += 1;
+        }
+    }
+
+    let count = sim_data.risk_metrics.len().max(1) as f64;
+    let avg_sharpe = if sharpe_count > 0 {
+        Some(total_sharpe / sharpe_count as f64)
+    } else {
+        None
+    };
+
+    Ok(Json(AggregateRiskResponse {
+        var_95: Some(0.02), // Placeholder - would compute from portfolio
+        var_99: Some(0.035),
+        max_drawdown: max_dd,
+        current_drawdown: total_drawdown / count,
+        sharpe_ratio: avg_sharpe,
+        sortino_ratio: None,    // Would compute from returns
+        volatility: Some(0.15), // Placeholder
+        tick: sim_data.tick,
+    }))
+}
+
 // =============================================================================
 // Handlers - News
 // =============================================================================
@@ -597,20 +707,68 @@ pub async fn get_active_news(
         .active_events
         .iter()
         .map(|e| {
-            let event_type = match &e.event {
-                news::FundamentalEvent::EarningsSurprise { .. } => "EarningsSurprise",
-                news::FundamentalEvent::GuidanceChange { .. } => "GuidanceChange",
-                news::FundamentalEvent::RateDecision { .. } => "RateDecision",
-                news::FundamentalEvent::SectorNews { .. } => "SectorNews",
+            let (event_type, headline) = match &e.event {
+                news::FundamentalEvent::EarningsSurprise {
+                    symbol,
+                    surprise_pct,
+                } => {
+                    let dir = if *surprise_pct >= 0.0 {
+                        "beats"
+                    } else {
+                        "misses"
+                    };
+                    (
+                        "EarningsSurprise",
+                        format!(
+                            "{} {} earnings by {:.1}%",
+                            symbol,
+                            dir,
+                            surprise_pct.abs() * 100.0
+                        ),
+                    )
+                }
+                news::FundamentalEvent::GuidanceChange { symbol, new_growth } => {
+                    let dir_str = if *new_growth >= 0.0 {
+                        "raises"
+                    } else {
+                        "lowers"
+                    };
+                    (
+                        "GuidanceChange",
+                        format!(
+                            "{} {} guidance to {:.1}%",
+                            symbol,
+                            dir_str,
+                            new_growth.abs() * 100.0
+                        ),
+                    )
+                }
+                news::FundamentalEvent::RateDecision { new_rate } => (
+                    "RateDecision",
+                    format!("Fed sets rate at {:.2}%", new_rate * 100.0),
+                ),
+                news::FundamentalEvent::SectorNews { sector, .. } => (
+                    "SectorNews",
+                    format!(
+                        "{:?} sector news: sentiment {:.0}%",
+                        sector,
+                        e.sentiment * 100.0
+                    ),
+                ),
             };
+
+            // Impact = sentiment * magnitude * decay
+            let impact = e.effective_sentiment(sim_data.tick) * e.magnitude;
 
             NewsEventData {
                 id: e.id,
+                headline,
                 event_type: event_type.to_string(),
                 symbol: e.symbol().cloned(),
                 sector: e.sector().map(|s| format!("{:?}", s)),
                 sentiment: e.sentiment,
                 magnitude: e.magnitude,
+                impact,
                 start_tick: e.start_tick,
                 duration_ticks: e.duration_ticks,
                 effective_sentiment: e.effective_sentiment(sim_data.tick),
@@ -624,6 +782,72 @@ pub async fn get_active_news(
     Ok(Json(ActiveNewsResponse {
         events,
         count,
+        tick: sim_data.tick,
+    }))
+}
+
+// =============================================================================
+// Handlers - Order Distribution (V4.4)
+// =============================================================================
+
+/// Order distribution query parameters.
+#[derive(Debug, Deserialize)]
+pub struct OrderDistributionQuery {
+    /// Symbol to query (optional).
+    pub symbol: Option<String>,
+}
+
+/// Price level with quantity.
+pub type PriceLevel = (f64, u64);
+
+/// Response for /api/analytics/order-distribution.
+#[derive(Debug, Serialize)]
+pub struct OrderDistributionResponse {
+    pub symbol: String,
+    pub bids: Vec<PriceLevel>,
+    pub asks: Vec<PriceLevel>,
+    pub tick: u64,
+}
+
+/// Get pre-auction order distribution: `GET /api/analytics/order-distribution`
+pub async fn get_order_distribution(
+    State(state): State<ServerState>,
+    Query(query): Query<OrderDistributionQuery>,
+) -> AppResult<Json<OrderDistributionResponse>> {
+    let sim_data = state.sim_data.read().await;
+
+    // Get the first symbol with order distribution, or use query symbol
+    let symbol = query.symbol.unwrap_or_else(|| {
+        sim_data
+            .order_distribution
+            .keys()
+            .next()
+            .cloned()
+            .unwrap_or_else(|| "UNKNOWN".to_string())
+    });
+
+    let (bids, asks) = sim_data
+        .order_distribution
+        .get(&symbol)
+        .map(|dist| {
+            let bids: Vec<PriceLevel> = dist
+                .bids
+                .iter()
+                .map(|(price, qty)| (price.to_float(), *qty))
+                .collect();
+            let asks: Vec<PriceLevel> = dist
+                .asks
+                .iter()
+                .map(|(price, qty)| (price.to_float(), *qty))
+                .collect();
+            (bids, asks)
+        })
+        .unwrap_or_default();
+
+    Ok(Json(OrderDistributionResponse {
+        symbol,
+        bids,
+        asks,
         tick: sim_data.tick,
     }))
 }
@@ -650,15 +874,18 @@ mod tests {
     }
 
     #[test]
-    fn test_factor_data_clamping() {
-        let factors = FactorData {
-            momentum_score: 1.5, // Should be clamped to 1.0 in handler
-            value_score: -1.2,   // Should be clamped to -1.0 in handler
-            volatility_score: 0.5,
-            price_to_fair_value: Some(1.1),
+    fn test_factor_snapshot_serialization() {
+        let factor = FactorSnapshot {
+            name: "Momentum".to_string(),
+            value: 0.5,
+            min: -1.0,
+            max: 1.0,
+            neutral: 0.0,
         };
 
-        assert!(factors.momentum_score <= 1.0 || factors.momentum_score >= -1.0);
+        let json = serde_json::to_string(&factor).unwrap();
+        assert!(json.contains("\"name\":\"Momentum\""));
+        assert!(json.contains("\"value\":0.5"));
     }
 
     #[test]

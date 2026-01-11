@@ -1,4 +1,4 @@
-//! SimulationHook implementations for broadcasting updates (V4.2).
+//! SimulationHook implementations for broadcasting updates (V4.2, V4.4).
 //!
 //! Provides the bridge from sync simulation to async server via hooks.
 //!
@@ -10,6 +10,12 @@
 //!       │── on_tick_end() ───────▶│                       │
 //!       │                         │── tick_tx.send() ────▶│
 //!       │                         │                       │── ws broadcast
+//!
+//! Simulation (sync)          DataServiceHook         REST Handlers
+//!       │                         │                       │
+//!       │── on_tick_end() ───────▶│                       │
+//!       │                         │── update SimData ────▶│
+//!       │                         │    (RwLock write)     │── read SimData
 //! ```
 //!
 //! # Design Principles
@@ -17,14 +23,23 @@
 //! - **Declarative**: Hook declares what events it handles
 //! - **Modular**: Hook is self-contained, no dependencies on server internals
 //! - **SoC**: Hook observes simulation, server distributes updates
+//!
+//! # V4.4 DataServiceHook
+//!
+//! The DataServiceHook updates SimData cache with simulation state on each tick.
+//! Uses the enriched HookContext from V4.4 which includes candles, indicators,
+//! agent summaries, risk metrics, and fair values.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use simulation::{HookContext, SimulationHook, SimulationStats};
-use tokio::sync::broadcast;
+use tokio::sync::{RwLock, broadcast};
+use types::{AgentId, Order, OrderSide, OrderType, Symbol};
 
 use crate::bridge::{SymbolData, TickData};
+use crate::state::{AgentData, AgentPosition, NewsEventSnapshot, OrderDistribution, SimData};
 
 /// Hook that broadcasts simulation updates to the server.
 ///
@@ -117,6 +132,239 @@ impl SimulationHook for BroadcastHook {
 // Required for Arc<dyn SimulationHook>
 unsafe impl Send for BroadcastHook {}
 unsafe impl Sync for BroadcastHook {}
+
+// =============================================================================
+// DataServiceHook (V4.4)
+// =============================================================================
+
+/// Hook that updates SimData cache for REST API endpoints (V4.4).
+///
+/// On each tick, this hook:
+/// 1. Reads prices from HookContext (market snapshot)
+/// 2. Reads enriched data from HookContext (candles, indicators, agents, etc.)
+/// 3. Writes to SimData (Arc<RwLock>) for REST handlers to read
+///
+/// # Thread Safety
+///
+/// - Hook is called from simulation thread (sync)
+/// - SimData is read by Axum handlers (async)
+/// - RwLock ensures safe concurrent access
+pub struct DataServiceHook {
+    /// Shared SimData cache for REST endpoints.
+    sim_data: Arc<RwLock<SimData>>,
+    /// Update interval (only update SimData every N ticks for performance).
+    update_interval: u64,
+}
+
+impl DataServiceHook {
+    /// Create a new DataServiceHook.
+    ///
+    /// # Arguments
+    /// - `sim_data`: Shared SimData from ServerState
+    pub fn new(sim_data: Arc<RwLock<SimData>>) -> Self {
+        Self {
+            sim_data,
+            update_interval: 1,
+        }
+    }
+
+    /// Create with custom update interval.
+    pub fn with_interval(sim_data: Arc<RwLock<SimData>>, interval: u64) -> Self {
+        Self {
+            sim_data,
+            update_interval: interval.max(1),
+        }
+    }
+
+    /// Update order distribution from pre-auction orders (V4.4).
+    ///
+    /// Called from `on_orders_collected` to capture order flow before batch auction.
+    /// Aggregates orders by symbol and price level for "order book depth" visualization.
+    fn update_order_distribution(&self, orders: Vec<Order>) {
+        use std::collections::BTreeMap;
+
+        // Group orders by symbol
+        let mut by_symbol: HashMap<Symbol, Vec<&Order>> = HashMap::new();
+        for order in &orders {
+            by_symbol
+                .entry(order.symbol.clone())
+                .or_default()
+                .push(order);
+        }
+
+        // Build distribution per symbol
+        let mut distributions: HashMap<Symbol, OrderDistribution> = HashMap::new();
+
+        for (symbol, symbol_orders) in by_symbol {
+            let mut bids: BTreeMap<types::Price, u64> = BTreeMap::new();
+            let mut asks: BTreeMap<types::Price, u64> = BTreeMap::new();
+
+            for order in symbol_orders {
+                // Only process limit orders (have price)
+                let price = match &order.order_type {
+                    OrderType::Limit { price } => *price,
+                    OrderType::Market => continue, // Skip market orders (no price level)
+                };
+
+                let map = match order.side {
+                    OrderSide::Buy => &mut bids,
+                    OrderSide::Sell => &mut asks,
+                };
+                *map.entry(price).or_default() += order.quantity.raw();
+            }
+
+            // Convert to sorted vecs (bids descending, asks ascending)
+            let bids_vec: Vec<(types::Price, u64)> = bids.into_iter().rev().collect();
+            let asks_vec: Vec<(types::Price, u64)> = asks.into_iter().collect();
+
+            distributions.insert(
+                symbol,
+                OrderDistribution {
+                    bids: bids_vec,
+                    asks: asks_vec,
+                },
+            );
+        }
+
+        // Write to SimData
+        if let Ok(mut data) = self.sim_data.try_write() {
+            data.order_distribution = distributions;
+        }
+    }
+
+    /// Update SimData from enriched hook context (V4.4).
+    fn update_sim_data(&self, ctx: &HookContext, enriched: &simulation::EnrichedData) {
+        // Build prices from hook context
+        let prices: HashMap<Symbol, types::Price> = ctx
+            .market
+            .mid_prices
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
+
+        // Convert agent summaries to AgentData
+        let agents: Vec<AgentData> = enriched
+            .agent_summaries
+            .iter()
+            .enumerate()
+            .map(|(i, (name, positions, cash, total_pnl))| {
+                let is_mm = name.contains("Market");
+                let tier = if name.contains("Reactive") || name.contains("SectorRotator") {
+                    2
+                } else if name.contains("T3") || name.contains("Pool") {
+                    3
+                } else {
+                    1
+                };
+
+                // Calculate equity from positions
+                let position_value: f64 = positions
+                    .iter()
+                    .map(|(sym, qty)| {
+                        let price = prices.get(sym).map(|p| p.to_float()).unwrap_or(100.0);
+                        *qty as f64 * price
+                    })
+                    .sum();
+                let equity = cash.to_float() + position_value;
+
+                // Convert positions to AgentPosition format
+                let agent_positions: HashMap<Symbol, AgentPosition> = positions
+                    .iter()
+                    .map(|(sym, qty)| {
+                        (
+                            sym.clone(),
+                            AgentPosition {
+                                symbol: sym.clone(),
+                                quantity: *qty,
+                                avg_cost: 0.0, // Not available from summary
+                            },
+                        )
+                    })
+                    .collect();
+
+                AgentData {
+                    id: (i + 1) as u64,
+                    name: name.clone(),
+                    cash: cash.to_float(),
+                    equity,
+                    total_pnl: total_pnl.to_float(),
+                    realized_pnl: 0.0, // Not available from summary
+                    positions: agent_positions,
+                    position_count: positions.len(),
+                    is_market_maker: is_mm,
+                    tier,
+                }
+            })
+            .collect();
+
+        // Build equity curves from risk metrics
+        let equity_curves: HashMap<AgentId, Vec<f64>> = enriched
+            .risk_metrics
+            .keys()
+            .map(|id| (*id, Vec::new())) // TODO: Track equity history
+            .collect();
+
+        // Convert news events to our NewsEventSnapshot
+        let active_events: Vec<NewsEventSnapshot> = enriched
+            .news_events
+            .iter()
+            .map(|e| NewsEventSnapshot {
+                id: e.id,
+                event: e.event.clone(),
+                sentiment: e.sentiment,
+                magnitude: e.magnitude,
+                start_tick: e.start_tick,
+                duration_ticks: e.duration_ticks,
+            })
+            .collect();
+
+        // Write to SimData (blocking write from sync context)
+        // Using try_write to avoid blocking if readers are active
+        if let Ok(mut data) = self.sim_data.try_write() {
+            data.tick = ctx.tick;
+            data.candles = enriched.candles.clone();
+            data.indicators = enriched.indicators.clone();
+            data.prices = prices;
+            data.fair_values = enriched.fair_values.iter().map(|(k, v)| (k.clone(), *v)).collect();
+            data.agents = agents;
+            data.risk_metrics = enriched.risk_metrics.clone();
+            data.equity_curves = equity_curves;
+            data.active_events = active_events;
+        }
+        // If try_write fails, skip this update (next tick will catch up)
+    }
+}
+
+impl SimulationHook for DataServiceHook {
+    fn name(&self) -> &str {
+        "DataServiceHook"
+    }
+
+    fn on_orders_collected(&self, orders: Vec<Order>, _ctx: &HookContext) {
+        // Capture pre-auction order distribution for "order book depth" visualization.
+        // In batch auction mode, this shows order flow intent before clearing.
+        self.update_order_distribution(orders);
+    }
+
+    fn on_tick_end(&self, _stats: &SimulationStats, ctx: &HookContext) {
+        // Rate limit updates
+        if !ctx.tick.is_multiple_of(self.update_interval) {
+            return;
+        }
+
+        // Get enriched data from context (V4.4)
+        let Some(enriched) = ctx.enriched.as_ref() else {
+            return; // No enriched data, skip update
+        };
+
+        // Update SimData from enriched context
+        self.update_sim_data(ctx, enriched);
+    }
+}
+
+// Required for Arc<dyn SimulationHook>
+unsafe impl Send for DataServiceHook {}
+unsafe impl Sync for DataServiceHook {}
 
 #[cfg(test)]
 mod tests {

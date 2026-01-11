@@ -14,9 +14,12 @@
 │                      types crate                         │
 │        (Order, Trade, Price, Symbol, Sector)            │
 └─────────────────────────────────────────────────────────┘
-│     tui crate      ││    storage crate    │
-│  (visualization)   ││ (SQLite persistence)│
-└────────────────────┘└─────────────────────┘
+│  tui crate  ││  storage crate  ││     server crate      │
+│ (terminal)  ││ (SQLite persist)││ (Axum REST/WebSocket) │
+└─────────────┘└─────────────────┘└───────────────────────┘
+                                  │    React Frontend     │
+                                  │ (Vite/Tailwind/TypeScript)
+                                  └───────────────────────┘
 ```
 
 ## Crate Responsibilities
@@ -31,6 +34,8 @@
 | `simulation` | Tick loop, parallel execution, hooks | `runner.rs`, `parallel.rs`, `hooks.rs` |
 | `storage` | SQLite persistence, candle aggregation | `schema.rs`, `candles.rs`, `hook.rs` |
 | `tui` | Terminal UI | `app.rs`, `widgets/` |
+| `server` | Axum HTTP/WebSocket server | `app.rs`, `routes/`, `hooks.rs` |
+| `frontend` | React web dashboard | `pages/`, `components/`, `hooks/` |
 
 ## Simulation Loop (V3 Two-Phase Architecture)
 
@@ -91,12 +96,30 @@ With defaults: $5 EPS, 40% payout, 5% growth → **$52.50 fair value**
 
 ## Build & Run
 
+### Terminal UI (requires Rust)
 ```bash
-cargo build --release           # Build
-cargo test --all                # Tests
-cargo run --release             # TUI (Space to start)
-cargo run --release -- --headless --ticks 10000  # Benchmark
-docker compose up               # Containerized run (port 7681)
+cargo build --release
+cargo run --release                              # TUI (Space to start)
+cargo run --release -- --headless --ticks 10000  # Headless benchmark
+```
+
+### Terminal UI via Docker (no Rust needed)
+```bash
+docker compose -f docker-compose.tui.yaml up
+```
+Open http://localhost:7681 for web-based terminal.
+
+### Web Dashboard (full visualization)
+```bash
+docker compose up                         # Production (localhost:80)
+docker compose -f docker-compose.dev.yaml up  # Development with hot reload (localhost:5173)
+```
+
+### Development Commands
+```bash
+cargo test --all                     # Run all tests
+docker compose -f docker-compose.frontend.yaml run --rm typecheck        # TypeScript check
+docker compose -f docker-compose.frontend.yaml run --rm integration-test # API tests
 ```
 
 ## TUI Controls

@@ -14,6 +14,8 @@ pub struct StorageConfig {
     pub candle_timeframes: Vec<u64>,
     /// Snapshot interval in ticks (default: 1000)
     pub snapshot_interval: u64,
+    /// Trade write interval in ticks (default: 100) - buffer trades and flush every N ticks
+    pub trade_write_interval: u64,
 }
 
 impl Default for StorageConfig {
@@ -22,6 +24,7 @@ impl Default for StorageConfig {
             path: ":memory:".to_string(),
             candle_timeframes: vec![60, 300, 3600], // 1m, 5m, 1h (assuming 1 tick = 1 second)
             snapshot_interval: 1000,
+            trade_write_interval: 100, // Flush trades every 100 ticks
         }
     }
 }

@@ -411,6 +411,96 @@ impl Simulation {
             .with_tiers(self.t1_indices.len(), self.t2_indices.len(), t3_count)
     }
 
+    /// Build hook context with enriched data for `on_tick_end` (V4.4).
+    ///
+    /// Includes candles, indicators, agent summaries, risk metrics, etc.
+    fn build_enriched_hook_context(&self) -> HookContext {
+        use crate::hooks::EnrichedData;
+
+        // Start with base context
+        let base = self.build_hook_context();
+
+        // Build enriched data
+        let enriched = EnrichedData {
+            candles: self.candles.clone(),
+            indicators: self.build_indicators_for_hook(),
+            agent_summaries: self.agent_summaries(),
+            risk_metrics: self.risk_tracker.compute_all_metrics(),
+            fair_values: HashMap::new(), // No factor engine in current implementation
+            news_events: self.get_active_news_snapshots(),
+        };
+
+        base.with_enriched(enriched)
+    }
+
+    /// Build indicator snapshot per symbol for hooks (returns String keys).
+    fn build_indicators_for_hook(&self) -> HashMap<Symbol, HashMap<String, f64>> {
+        use quant::indicators::{BollingerBands, Macd};
+        use types::IndicatorType;
+
+        self.market
+            .symbols()
+            .filter_map(|symbol| {
+                let candles = self.candles.get(symbol)?;
+                if candles.is_empty() {
+                    return None;
+                }
+
+                let mut values: HashMap<String, f64> = self
+                    .indicator_engine
+                    .compute_all(candles)
+                    .into_iter()
+                    .filter_map(|(itype, v)| {
+                        // Convert IndicatorType to canonical key format for REST API
+                        // Skip MACD and Bollinger here - we'll handle them separately
+                        let key = match itype {
+                            IndicatorType::Sma(p) => format!("SMA_{}", p),
+                            IndicatorType::Ema(p) => format!("EMA_{}", p),
+                            IndicatorType::Rsi(p) => format!("RSI_{}", p),
+                            IndicatorType::Atr(p) => format!("ATR_{}", p),
+                            IndicatorType::Macd { .. } | IndicatorType::BollingerBands { .. } => {
+                                return None;
+                            }
+                        };
+                        Some((key, v))
+                    })
+                    .collect();
+
+                // Compute full MACD output
+                if let Some(macd_output) = Macd::standard().calculate_full(candles) {
+                    values.insert("MACD_line".to_string(), macd_output.macd_line);
+                    values.insert("MACD_signal".to_string(), macd_output.signal_line);
+                    values.insert("MACD_histogram".to_string(), macd_output.histogram);
+                }
+
+                // Compute full Bollinger Bands output
+                if let Some(bb_output) = BollingerBands::standard().calculate_full(candles) {
+                    values.insert("BB_upper".to_string(), bb_output.upper);
+                    values.insert("BB_middle".to_string(), bb_output.middle);
+                    values.insert("BB_lower".to_string(), bb_output.lower);
+                }
+
+                Some((symbol.clone(), values))
+            })
+            .collect()
+    }
+
+    /// Get active news events as snapshots for hooks.
+    fn get_active_news_snapshots(&self) -> Vec<crate::hooks::NewsEventSnapshot> {
+        self.active_events
+            .iter()
+            .filter(|e| e.is_active(self.tick))
+            .map(|e| crate::hooks::NewsEventSnapshot {
+                id: e.id,
+                event: e.event.clone(),
+                sentiment: e.sentiment,
+                magnitude: e.magnitude,
+                start_tick: e.start_tick,
+                duration_ticks: e.duration_ticks,
+            })
+            .collect()
+    }
+
     /// Set the Tier 3 background pool for statistical order generation (V3.4).
     ///
     /// The pool generates orders each tick based on statistical distributions,
@@ -680,6 +770,29 @@ impl Simulation {
 
         // Check if we should finalize candles (every candle_interval ticks)
         if self.tick > 0 && self.tick.is_multiple_of(self.config.candle_interval) {
+            // Ensure ALL symbols have candles, even if no trades occurred.
+            // Use last known price (or initial price) for symbols without trades.
+            let all_symbols: Vec<Symbol> = self.market.symbols().cloned().collect();
+            for symbol in &all_symbols {
+                if !self.current_candles.contains_key(symbol) {
+                    // Get last price from market book or last candle
+                    let price = self
+                        .market
+                        .get_book(symbol)
+                        .and_then(|b| b.last_price())
+                        .or_else(|| {
+                            self.candles
+                                .get(symbol)
+                                .and_then(|c| c.last())
+                                .map(|c| c.close)
+                        })
+                        .unwrap_or_else(|| types::Price::from_float(100.0));
+
+                    self.current_candles
+                        .insert(symbol.clone(), CandleBuilder::new(symbol, price, self.tick));
+                }
+            }
+
             // Finalize all current candles
             let builders: Vec<(Symbol, CandleBuilder)> = self.current_candles.drain().collect();
             for (symbol, builder) in builders {
@@ -1442,9 +1555,9 @@ impl Simulation {
         // Phase 12: Update risk tracking
         self.update_risk_tracking();
 
-        // Phase 13 (V3.6): Hook - tick end
+        // Phase 13 (V3.6): Hook - tick end with enriched data (V4.4)
         if !self.hooks.is_empty() {
-            let hook_ctx = self.build_hook_context();
+            let hook_ctx = self.build_enriched_hook_context();
             self.hooks.on_tick_end(&self.stats, &hook_ctx);
         }
 

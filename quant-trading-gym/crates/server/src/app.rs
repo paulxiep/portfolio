@@ -46,6 +46,8 @@ pub fn create_app(state: ServerState) -> Router {
         // API endpoints (V4.2)
         .route("/api/status", get(api::get_status))
         .route("/api/command", post(api::post_command))
+        // V4.5 Data Service: Symbols
+        .route("/api/symbols", get(data::get_symbols))
         // V4.3 Data Service: Analytics
         .route("/api/analytics/candles", get(data::get_candles))
         .route("/api/analytics/indicators", get(data::get_indicators))
@@ -58,6 +60,13 @@ pub fn create_app(state: ServerState) -> Router {
         )
         // V4.3 Data Service: Risk
         .route("/api/risk/{agent_id}", get(data::get_risk_metrics))
+        // V4.4 Data Service: Aggregate Risk
+        .route("/api/risk/aggregate", get(data::get_aggregate_risk))
+        // V4.4 Data Service: Order Distribution
+        .route(
+            "/api/analytics/order-distribution",
+            get(data::get_order_distribution),
+        )
         // V4.3 Data Service: News
         .route("/api/news/active", get(data::get_active_news))
         // Middleware

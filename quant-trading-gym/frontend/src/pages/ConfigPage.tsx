@@ -154,7 +154,6 @@ export function ConfigPage() {
             <EventsSection config={config} updateConfig={updateConfig} />
           </div>
         </div>
-
       </main>
     </div>
   );

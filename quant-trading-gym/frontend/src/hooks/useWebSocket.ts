@@ -76,11 +76,7 @@ const DEFAULT_WS_URL = 'ws://localhost:8001/ws';
  * ```
  */
 export function useWebSocket(options: UseWebSocketOptions = {}): UseWebSocketReturn {
-  const {
-    url = DEFAULT_WS_URL,
-    autoReconnect = true,
-    reconnectInterval = 3000,
-  } = options;
+  const { url = DEFAULT_WS_URL, autoReconnect = true, reconnectInterval = 3000 } = options;
 
   const [tickData, setTickData] = useState<TickData | null>(null);
   const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected');

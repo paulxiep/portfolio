@@ -1721,6 +1721,7 @@ dependencies = [
  "crossbeam-channel",
  "futures",
  "news",
+ "parking_lot",
  "quant",
  "serde",
  "serde_json",

@@ -1,5 +1,5 @@
 # Quant Trading Gym - Frontend Development
-# V4.1: React frontend with hot reload and formatting
+# V4.5: React frontend with hot reload, formatting, and integration tests
 
 services:
   # ─────────────────────────────────────────────────────────────────────────
@@ -8,7 +8,7 @@ services:
   frontend-dev:
     build:
       context: .
-      dockerfile: dockerfile/Dockerfile.frontend
+      dockerfile: dockerfile/frontend/Dockerfile
       target: dev
     ports:
       - "5173:5173"
@@ -25,12 +25,12 @@ services:
 
   # ─────────────────────────────────────────────────────────────────────────
   # Format: Run prettier and update source files
-  # Usage: docker compose run --rm format
+  # Usage: docker compose -f docker-compose.frontend.yaml run --rm format
   # ─────────────────────────────────────────────────────────────────────────
   format:
     build:
       context: .
-      dockerfile: dockerfile/Dockerfile.frontend
+      dockerfile: dockerfile/frontend/Dockerfile
       target: format
     volumes:
       - ./frontend/src:/app/src:rw  # Write formatted files back
@@ -39,12 +39,12 @@ services:
 
   # ─────────────────────────────────────────────────────────────────────────
   # Type Check: Verify TypeScript compiles
-  # Usage: docker compose run --rm typecheck
+  # Usage: docker compose -f docker-compose.frontend.yaml run --rm typecheck
   # ─────────────────────────────────────────────────────────────────────────
   typecheck:
     build:
       context: .
-      dockerfile: dockerfile/Dockerfile.frontend
+      dockerfile: dockerfile/frontend/Dockerfile
       target: typecheck
     volumes:
       - ./frontend/src:/app/src:ro
@@ -56,13 +56,33 @@ services:
       - tools
 
   # ─────────────────────────────────────────────────────────────────────────
+  # Integration Test: Test FE-BE API contract against running server
+  # Usage: docker compose -f docker-compose.frontend.yaml run --rm integration-test
+  # Note: Requires server to be running (docker compose up server)
+  # ─────────────────────────────────────────────────────────────────────────
+  integration-test:
+    build:
+      context: .
+      dockerfile: dockerfile/frontend/Dockerfile
+      target: integration-test
+    volumes:
+      - ./frontend/src:/app/src:ro
+      - ./frontend/vitest.integration.config.mjs:/app/vitest.integration.config.mjs:ro
+    environment:
+      - SERVER_URL=http://host.docker.internal:8001
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    profiles:
+      - tools
+
+  # ─────────────────────────────────────────────────────────────────────────
   # Build: Production build (outputs to frontend/dist)
   # Usage: docker compose -f docker-compose.frontend.yaml run --rm build
   # ─────────────────────────────────────────────────────────────────────────
   build:
     build:
       context: .
-      dockerfile: dockerfile/Dockerfile.frontend
+      dockerfile: dockerfile/frontend/Dockerfile
       target: dev
     command: ["npm", "run", "build"]
     volumes:
@@ -85,7 +105,7 @@ services:
   frontend-prod:
     build:
       context: .
-      dockerfile: dockerfile/Dockerfile.frontend
+      dockerfile: dockerfile/frontend/Dockerfile
       target: prod
     ports:
       - "8080:80"

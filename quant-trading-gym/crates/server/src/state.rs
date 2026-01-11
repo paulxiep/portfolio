@@ -96,6 +96,13 @@ impl NewsEventSnapshot {
 /// Cached simulation data for V4.3 Data Service endpoints.
 ///
 /// Updated by `DataServiceHook` on each tick. Read by API handlers.
+///
+/// # V4.4 Note on Order Book Data
+///
+/// In batch auction mode, order book is cleared after each tick. The `order_distribution`
+/// field captures pre-auction order demand/supply by price level, aggregated from
+/// `on_orders_collected` hook (before auction runs). This shows order flow intent
+/// rather than resting liquidity.
 #[derive(Debug, Default)]
 pub struct SimData {
     /// Current tick number.
@@ -116,6 +123,22 @@ pub struct SimData {
     pub equity_curves: HashMap<AgentId, Vec<f64>>,
     /// Active news events.
     pub active_events: Vec<NewsEventSnapshot>,
+    /// Pre-auction order distribution by symbol (V4.4).
+    /// Captured in `on_orders_collected` before batch auction.
+    /// Format: symbol -> (bid_levels, ask_levels) where level = (price, total_quantity)
+    pub order_distribution: HashMap<Symbol, OrderDistribution>,
+}
+
+/// Pre-auction order distribution for a symbol (V4.4).
+///
+/// Represents aggregated buy/sell orders by price level before batch auction.
+/// Used for "order book depth" visualization in UI.
+#[derive(Debug, Clone, Default)]
+pub struct OrderDistribution {
+    /// Bid (buy) orders aggregated by price level: (price, total_quantity)
+    pub bids: Vec<(Price, u64)>,
+    /// Ask (sell) orders aggregated by price level: (price, total_quantity)
+    pub asks: Vec<(Price, u64)>,
 }
 
 impl SimData {

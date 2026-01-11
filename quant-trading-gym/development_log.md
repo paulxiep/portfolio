@@ -1,5 +1,154 @@
 # Development Log
 
+## 2026-01-11: V4.4 Simulation Dashboard
+
+### Summary
+Implemented full simulation dashboard with real-time visualization components. Created DataServiceHook to populate REST API caches, including pre-auction order distribution capture before batch auction clearing. Built complete React component library: price charts, indicator panels, order depth, factor gauges, risk metrics, news feed, agent explorer with sortable PnL table, and time controls.
+
+### Files
+
+| File | Changes |
+|------|---------|
+| `crates/server/src/hooks.rs` | Added `DataServiceHook` with `on_orders_collected` and `on_tick_end` |
+| `crates/server/src/state.rs` | Added `OrderDistribution` struct for pre-auction bid/ask levels |
+| `crates/server/src/lib.rs` | Exported `DataServiceHook`, `OrderDistribution` |
+| `crates/server/Cargo.toml` | Added `parking_lot` dependency |
+| `frontend/src/types/api.ts` | Updated types: `Candle`, `IndicatorsResponse`, `FactorSnapshot`, `AgentData`, `RiskMetricsResponse`, `NewsEventData`, `OrderDistributionResponse` |
+| `frontend/src/hooks/useDataService.ts` | New: REST API hooks with auto-refresh |
+| `frontend/src/hooks/index.ts` | Added useDataService exports |
+| `frontend/src/components/dashboard/PriceChart.tsx` | New: SVG candlestick chart |
+| `frontend/src/components/dashboard/IndicatorPanel.tsx` | New: Technical indicator display |
+| `frontend/src/components/dashboard/OrderDepthChart.tsx` | New: Pre-auction bid/ask distribution |
+| `frontend/src/components/dashboard/FactorGauges.tsx` | New: Macro factor gauges |
+| `frontend/src/components/dashboard/RiskPanel.tsx` | New: VaR, drawdown, Sharpe display |
+| `frontend/src/components/dashboard/NewsFeed.tsx` | New: Active news events feed |
+| `frontend/src/components/dashboard/AgentTable.tsx` | New: Sortable agent explorer |
+| `frontend/src/components/dashboard/TimeControls.tsx` | New: Play/pause/step controls |
+| `frontend/src/components/dashboard/index.ts` | New: Dashboard components barrel |
+| `frontend/src/components/index.ts` | Added dashboard exports |
+| `frontend/src/pages/SimulationPage.tsx` | Replaced placeholder with full dashboard |
+
+### DataServiceHook Architecture
+
+**Pre-Auction Order Capture:**
+The simulation uses batch auction where order book is cleared after each tick. To visualize order flow, `DataServiceHook` captures orders at `on_orders_collected` (Phase 6) before auction clearing.
+
+```rust
+impl SimulationHook for DataServiceHook {
+    fn on_orders_collected(&mut self, orders: Vec<Order>) {
+        // Capture pre-auction bid/ask distribution
+        self.update_order_distribution(orders);
+    }
+
+    fn on_tick_end(&mut self, tick: u64, ...) {
+        // Update candles, indicators, agents, etc.
+        self.update_sim_data(tick, ...);
+    }
+}
+```
+
+**Order Distribution Structure:**
+```rust
+pub struct OrderDistribution {
+    pub bids: Vec<(Price, u64)>,  // Descending by price
+    pub asks: Vec<(Price, u64)>,  // Ascending by price
+}
+```
+
+### Dashboard Components
+
+**Charts:**
+- `PriceChart`: SVG candlestick with price axis, green/red coloring
+- `IndicatorPanel`: SMA, EMA, RSI, MACD, Bollinger, ATR values
+- `OrderDepthChart`: Horizontal bar chart showing bid/ask imbalance
+
+**Panels:**
+- `FactorGauges`: Visual gauges for macro factors (rate, volatility, momentum)
+- `RiskPanel`: VaR 95%, max drawdown, Sharpe ratio with risk level badge
+- `NewsFeed`: Active news cards with impact badges and duration progress
+
+**Tables:**
+- `AgentTable`: Sortable columns (ID, type, cash, positions, PnL), pagination
+
+**Controls:**
+- `TimeControls`: WebSocket connection status, tick counter, play/pause/step buttons
+
+### useDataService Hooks
+
+```typescript
+// Factory pattern for consistent API hooks
+const useCandles = createDataHook<CandlesResponse>('/api/candles');
+const useIndicators = createDataHook<IndicatorsResponse>('/api/indicators');
+const useFactors = createDataHook<FactorsResponse>('/api/factors');
+const useAgents = createDataHook<AgentsResponse>('/api/agents');
+const useRiskMetrics = createDataHook<RiskMetricsResponse>('/api/risk');
+const useActiveNews = createDataHook<ActiveNewsResponse>('/api/news');
+const useOrderDistribution = createDataHook<OrderDistributionResponse>('/api/order-distribution');
+
+// Composite hook for dashboard
+const useDashboardData = (config, refresh) => ({
+  candles: useCandles(config, refresh),
+  indicators: useIndicators(config, refresh),
+  // ...all data hooks
+});
+```
+
+### SimulationPage Layout
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Header: Logo ← | Configure button                          │
+├─────────────────────────────────────────────────────────────┤
+│ TimeControls: [●Connected] Tick: 1,234 | ▶ ⏸ ⏭ ■          │
+├─────────────────────────────────────────────────────────────┤
+│ Tabs: [Dashboard] [Agents] [Order Flow]                    │
+├─────────────────────────────────────────────────────────────┤
+│                                      │                     │
+│  PriceChart (8 cols)                 │  IndicatorPanel     │
+│  ┌─────────────────────────────┐    │  (4 cols)           │
+│  │ AAPL  150.25 +0.50 (+0.33%) │    │  ┌───────────────┐  │
+│  │ ╭───╮  ╭───╮                │    │  │ SMA-20: 149.8 │  │
+│  │ │   │──│   │                │    │  │ RSI: 55.3     │  │
+│  │ ╰───╯  ╰───╯                │    │  │ MACD: +0.4    │  │
+│  └─────────────────────────────┘    │  └───────────────┘  │
+│                                      │                     │
+│  OrderDepthChart                     │  FactorGauges       │
+│  ┌─────────────────────────────┐    │  ┌───────────────┐  │
+│  │ BIDS ████░░░░ ASKS          │    │  │ Rate: ███░░   │  │
+│  │ 150.10 ██████               │    │  │ Vol:  ████░   │  │
+│  │ 150.05 ████                 │    │  └───────────────┘  │
+│  └─────────────────────────────┘    │                     │
+├──────────────────────────────────────┼─────────────────────┤
+│  RiskPanel (6 cols)                  │  NewsFeed (6 cols)  │
+│  ┌─────────────────────┐             │  ┌────────────────┐ │
+│  │ [LOW RISK]          │             │  │ 📊 Earnings    │ │
+│  │ VaR 95%: 1.5%       │             │  │    +2.5%       │ │
+│  │ Drawdown: 3.2%      │             │  │ 🏛️ Fed Rate   │ │
+│  │ Sharpe: 1.8         │             │  │    -0.1%       │ │
+│  └─────────────────────┘             │  └────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Design Principles
+- **Declarative**: Components driven by props from hooks, no internal state mutations
+- **Modular**: Each component is self-contained with single responsibility
+- **SoC**: Data fetching (hooks) separated from display (components) separated from layout (page)
+
+### Exit Criteria
+```bash
+cargo build --package server     # ✅ Compiles
+docker compose -f docker-compose.frontend.yaml run --rm typecheck  # ✅ No errors
+docker compose -f docker-compose.frontend.yaml run --rm format     # ✅ Formatted
+```
+
+### Notes
+- Pre-auction order capture enables "order book depth" visualization even in batch auction model
+- All charts use pure SVG/CSS - no external charting library dependencies
+- Auto-refresh interval configurable via `useDataService` hooks
+- Agent table supports sorting by any numeric field, pagination for large agent counts
+
+---
+
 ## 2026-01-10: V4.3 Data Service
 
 ### Summary

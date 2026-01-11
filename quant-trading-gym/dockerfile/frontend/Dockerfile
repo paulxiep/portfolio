@@ -1,5 +1,5 @@
 # Frontend development Dockerfile
-# Supports: build, dev server, prettier formatting
+# Supports: build, dev server, prettier formatting, integration tests
 
 FROM node:22-alpine AS base
 WORKDIR /app
@@ -25,6 +25,11 @@ FROM deps AS typecheck
 COPY frontend/ .
 CMD ["npx", "tsc", "-b"]
 
+# Integration tests (requires SERVER_URL env var)
+FROM deps AS integration-test
+COPY frontend/ .
+CMD ["npm", "run", "test:integration"]
+
 # Build production (for standalone build)
 FROM deps AS builder
 COPY frontend/ .
@@ -33,6 +38,6 @@ RUN npm run build
 # Production server (nginx)
 FROM nginx:alpine AS prod
 COPY --from=builder /app/dist /usr/share/nginx/html
-COPY dockerfile/nginx.frontend.conf /etc/nginx/conf.d/default.conf
+COPY dockerfile/frontend/nginx.frontend.conf /etc/nginx/conf.d/default.conf
 EXPOSE 80
 CMD ["nginx", "-g", "daemon off;"]
