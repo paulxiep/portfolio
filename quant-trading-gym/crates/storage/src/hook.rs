@@ -222,7 +222,7 @@ mod tests {
     }
 
     #[test]
-    fn test_trade_persistence() {
+    fn test_trade_persistence_via_buffer() {
         use types::{OrderId, TradeId};
 
         let hook = StorageHook::new(StorageConfig::default()).unwrap();
@@ -240,7 +240,12 @@ mod tests {
             tick: 0,
         };
 
-        hook.persist_trade(0, &trade).unwrap();
+        // Use on_trades to buffer the trade (current V4.5 API)
+        let ctx = HookContext::new(0, 0);
+        hook.on_trades(vec![trade], &ctx);
+
+        // Flush the buffer to persist
+        hook.flush_trade_buffer().unwrap();
 
         // Verify trade was written
         let conn = hook.conn.lock();
