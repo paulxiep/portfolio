@@ -680,7 +680,7 @@ V4.4: Simulation Dashboard (~1 wk)
 - Interpretable (feature importance reveals what matters)
 - Validates full pipeline before adding complexity
 
-**V5.1-V5.4: Minimal Training Proof**
+**V5.1-V5.5: Minimal Training Proof**
 
 ```
 V5.1: Price Realism (~2 days)
@@ -691,7 +691,16 @@ V5.1: Price Realism (~2 days)
     └─► Disable for deterministic tests via config flag
     └─► Result: Realistic price wandering, meaningful training signal
 
-V5.2: Feature Recording Mode (~2 days)
+V5.2: Simulation Decomposition (~3-4 days)
+    └─► Problem: Simulation struct is 1,500 lines, violates SoC
+    └─► Extract subsystems: MarketDataManager, AgentOrchestrator, AuctionEngine, RiskManager, NewsEngine
+    └─► Define traits: MarketDataProvider, AgentExecutionCoordinator, Auctioneer, PositionTracker, RiskTracker, FundamentalsProvider
+    └─► Simulation becomes thin orchestrator (~300 lines)
+    └─► Remove redundant API methods (book(), recent_trades(), etc.)
+    └─► Update consumers (main.rs, tests)
+    └─► See: 5.2-simulation-decomposition.md for full details
+
+V5.3: Feature Recording Mode (~2 days)
     └─► New CLI flag: `--headless-record` (distinct from `--headless`)
     └─► `FeatureExtractor` trait with `MinimalFeatures` impl (~10 features)
     └─► Minimal features: price_change_1/5/20, position, cash, spread, mid_price
@@ -700,14 +709,14 @@ V5.2: Feature Recording Mode (~2 days)
     └─► Schema: (tick, agent_id, features[0..N], action, reward, next_features[0..N])
     └─► Feature names stored in header (V6 can add columns without breaking)
 
-V5.3: Tree-Based Training (~3 days)
+V5.4: Tree-Based Training (~3 days)
     └─► Extract training data via `--headless-record`
     └─► Train Random Forest (scikit-learn) — no feature normalization needed
     └─► Simple action labels: buy (+1), hold (0), sell (-1)
     └─► Export to JSON: `python scripts/export_rf.py`
     └─► Validate: feature importance, held-out accuracy
 
-V5.4: Rust Tree Inference (~2 days)
+V5.5: Rust Tree Inference (~2 days)
     └─► `MlModel` trait: `fn predict(&self, features: &[f64]) -> f64`
     └─► `DecisionTree` implements `MlModel` (node splits, thresholds, leaf values)
     └─► `TreeAgent<F: FeatureExtractor, M: MlModel>` — generic over features and model
@@ -719,7 +728,23 @@ V5.4: Rust Tree Inference (~2 days)
 
 **V5 File Structure**
 ```
-crates/agents/src/tier1/ml/
+crates/simulation/src/
+├── traits/                   # V5.2: Trait definitions
+│   ├── mod.rs
+│   ├── market_data.rs
+│   ├── agents.rs
+│   ├── auction.rs
+│   ├── risk.rs
+│   └── fundamentals.rs
+├── subsystems/               # V5.2: Subsystem implementations
+│   ├── mod.rs
+│   ├── market_data.rs
+│   ├── agents.rs
+│   ├── auction.rs
+│   ├── risk.rs
+│   └── news.rs
+
+crates/agents/src/tier1/ml/   # V5.3-V5.5: ML infrastructure
 ├── mod.rs              # MlModel trait, FeatureExtractor trait, pub use
 ├── features.rs         # MinimalFeatures struct (~10 features)
 ├── decision_tree.rs    # DecisionTree struct, JSON loader
@@ -732,9 +757,9 @@ crates/agents/src/tier1/ml/
 
 | Decision | Options | Trade-off | When to Decide |
 |----------|---------|-----------|----------------|
-| **ML agent count** | 100 / 1,000 / 10,000 | 100 agents: ~0.3ms/tick; 1,000: ~3ms/tick; 10,000: ~30ms/tick | V5.4 benchmarking |
+| **ML agent count** | 100 / 1,000 / 10,000 | 100 agents: ~0.3ms/tick; 1,000: ~3ms/tick; 10,000: ~30ms/tick | V5.5 benchmarking |
 
-**Total V5** ~1 week
+**Total V5** ~2 weeks (V5.1: 2d, V5.2: 3-4d, V5.3: 2d, V5.4: 3d, V5.5: 2d)
 
 ## V6: Feature Engineering
 
