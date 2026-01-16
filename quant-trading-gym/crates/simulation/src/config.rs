@@ -33,13 +33,13 @@ impl Default for ParallelizationConfig {
         Self {
             // Enable all parallel phases by default
             parallel_agent_collection: true,
-            parallel_indicators: false,
-            parallel_order_validation: false,
-            parallel_auctions: false,
-            parallel_candle_updates: false,
-            parallel_trade_updates: false,
+            parallel_indicators: true,
+            parallel_order_validation: true,
+            parallel_auctions: true,
+            parallel_candle_updates: true,
+            parallel_trade_updates: true,
             parallel_fill_notifications: true,
-            parallel_wake_conditions: false,
+            parallel_wake_conditions: true,
             parallel_risk_tracking: true,
         }
     }

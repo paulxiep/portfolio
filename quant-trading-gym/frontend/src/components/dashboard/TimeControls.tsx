@@ -171,7 +171,7 @@ export function TimeControls({
           {tickData && (
             <>
               <div className="text-center">
-                <div className="text-lg font-mono text-gray-300">{tickData.trades_this_tick}</div>
+                <div className="text-lg font-mono text-gray-300">{tickData.total_trades.toLocaleString()}</div>
                 <div className="text-gray-500 text-xs uppercase">Trades</div>
               </div>
               <div className="text-center">

@@ -170,10 +170,11 @@ fn build_update(
     let agents: Vec<AgentInfo> = agent_summaries
         .iter()
         .enumerate()
-        .map(|(i, (name, positions, cash, total_pnl))| {
-            let is_mm = name.contains("Market");
+        .map(|(i, summary)| {
+            let is_mm = summary.name.contains("Market");
             // Calculate equity from all positions
-            let position_value: f64 = positions
+            let position_value: f64 = summary
+                .positions
                 .iter()
                 .map(|(sym, qty)| {
                     let price = sim
@@ -184,13 +185,13 @@ fn build_update(
                     *qty as f64 * price
                 })
                 .sum();
-            let equity = cash.to_float() + position_value;
+            let equity = summary.cash.to_float() + position_value;
 
             AgentInfo {
-                name: format!("{:0width$}-{}", i + 1, name, width = width),
-                positions: positions.clone(),
-                total_pnl: *total_pnl,
-                cash: *cash,
+                name: format!("{:0width$}-{}", i + 1, summary.name, width = width),
+                positions: summary.positions.clone(),
+                total_pnl: summary.total_pnl,
+                cash: summary.cash,
                 is_market_maker: is_mm,
                 equity,
             }
@@ -201,11 +202,11 @@ fn build_update(
     let risk_metrics: Vec<RiskInfo> = agent_summaries
         .iter()
         .enumerate()
-        .filter_map(|(i, (name, _, _, _))| {
+        .filter_map(|(i, summary)| {
             let agent_id = AgentId((i + 1) as u64);
-            let is_mm = name.contains("Market");
+            let is_mm = summary.name.contains("Market");
             risk_metrics_map.get(&agent_id).map(|metrics| RiskInfo {
-                name: format!("{:0width$}-{}", i + 1, name, width = width),
+                name: format!("{:0width$}-{}", i + 1, summary.name, width = width),
                 sharpe: metrics.sharpe,
                 max_drawdown: metrics.max_drawdown,
                 total_return: metrics.total_return,

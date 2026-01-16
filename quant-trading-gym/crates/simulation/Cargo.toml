@@ -7,7 +7,7 @@ description = "Simulation runner for the quant-trading-gym"
 
 [features]
 default = ["parallel"]
-parallel = ["rayon"]
+parallel = ["parallel/parallel"]
 
 [dependencies]
 types.workspace = true
@@ -16,6 +16,6 @@ agents.workspace = true
 quant.workspace = true
 news.workspace = true
 rand.workspace = true
-rayon = { workspace = true, optional = true }
+parallel.workspace = true
 parking_lot.workspace = true
 smallvec.workspace = true

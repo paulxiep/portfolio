@@ -1158,6 +1158,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "parallel"
+version = "0.1.0"
+dependencies = [
+ "parking_lot",
+ "rayon",
+]
+
+[[package]]
 name = "parking_lot"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1721,6 +1729,7 @@ dependencies = [
  "crossbeam-channel",
  "futures",
  "news",
+ "parallel",
  "parking_lot",
  "quant",
  "serde",
@@ -1810,10 +1819,10 @@ version = "0.1.0"
 dependencies = [
  "agents",
  "news",
+ "parallel",
  "parking_lot",
  "quant",
  "rand 0.8.5",
- "rayon",
  "sim-core",
  "smallvec",
  "types",

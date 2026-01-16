@@ -249,33 +249,33 @@ impl Default for SimConfig {
             // Simulation Control - default multi-symbol with different sectors (V2.4)
             symbols: vec![
                 SymbolSpec::with_sector("Duck Delish", 100.0, Sector::Consumer),
-                SymbolSpec::with_sector("Zephyr Zap", 100.0, Sector::Utilities),
+                SymbolSpec::with_sector("Picky Piglet", 100.0, Sector::Consumer),
                 SymbolSpec::with_sector("Vraiment Villa", 100.0, Sector::RealEstate),
+                SymbolSpec::with_sector("Meilleur Mansion", 100.0, Sector::RealEstate),
                 SymbolSpec::with_sector("Quant Quotation", 100.0, Sector::Finance),
-                SymbolSpec::with_sector("Hello Handy", 100.0, Sector::Communications),
-                SymbolSpec::with_sector("Nubes Nexus", 100.0, Sector::Tech),
+                SymbolSpec::with_sector("Lumen Ledger", 100.0, Sector::Finance),
             ],
             total_ticks: 10000,
             tick_delay_ms: 0, // ~100 ticks/sec for watchable visualization
             verbose: false,
-            max_cpu_percent: 34, // Use only some available cores by default
+            max_cpu_percent: 75, // Use only some available cores by default
 
             // V3.5: Doubled agent counts for parallel execution benchmarking
             // Tier 1 Agent Counts (minimums per type)
             num_market_makers: 200,
-            num_noise_traders: 1500,
-            num_momentum_traders: 500,
-            num_trend_followers: 500,
-            num_macd_traders: 500,
-            num_bollinger_traders: 500,
-            num_vwap_executors: 100,
-            num_pairs_traders: 1200,   // V3.3: multi-symbol pairs traders
-            num_sector_rotators: 2000, // V3.3: sector rotation agents (special T2)
+            num_noise_traders: 1000,
+            num_momentum_traders: 300,
+            num_trend_followers: 300,
+            num_macd_traders: 300,
+            num_bollinger_traders: 300,
+            num_vwap_executors: 300,
+            num_pairs_traders: 300,   // V3.3: multi-symbol pairs traders
+            num_sector_rotators: 1000, // V3.3: sector rotation agents (special T2)
             // Tier Minimums
-            min_tier1_agents: 5000, // Random agents fill the gap
+            min_tier1_agents: 3000, // Random agents fill the gap
 
             // Tier 2 Reactive Agents (V3.2)
-            num_tier2_agents: 18000,
+            num_tier2_agents: 11000,
 
             // Tier 2 Reactive Agent Parameters (V3.2)
             // Equal starting cash to noise traders for fair comparison
@@ -297,7 +297,7 @@ impl Default for SimConfig {
             // Tier 3 Background Pool (V3.4)
             // V3.5: Doubled pool size for parallel execution benchmarking
             enable_background_pool: true,
-            background_pool_size: 75000,
+            background_pool_size: 85000,
             background_regime: MarketRegime::Normal,
             t3_mean_order_size: 25.0,
             t3_max_order_size: 100,

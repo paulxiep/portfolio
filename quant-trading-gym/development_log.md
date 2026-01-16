@@ -1,5 +1,96 @@
 # Development Log
 
+## 2026-01-16: V5.2 Simulation Decomposition & Parallel Crate Migration
+
+### Summary
+Refactored `runner.rs` (~1400→~1220 lines) following "Declarative, Modular, SoC" philosophy. Extracted auction logic to `AuctionEngine` subsystem with pure parallel order collection. Removed dead cancellation code. Eliminated wasteful `iter→collect→iter→collect` patterns by adding direct HashMap collection utilities. Optimized hook context building (4→2 builds per tick). Added `id` field to `AgentSummary` struct. **Migrated `parallel` crate** from simulation re-export to direct usage across crates. Server hooks and routes now use parallel crate directly for agent/position processing.
+
+### Files
+
+| File | Changes |
+|------|---------|
+| `crates/parallel/` | **Standalone crate** - declarative parallel/sequential utilities |
+| `crates/simulation/src/parallel.rs` | **Removed** - consumers use `parallel` crate directly |
+| `crates/simulation/Cargo.toml` | Depends on `parallel` crate, forwards feature flag |
+| `crates/server/Cargo.toml` | Added `parallel` dependency |
+| `crates/simulation/src/runner.rs` | Removed `use crate::parallel`; uses `parallel::` directly |
+| `crates/simulation/src/subsystems/auction.rs` | Uses `parallel::` directly for order pipeline |
+| `crates/simulation/src/subsystems/agents.rs` | Uses `parallel::` directly; builds `AgentSummary` with `id` |
+| `crates/simulation/src/traits/agents.rs` | Added `id: AgentId` field to `AgentSummary` struct |
+| `crates/server/src/hooks.rs` | Uses `parallel::map_slice` for agent summary conversion |
+| `crates/server/src/routes/data.rs` | Uses `parallel::map_slice` for position computation |
+
+### Design
+
+**Parallel Crate Direct Usage:**
+```rust
+// Before: re-export indirection
+// crates/simulation/src/parallel.rs: pub use parallel::*;
+// use crate::parallel;
+
+// After: direct crate usage (no re-export needed)
+// Cargo.toml: parallel.workspace = true
+// In code: parallel::map_slice(&items, |x| process(x), false);
+```
+
+**AgentSummary with ID:**
+```rust
+// Before: index-based ID assignment in hooks
+let agents = parallel::map_indices(&indices, |i| {
+    AgentData { id: (i + 1) as u64, ... }
+});
+
+// After: ID comes from AgentSummary
+pub struct AgentSummary {
+    pub id: AgentId,  // NEW
+    pub name: String,
+    pub positions: HashMap<Symbol, i64>,
+    pub cash: Cash,
+    pub total_pnl: Cash,
+}
+
+let agents = parallel::map_slice(&summaries, |s| {
+    AgentData { id: s.id.0, ... }
+});
+```
+
+**Position Computation (Parallel):**
+```rust
+// Before: sequential iter with fold
+let (positions, unrealized_pnl) = agent.positions.iter()
+    .map(|(s, p)| build_position_detail(s, p))
+    .fold((Vec::new(), 0.0), ...);
+
+// After: parallel map + sequential sum (sum is O(n) cheap)
+let position_entries: Vec<_> = agent.positions.iter().collect();
+let positions = parallel::map_slice(&position_entries, 
+    |(symbol, pos)| build_position_detail(symbol, pos), false);
+let unrealized_pnl: f64 = positions.iter().map(|p| p.unrealized_pnl).sum();
+```
+
+### Parallel Crate API
+
+| Function | Purpose |
+|----------|---------|
+| `map_slice` | `&[T] → Vec<R>` |
+| `filter_map_slice` | `&[T] → Vec<R>` (with filter) |
+| `for_each_slice` | Side effects |
+| `map_indices` / `filter_map_indices` | Index-based access |
+| `map_vec` / `filter_map_vec` | Owned `Vec<T>` |
+| `flat_filter_map_vec` | Expand + filter in one pass |
+| `map_to_hashmap` / `filter_map_to_hashmap` | Direct to HashMap |
+| `map_mutex_slice` / `map_mutex_slice_ref` | Mutex-wrapped items |
+| `map_mutex_slice_ref_to_hashmap` | Mutex items → HashMap |
+
+### Exit Criteria
+```bash
+cargo fmt --all                              # ✅ Formatted
+cargo clippy --all-targets                   # ✅ No warnings
+cargo test -p simulation -p server -p parallel # ✅ 38 tests pass
+```
+
+---
+
 ## 2026-01-11: V5.1 Fair Value Drift
 
 ### Summary

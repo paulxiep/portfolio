@@ -80,15 +80,19 @@
 pub mod config;
 mod hooks;
 mod metrics;
-pub mod parallel;
 mod runner;
+pub mod subsystems;
+pub mod traits;
 
 pub use config::{ParallelizationConfig, SimulationConfig};
 pub use runner::{Simulation, SimulationStats};
 
 // Re-export hook types
 pub use hooks::{
-    AgentSummary, BookSnapshot, EnrichedData, HookContext, HookRunner, MarketSnapshot,
-    NewsEventSnapshot, NoOpHook, SimulationHook,
+    BookSnapshot, EnrichedData, HookContext, HookRunner, MarketSnapshot, NewsEventSnapshot,
+    NoOpHook, SimulationHook,
 };
 pub use metrics::{MetricsHook, MetricsSnapshot};
+
+// Re-export from traits
+pub use traits::AgentSummary;

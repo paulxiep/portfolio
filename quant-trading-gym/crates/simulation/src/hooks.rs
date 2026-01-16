@@ -39,7 +39,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use quant::AgentRiskSnapshot;
-use types::{AgentId, Candle, Cash, Order, Price, Quantity, Symbol, Tick, Timestamp, Trade};
+use types::{AgentId, Candle, Order, Price, Quantity, Symbol, Tick, Timestamp, Trade};
 
 use crate::SimulationStats;
 
@@ -118,8 +118,7 @@ impl MarketSnapshot {
 // Enriched Data (V4.4)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Agent summary tuple: (name, positions, cash, total_pnl).
-pub type AgentSummary = (String, HashMap<Symbol, i64>, Cash, Cash);
+use crate::traits::AgentSummary;
 
 /// Enriched simulation data for hooks (V4.4).
 ///
@@ -131,7 +130,7 @@ pub struct EnrichedData {
     pub candles: HashMap<Symbol, Vec<Candle>>,
     /// Indicator values per symbol: indicator_name → value.
     pub indicators: HashMap<Symbol, HashMap<String, f64>>,
-    /// Agent summaries: (name, positions, cash, total_pnl).
+    /// Agent summaries.
     pub agent_summaries: Vec<AgentSummary>,
     /// Risk metrics per agent.
     pub risk_metrics: HashMap<AgentId, AgentRiskSnapshot>,

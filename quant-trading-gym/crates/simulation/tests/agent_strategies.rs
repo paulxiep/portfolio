@@ -381,7 +381,7 @@ fn test_position_limits_allows_shorts_when_enabled() {
     assert_eq!(stats.total_trades, 1, "One trade should occur");
 
     // Check borrow ledger was updated
-    let borrowed = sim.borrow_ledger().borrowed(AgentId(1), "ACME");
+    let borrowed = sim.borrowed_shares(AgentId(1), &"ACME".to_string());
     assert_eq!(
         borrowed,
         Quantity(100),

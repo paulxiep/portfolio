@@ -4,12 +4,17 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 
+[features]
+default = ["parallel"]
+parallel = ["parallel/parallel"]
+
 [dependencies]
 # Internal crates
 types.workspace = true
 simulation.workspace = true
 quant.workspace = true
 news.workspace = true
+parallel.workspace = true
 
 # Async runtime
 tokio = { version = "1.42", features = ["full"] }

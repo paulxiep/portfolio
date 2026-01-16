@@ -232,7 +232,7 @@ impl Default for FairValueDriftConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            drift_pct: 0.01,   // 1% per tick
+            drift_pct: 0.01,    // 1% per tick
             min_pct: 0.1,       // Floor at 10% of initial
             max_multiple: 10.0, // Cap at 10x initial
         }

@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::error::{AppError, AppResult};
-use crate::state::ServerState;
+use crate::state::{AgentPosition, ServerState};
 use types::AgentId;
 
 // =============================================================================
@@ -555,13 +555,14 @@ pub async fn get_agent_portfolio(
         .find(|a| a.id == agent_id)
         .ok_or_else(|| AppError::NotFound(format!("Agent {} not found", agent_id)))?;
 
-    let positions: Vec<PositionDetail> = agent
-        .positions
-        .iter()
-        .map(|(symbol, pos)| {
+    // Compute positions in parallel, then sum unrealized_pnl
+    let position_entries: Vec<_> = agent.positions.iter().collect();
+    let positions: Vec<PositionDetail> = parallel::map_slice(
+        &position_entries,
+        |(symbol, pos): &(&String, &AgentPosition)| {
             let current_price = sim_data
                 .prices
-                .get(symbol)
+                .get(*symbol)
                 .map(|p| p.to_float())
                 .unwrap_or(0.0);
             let market_value = pos.quantity as f64 * current_price;
@@ -569,16 +570,16 @@ pub async fn get_agent_portfolio(
             let unrealized_pnl = market_value - cost_basis;
 
             PositionDetail {
-                symbol: symbol.clone(),
+                symbol: (*symbol).clone(),
                 quantity: pos.quantity,
                 avg_cost: pos.avg_cost,
                 current_price,
                 market_value,
                 unrealized_pnl,
             }
-        })
-        .collect();
-
+        },
+        false,
+    );
     let unrealized_pnl: f64 = positions.iter().map(|p| p.unrealized_pnl).sum();
 
     // Get equity curve from risk tracker

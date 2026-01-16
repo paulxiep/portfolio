@@ -34,7 +34,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use simulation::{HookContext, SimulationHook, SimulationStats};
+use simulation::{AgentSummary, HookContext, SimulationHook, SimulationStats};
 use tokio::sync::{RwLock, broadcast};
 use types::{AgentId, Order, OrderSide, OrderType, Symbol};
 
@@ -234,7 +234,7 @@ impl DataServiceHook {
 
     /// Update SimData from enriched hook context (V4.4).
     fn update_sim_data(&self, ctx: &HookContext, enriched: &simulation::EnrichedData) {
-        // Build prices from hook context
+        // Build prices from hook context (declarative)
         let prices: HashMap<Symbol, types::Price> = ctx
             .market
             .mid_prices
@@ -242,60 +242,13 @@ impl DataServiceHook {
             .map(|(k, v)| (k.clone(), *v))
             .collect();
 
-        // Convert agent summaries to AgentData
-        let agents: Vec<AgentData> = enriched
-            .agent_summaries
-            .iter()
-            .enumerate()
-            .map(|(i, (name, positions, cash, total_pnl))| {
-                let is_mm = name.contains("Market");
-                let tier = if name.contains("Reactive") || name.contains("SectorRotator") {
-                    2
-                } else if name.contains("T3") || name.contains("Pool") {
-                    3
-                } else {
-                    1
-                };
-
-                // Calculate equity from positions
-                let position_value: f64 = positions
-                    .iter()
-                    .map(|(sym, qty)| {
-                        let price = prices.get(sym).map(|p| p.to_float()).unwrap_or(100.0);
-                        *qty as f64 * price
-                    })
-                    .sum();
-                let equity = cash.to_float() + position_value;
-
-                // Convert positions to AgentPosition format
-                let agent_positions: HashMap<Symbol, AgentPosition> = positions
-                    .iter()
-                    .map(|(sym, qty)| {
-                        (
-                            sym.clone(),
-                            AgentPosition {
-                                symbol: sym.clone(),
-                                quantity: *qty,
-                                avg_cost: 0.0, // Not available from summary
-                            },
-                        )
-                    })
-                    .collect();
-
-                AgentData {
-                    id: (i + 1) as u64,
-                    name: name.clone(),
-                    cash: cash.to_float(),
-                    equity,
-                    total_pnl: total_pnl.to_float(),
-                    realized_pnl: 0.0, // Not available from summary
-                    positions: agent_positions,
-                    position_count: positions.len(),
-                    is_market_maker: is_mm,
-                    tier,
-                }
-            })
-            .collect();
+        // Convert agent summaries to AgentData (parallel for large agent counts)
+        // Enumerate inline to avoid intermediate allocation
+        let agents: Vec<AgentData> = parallel::map_slice(
+            &enriched.agent_summaries,
+            |summary| Self::summary_to_agent_data(summary, &prices),
+            false, // use parallel when available
+        );
 
         // Build equity curves from risk metrics
         let equity_curves: HashMap<AgentId, Vec<f64>> = enriched
@@ -336,6 +289,65 @@ impl DataServiceHook {
             data.active_events = active_events;
         }
         // If try_write fails, skip this update (next tick will catch up)
+    }
+
+    /// Convert an AgentSummary to AgentData (pure function, parallelizable).
+    ///
+    /// Factored out for parallel processing of large agent counts.
+    /// Follows SoC: transformation logic is separate from collection iteration.
+    fn summary_to_agent_data(
+        summary: &AgentSummary,
+        prices: &HashMap<Symbol, types::Price>,
+    ) -> AgentData {
+        // Determine agent tier from name (heuristic)
+        let is_mm = summary.name.contains("Market");
+        let tier = if summary.name.contains("Reactive") || summary.name.contains("SectorRotator") {
+            2
+        } else if summary.name.contains("T3") || summary.name.contains("Pool") {
+            3
+        } else {
+            1
+        };
+
+        // Calculate equity from positions
+        let position_value: f64 = summary
+            .positions
+            .iter()
+            .map(|(sym, qty)| {
+                let price = prices.get(sym).map(|p| p.to_float()).unwrap_or(100.0);
+                *qty as f64 * price
+            })
+            .sum();
+        let equity = summary.cash.to_float() + position_value;
+
+        // Convert positions to AgentPosition format
+        let agent_positions: HashMap<Symbol, AgentPosition> = summary
+            .positions
+            .iter()
+            .map(|(sym, qty)| {
+                (
+                    sym.clone(),
+                    AgentPosition {
+                        symbol: sym.clone(),
+                        quantity: *qty,
+                        avg_cost: 0.0, // Not available from summary
+                    },
+                )
+            })
+            .collect();
+
+        AgentData {
+            id: summary.id.0,
+            name: summary.name.clone(),
+            cash: summary.cash.to_float(),
+            equity,
+            total_pnl: summary.total_pnl.to_float(),
+            realized_pnl: 0.0, // Not available from summary
+            positions: agent_positions,
+            position_count: summary.positions.len(),
+            is_market_maker: is_mm,
+            tier,
+        }
     }
 }
 

@@ -1,24 +1,24 @@
-//! Parallel execution utilities for the simulation.
+//! Declarative parallel/sequential execution utilities.
 //!
-//! This module provides declarative helpers that abstract over parallel vs sequential
-//! execution based on the `parallel` feature flag. The `cfg` logic lives here in ONE
-//! place, keeping call sites clean.
+//! This crate provides helpers that abstract over parallel vs sequential execution
+//! based on the `parallel` feature flag. The `cfg` logic lives here in ONE place,
+//! keeping call sites clean.
 //!
 //! # Design
 //!
 //! Each helper takes a closure and applies it over a collection. When `parallel` is
 //! enabled, uses rayon's parallel iterators; otherwise uses standard iterators.
 //!
-//! # Runtime Override (V3.7)
+//! # Runtime Override
 //!
-//! All functions accept an optional `force_sequential` parameter. When `true`, execution
-//! is sequential even if the `parallel` feature is enabled. This allows runtime profiling
-//! and testing of parallel vs sequential performance.
+//! All functions accept a `force_sequential` parameter. When `true`, execution
+//! is sequential even if the `parallel` feature is enabled. This allows runtime
+//! profiling and testing of parallel vs sequential performance.
 //!
 //! # Example
 //!
 //! ```ignore
-//! use crate::parallel;
+//! use parallel;
 //!
 //! // Instead of:
 //! // #[cfg(feature = "parallel")]
@@ -35,6 +35,11 @@
 
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
+
+use std::collections::HashMap;
+use std::hash::Hash;
+
+use parking_lot::Mutex;
 
 // =============================================================================
 // Slice Operations
@@ -64,7 +69,7 @@ where
 
     #[cfg(not(feature = "parallel"))]
     {
-        let _ = force_sequential; // Suppress unused warning
+        let _ = force_sequential;
         slice.iter().map(f).collect()
     }
 }
@@ -243,12 +248,57 @@ where
     }
 }
 
+/// Flat-map and filter-map over a Vec in one pass, potentially in parallel.
+///
+/// Each element `T` is expanded to multiple items via `expand`, then each item
+/// is validated via `validate` which returns `Some(R)` for valid items.
+///
+/// Parallelism is at the outer (T) level - inner expansion is sequential per T.
+///
+/// # Parameters
+/// - `force_sequential`: When true, forces sequential execution even if parallel feature is enabled
+#[inline]
+pub fn flat_filter_map_vec<T, E, F, V, R, I>(
+    vec: Vec<T>,
+    expand: E,
+    validate: F,
+    force_sequential: bool,
+) -> Vec<R>
+where
+    T: Send,
+    E: Fn(T) -> I + Sync + Send,
+    I: IntoIterator<Item = V>,
+    V: Send,
+    F: Fn(V) -> Option<R> + Sync + Send,
+    R: Send,
+{
+    #[cfg(feature = "parallel")]
+    {
+        if force_sequential {
+            vec.into_iter()
+                .flat_map(expand)
+                .filter_map(validate)
+                .collect()
+        } else {
+            vec.into_par_iter()
+                .flat_map_iter(|t| expand(t).into_iter().filter_map(&validate))
+                .collect()
+        }
+    }
+
+    #[cfg(not(feature = "parallel"))]
+    {
+        let _ = force_sequential;
+        vec.into_iter()
+            .flat_map(expand)
+            .filter_map(validate)
+            .collect()
+    }
+}
+
 // =============================================================================
 // HashMap Operations
 // =============================================================================
-
-use std::collections::HashMap;
-use std::hash::Hash;
 
 /// Map a slice to a HashMap, potentially in parallel.
 ///
@@ -278,15 +328,43 @@ where
     }
 }
 
+/// Filter-map a slice directly to a HashMap, potentially in parallel.
+///
+/// Avoids the intermediate Vec allocation of `filter_map_slice(...).into_iter().collect()`.
+///
+/// # Parameters
+/// - `force_sequential`: When true, forces sequential execution even if parallel feature is enabled
+#[inline]
+pub fn filter_map_to_hashmap<T, F, K, V>(slice: &[T], f: F, force_sequential: bool) -> HashMap<K, V>
+where
+    T: Sync,
+    F: Fn(&T) -> Option<(K, V)> + Sync + Send,
+    K: Eq + Hash + Send,
+    V: Send,
+{
+    #[cfg(feature = "parallel")]
+    {
+        if force_sequential {
+            slice.iter().filter_map(f).collect()
+        } else {
+            slice.par_iter().filter_map(f).collect()
+        }
+    }
+
+    #[cfg(not(feature = "parallel"))]
+    {
+        let _ = force_sequential;
+        slice.iter().filter_map(f).collect()
+    }
+}
+
 // =============================================================================
 // Specialized Mutex Operations
 // =============================================================================
 
-use parking_lot::Mutex;
-
 /// Map over a slice of Mutex-wrapped items, locking each.
 ///
-/// This is the common pattern for our agent collection.
+/// This is the common pattern for agent collections.
 ///
 /// # Parameters
 /// - `force_sequential`: When true, forces sequential execution even if parallel feature is enabled
@@ -323,6 +401,40 @@ where
     T: Send,
     F: Fn(&T) -> R + Sync + Send,
     R: Send,
+{
+    #[cfg(feature = "parallel")]
+    {
+        if force_sequential {
+            slice.iter().map(|m| f(&*m.lock())).collect()
+        } else {
+            slice.par_iter().map(|m| f(&*m.lock())).collect()
+        }
+    }
+
+    #[cfg(not(feature = "parallel"))]
+    {
+        let _ = force_sequential;
+        slice.iter().map(|m| f(&*m.lock())).collect()
+    }
+}
+
+/// Map a slice of Mutex-wrapped items to a HashMap with immutable access.
+///
+/// Avoids the intermediate Vec allocation of `map_mutex_slice_ref(...).into_iter().collect()`.
+///
+/// # Parameters
+/// - `force_sequential`: When true, forces sequential execution even if parallel feature is enabled
+#[inline]
+pub fn map_mutex_slice_ref_to_hashmap<T, F, K, V>(
+    slice: &[Mutex<T>],
+    f: F,
+    force_sequential: bool,
+) -> HashMap<K, V>
+where
+    T: Send,
+    F: Fn(&T) -> (K, V) + Sync + Send,
+    K: Eq + Hash + Send,
+    V: Send,
 {
     #[cfg(feature = "parallel")]
     {
