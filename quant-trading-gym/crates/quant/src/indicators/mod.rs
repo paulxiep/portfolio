@@ -243,10 +243,12 @@ mod tests {
         let sma = create_indicator(IndicatorType::Sma(20));
         assert_eq!(sma.required_periods(), 20);
 
+        // V5.3: MACD_STANDARD is (8, 16, 4) → required = 16 + 4 = 20
         let macd = create_indicator(IndicatorType::MACD_STANDARD);
-        assert_eq!(macd.required_periods(), 35);
+        assert_eq!(macd.required_periods(), 20);
 
+        // V5.3: BOLLINGER_STANDARD is period=12
         let bb = create_indicator(IndicatorType::BOLLINGER_STANDARD);
-        assert_eq!(bb.required_periods(), 20);
+        assert_eq!(bb.required_periods(), 12);
     }
 }

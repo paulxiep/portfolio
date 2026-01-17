@@ -1,5 +1,102 @@
 # Development Log
 
+## 2026-01-17: V5.4 Tree-Based Training
+
+### Summary
+Implemented Python training script for tree-based ML models. Trains Decision Tree, Random Forest, and Histogram Gradient Boosted trees on V5.3 Parquet data. Exports to JSON for V5.5 Rust inference. Also changed default simulation seed to random.
+
+### Models
+| Model | Library | Output |
+|-------|---------|--------|
+| Decision Tree | `sklearn.tree.DecisionTreeClassifier` | `{name}_decision_tree.json` |
+| Random Forest | `sklearn.ensemble.RandomForestClassifier` | `{name}_random_forest.json` |
+| Gradient Boosted | `sklearn.ensemble.HistGradientBoostingClassifier` | `{name}_gradient_boosted.json` |
+
+### JSON Schema (for Rust inference)
+```json
+{
+  "model_type": "decision_tree",
+  "model_name": "shallow",
+  "feature_names": ["f_mid_price", ...],
+  "n_features": 52,
+  "n_classes": 3,
+  "classes": [-1, 0, 1],
+  "tree": {
+    "n_nodes": 33,
+    "nodes": [
+      {"feature": 5, "threshold": 0.5, "left": 1, "right": 2, "value": null},
+      {"feature": -1, "threshold": 0.0, "left": -1, "right": -1, "value": [0.1, 0.7, 0.2]}
+    ]
+  },
+  "metadata": {"accuracy": 0.98, "trained_at": "..."}
+}
+```
+- `value`: Class probabilities `[p_sell, p_hold, p_buy]` for leaf nodes
+
+### Files
+- `scripts/train_trees.py` - Main training script (YAML config)
+- `scripts/train_config.yaml` - Model hyperparameters
+- `requirements.txt` - Python dependencies (polars, sklearn, pyyaml, shap)
+
+### Usage
+```bash
+# Generate training data (1000 tick warmup for all indicators)
+cargo run --release -- --headless-record --ticks 2000 --record-warmup 1000
+
+# Train models
+python scripts/train_trees.py
+
+# Custom config
+python scripts/train_trees.py --config scripts/train_config.yaml
+```
+
+### Config Format
+```yaml
+data:
+  input: data/training.parquet
+  output_dir: models
+  test_size: 0.2
+
+decision_trees:
+  - name: shallow
+    max_depth: 5
+  - name: deep
+    max_depth: 15
+
+random_forests:
+  - name: small
+    n_estimators: 50
+    max_depth: 8
+
+gradient_boosted:
+  - name: fast
+    n_estimators: 50
+    learning_rate: 0.2
+
+shap:
+  enabled: false
+```
+
+### Changes
+- **Random seed default**: `SimulationConfig::default()` now uses `rand::random()` instead of fixed seed 42
+- **NaN handling**: Training script imputes NaN with 0 (neutral/no history) for features like `f_sharpe`
+- **.gitignore**: Added `quant-trading-gym/models/` to portfolio `.gitignore`
+
+### Results (test run, 15M rows)
+| Model | Accuracy | Notes |
+|-------|----------|-------|
+| Decision Tree (depth=5) | 97.7% | 33 nodes |
+| Random Forest (10 trees) | 97.8% | Top features: f_equity, f_cash |
+| HistGradientBoosting | 97.7% | 10 iterations |
+
+### Deferred to V6
+- Feature normalization
+- Hyperparameter tuning (cross-validation)
+- Neural networks
+- Advanced feature engineering
+
+---
+
 ## 2026-01-17: V5.3 Feature Recording Mode
 
 ### Summary

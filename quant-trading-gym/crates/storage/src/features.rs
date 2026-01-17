@@ -65,8 +65,8 @@ pub trait MlModel: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-    use types::{AgentId, Cash};
+    
+    
 
     struct DummyExtractor;
 

@@ -121,7 +121,7 @@ impl Default for SimulationConfig {
             verbose: false,
             news: news::NewsGeneratorConfig::default(),
             fair_value_drift: news::FairValueDriftConfig::default(),
-            seed: 42,
+            seed: rand::random(),
             parallelization: ParallelizationConfig::default(),
         }
     }

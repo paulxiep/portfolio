@@ -29,5 +29,8 @@ Thumbs.db
 *.log
 npm-debug.log*
 
+# ML models (quant-trading-gym)
+quant-trading-gym/models/
+
 # Profiling
 *.profraw

@@ -1,0 +1,42 @@
+# V5.4 Tree Training Configuration
+
+data:
+  input: data/training.parquet
+  output_dir: models
+  test_size: 0.2
+  agent_filter: null  # Optional: "MarketMaker", "Momentum", etc.
+
+# Models grouped by type - each list entry becomes {name}_{type}.json
+decision_trees:
+  - name: shallow
+    max_depth: 5
+
+  - name: deep
+    max_depth: 15
+
+random_forests:
+  - name: small
+    n_estimators: 50
+    max_depth: 8
+    max_features: sqrt
+
+  - name: large
+    n_estimators: 200
+    max_depth: 12
+    max_features: 0.5
+
+gradient_boosted:
+  - name: fast
+    n_estimators: 50
+    max_depth: 3
+    learning_rate: 0.2
+
+  - name: slow
+    n_estimators: 200
+    max_depth: 5
+    learning_rate: 0.05
+    subsample: 0.8
+
+shap:
+  enabled: false
+  max_samples: 1000

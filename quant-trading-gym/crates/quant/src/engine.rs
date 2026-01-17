@@ -324,8 +324,10 @@ mod tests {
     fn test_engine_with_common() {
         let engine = IndicatorEngine::with_common_indicators();
 
-        assert!(engine.is_registered(&IndicatorType::Sma(20)));
-        assert!(engine.is_registered(&IndicatorType::Rsi(14)));
+        // V5.3: Updated to geometric spread (8/16) optimized for batch auction
+        assert!(engine.is_registered(&IndicatorType::Sma(8)));
+        assert!(engine.is_registered(&IndicatorType::Sma(16)));
+        assert!(engine.is_registered(&IndicatorType::Rsi(8)));
         assert!(engine.is_registered(&IndicatorType::MACD_STANDARD));
     }
 
