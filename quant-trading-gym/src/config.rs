@@ -269,7 +269,7 @@ impl Default for SimConfig {
             num_macd_traders: 300,
             num_bollinger_traders: 300,
             num_vwap_executors: 300,
-            num_pairs_traders: 300,   // V3.3: multi-symbol pairs traders
+            num_pairs_traders: 300,    // V3.3: multi-symbol pairs traders
             num_sector_rotators: 1000, // V3.3: sector rotation agents (special T2)
             // Tier Minimums
             min_tier1_agents: 3000, // Random agents fill the gap

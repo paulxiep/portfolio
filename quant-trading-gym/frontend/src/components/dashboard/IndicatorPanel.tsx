@@ -118,7 +118,7 @@ export function IndicatorPanel({ data, loading = false, error = null }: Indicato
 
   // Extract nested data
   const ind = data.indicators;
-  const rsi = ind.rsi_14;
+  const rsi = ind.rsi_8;
   const macdData = ind.macd;
 
   // Determine RSI trend
@@ -148,16 +148,15 @@ export function IndicatorPanel({ data, loading = false, error = null }: Indicato
 
       {/* Moving Averages */}
       <IndicatorGroup title="Moving Averages">
-        <IndicatorRow name="SMA-10" value={ind.sma['10']} format="price" />
-        <IndicatorRow name="SMA-20" value={ind.sma['20']} format="price" />
-        <IndicatorRow name="SMA-50" value={ind.sma['50']} format="price" />
-        <IndicatorRow name="EMA-12" value={ind.ema['12']} format="price" />
-        <IndicatorRow name="EMA-26" value={ind.ema['26']} format="price" />
+        <IndicatorRow name="SMA-8" value={ind.sma['8']} format="price" />
+        <IndicatorRow name="SMA-16" value={ind.sma['16']} format="price" />
+        <IndicatorRow name="EMA-8" value={ind.ema['8']} format="price" />
+        <IndicatorRow name="EMA-16" value={ind.ema['16']} format="price" />
       </IndicatorGroup>
 
       {/* Oscillators */}
       <IndicatorGroup title="Oscillators">
-        <IndicatorRow name="RSI-14" value={rsi} format="number" trend={rsiTrend} />
+        <IndicatorRow name="RSI-8" value={rsi} format="number" trend={rsiTrend} />
       </IndicatorGroup>
 
       {/* MACD */}
@@ -181,7 +180,7 @@ export function IndicatorPanel({ data, loading = false, error = null }: Indicato
 
       {/* Volatility */}
       <IndicatorGroup title="Volatility">
-        <IndicatorRow name="ATR-14" value={ind.atr_14} format="number" />
+        <IndicatorRow name="ATR-8" value={ind.atr_8} format="number" />
       </IndicatorGroup>
     </div>
   );

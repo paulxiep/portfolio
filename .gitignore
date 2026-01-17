@@ -3,6 +3,7 @@ target/
 *_cache*
 *.lance*
 sim.db*
+*.parquet
 
 # Frontend (quant-trading-gym)
 quant-trading-gym/frontend/node_modules/

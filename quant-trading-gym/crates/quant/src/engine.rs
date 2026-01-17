@@ -64,23 +64,23 @@ impl IndicatorEngine {
     }
 
     /// Create an engine with common indicators pre-registered.
+    /// Periods optimized for batch auction (1 tick = 1 session).
     pub fn with_common_indicators() -> Self {
         let mut engine = Self::new();
 
-        // Moving averages
-        engine.register(IndicatorType::Sma(10));
-        engine.register(IndicatorType::Sma(20));
-        engine.register(IndicatorType::Sma(50));
-        engine.register(IndicatorType::Ema(10));
-        engine.register(IndicatorType::Ema(20));
+        // Moving averages (8/16 spread)
+        engine.register(IndicatorType::Sma(8));
+        engine.register(IndicatorType::Sma(16));
+        engine.register(IndicatorType::Ema(8)); // MACD fast
+        engine.register(IndicatorType::Ema(16)); // MACD slow
 
         // Momentum
-        engine.register(IndicatorType::Rsi(14));
-        engine.register(IndicatorType::MACD_STANDARD);
+        engine.register(IndicatorType::Rsi(8));
+        engine.register(IndicatorType::MACD_STANDARD); // 8/16/4
 
         // Volatility
-        engine.register(IndicatorType::BOLLINGER_STANDARD);
-        engine.register(IndicatorType::Atr(14));
+        engine.register(IndicatorType::BOLLINGER_STANDARD); // 12 period
+        engine.register(IndicatorType::Atr(8));
 
         engine
     }

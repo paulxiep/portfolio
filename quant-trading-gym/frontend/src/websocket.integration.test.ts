@@ -68,10 +68,7 @@ describe('WebSocket API', () => {
 
     try {
       // Wait for a tick message - may timeout if simulation is paused
-      const message = (await receiveMessage(ws, 5000)) as Record<
-        string,
-        unknown
-      >;
+      const message = (await receiveMessage(ws, 5000)) as Record<string, unknown>;
 
       // Validate TickData shape
       expect(message).toHaveProperty('tick');
@@ -107,10 +104,7 @@ describe('WebSocket API', () => {
     const ws = await connectWebSocket(WS_URL);
 
     try {
-      const message = (await receiveMessage(ws, 5000)) as Record<
-        string,
-        unknown
-      >;
+      const message = (await receiveMessage(ws, 5000)) as Record<string, unknown>;
       const prices = message.prices as Record<string, number>;
 
       // Should have at least one symbol

@@ -967,9 +967,17 @@ impl Simulation {
         });
 
         // V3.6: Notify hooks that simulation ended
-        self.hooks.on_simulation_end(&self.stats);
+        self.finish();
 
         result
+    }
+
+    /// Notify hooks that simulation has ended (V5.3).
+    ///
+    /// Call this after manual tick loops to trigger `on_simulation_end` hooks.
+    /// This is automatically called by `run()`.
+    pub fn finish(&self) {
+        self.hooks.on_simulation_end(&self.stats);
     }
 
     // =========================================================================

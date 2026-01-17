@@ -1,5 +1,99 @@
 # Development Log
 
+## 2026-01-17: V5.3 Feature Recording Mode
+
+### Summary
+Implemented `--headless-record` mode for ML training data capture. Records 52 features per tick per agent to Parquet files for Python ML training. Updated indicator periods to geometric spread optimized for batch auction (1 tick = 1 candle).
+
+### Storage Architecture
+| Storage | Purpose |
+|---------|---------|
+| **Parquet (RecordingHook)** | ML training data (batch read) |
+| **In-memory (StrategyContext)** | Agent inference (real-time) |
+| **SQL (StorageHook)** | Optional debug/replay only |
+
+### Indicator Periods (Geometric Spread)
+| Indicator | Old | New | Rationale |
+|-----------|-----|-----|-----------|
+| SMA Fast | 10 | 8 | Clean doubling (8→16) |
+| SMA Slow | 50 | 16 | 2x spread for batch auction |
+| EMA Fast | 10 | 8 | Match SMA |
+| EMA Slow | 50 | 16 | Match SMA |
+| RSI | 14 | 8 | Faster response |
+| MACD Fast | 12 | 8 | Clean doubling |
+| MACD Slow | 26 | 16 | 2x spread |
+| MACD Signal | 9 | 4 | Responsive smoothing |
+| Bollinger | 20 | 12 | Between 8 and 16 |
+| ATR | 14 | 8 | Match RSI |
+
+### Features (52 total)
+| Category | Count | Description |
+|----------|-------|-------------|
+| Price | 25 | mid_price + price_change/log_return at 12 lookback horizons |
+| Technical | 13 | SMA 8/16, EMA 8/16, RSI 8, MACD 8/16/4, Bollinger 12, ATR 8 |
+| News | 4 | Active news sentiment, magnitude, duration |
+| Agent State | 6 | Position, cash, PnL (raw + normalized) |
+| Risk | 4 | Equity, drawdown, Sharpe, volatility |
+
+### Files
+- `crates/storage/src/comprehensive_features.rs` - Feature extractor (52 features)
+- `crates/storage/src/recording_hook.rs` - SimulationHook for Parquet capture
+- `crates/storage/src/parquet_writer.rs` - Buffered Arrow/Parquet writer
+- `crates/storage/src/price_history.rs` - Rolling price history
+- `crates/storage/src/features.rs` - FeatureContext, FeatureExtractor trait
+- `crates/types/src/indicators.rs` - MACD_STANDARD, BOLLINGER_STANDARD constants
+- `crates/quant/src/engine.rs` - `with_common_indicators()` registration
+- `crates/agents/src/tier1/strategies/` - Agent config defaults (8/16 periods)
+- `src/main.rs` - CLI flags, `run_headless_record()` function
+- `docs/indicator_period_impact.md` - Full impact analysis document
+
+### CLI
+```bash
+cargo run --release -- --headless-record \
+  --ticks 10000 \
+  --record-output data/training.parquet \
+  --record-warmup 100 \
+  --record-interval 1
+```
+
+### Configuration Locations
+| Setting | File | Location |
+|---------|------|----------|
+| Price lookback horizons | `crates/storage/src/comprehensive_features.rs` | `PRICE_LOOKBACKS` constant |
+| Warmup default (100) | `crates/storage/src/recording_hook.rs` | `RecordingConfig::default()` |
+| Candle interval (4) | `crates/simulation/src/config.rs` | `SimulationConfig::default()` |
+| Max candles (200) | `crates/simulation/src/config.rs` | `SimulationConfig::default()` |
+
+### Candle Interval Rationale
+- **Batch auction model**: Each tick is a single clearing price → candle_interval=1 produces flat OHLC (open=high=low=close)
+- **candle_interval=4**: Aggregates 4 batch auctions into one candle → meaningful OHLC variation
+- **Warmup 100 ticks** = 25 candles → sufficient for all indicators (max period 16)
+- **max_candles=200** = 800 ticks of history
+
+### Server/Frontend Updates
+- Updated indicator periods in `crates/server/src/routes/data.rs` (SMA 8/16, EMA 8/16, RSI 8, ATR 8)
+- Updated frontend types in `frontend/src/types/api.ts` (rsi_8, atr_8)
+- Updated `frontend/src/components/dashboard/IndicatorPanel.tsx` (display names)
+- Updated `frontend/src/api.integration.test.ts` (field checks)
+
+### Bug Fixes
+- **Price scale fix**: `f_mid_price` in feature extraction was using `p.0 / 100.0` (wrong) instead of `p.to_float()` (correct). Fixed in `comprehensive_features.rs`. Now mid_price and SMA/EMA values are in same scale (~$50).
+- **Parquet validation script**: Added `scripts/check_parquet.py` for data quality checks
+
+### Verification
+```
+=== DATA QUALITY CHECK ===
+Total rows: 1,500,000 (100 ticks × 15,000 agents)
+Total columns: 66
+
+=== SAMPLE VALUES (first row) ===
+f_mid_price: 51.22  (correct scale)
+f_sma_8: 49.22      (matches mid_price scale)
+f_rsi_8: 64.38      (valid 0-100 range)
+```
+
+---
+
 ## 2026-01-16: V5.2 Simulation Decomposition & Parallel Crate Migration
 
 ### Summary

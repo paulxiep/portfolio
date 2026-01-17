@@ -45,7 +45,7 @@ use rand::Rng;
 use rand::prelude::SliceRandom;
 use server::{BroadcastHook, DataServiceHook, ServerState, create_app};
 use simulation::{Simulation, SimulationConfig};
-use storage::{StorageConfig, StorageHook};
+use storage::{RecordingConfig, RecordingHook, StorageConfig, StorageHook};
 use tui::{AgentInfo, RiskInfo, SimCommand, SimUpdate, TuiApp};
 use types::{AgentId, Cash, Price, Quantity, Sector, ShortSellingConfig, Symbol, SymbolConfig};
 
@@ -133,6 +133,29 @@ struct Args {
     /// Set to 75 to use ~75% of available cores, leaving headroom for other processes.
     #[arg(long, env = "SIM_MAX_CPU_PERCENT")]
     max_cpu_percent: Option<u8>,
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // V5.3: Feature Recording Mode
+    // ─────────────────────────────────────────────────────────────────────────────
+    /// Enable recording mode for ML training data (implies --headless)
+    #[arg(long, env = "SIM_HEADLESS_RECORD")]
+    headless_record: bool,
+
+    /// Recording output path (Parquet file)
+    #[arg(
+        long,
+        env = "SIM_RECORD_OUTPUT",
+        default_value = "data/training.parquet"
+    )]
+    record_output: String,
+
+    /// Skip first N ticks before recording (warmup period)
+    #[arg(long, env = "SIM_RECORD_WARMUP", default_value = "100")]
+    record_warmup: u64,
+
+    /// Record every N ticks (1 = every tick)
+    #[arg(long, env = "SIM_RECORD_INTERVAL", default_value = "1")]
+    record_interval: u64,
 }
 
 /// Calculate the number of digits needed to display a number.
@@ -1219,6 +1242,16 @@ fn main() {
         eprintln!("  Starting server on port {}...", args.server_port);
         eprintln!();
         run_with_server(config, args);
+    } else if args.headless_record {
+        // ─────────────────────────────────────────────────────────────────────
+        // Recording mode: capture ML training data (V5.3)
+        // ─────────────────────────────────────────────────────────────────────
+        eprintln!("  Recording mode enabled");
+        eprintln!("  Output: {}", args.record_output);
+        eprintln!("  Warmup: {} ticks", args.record_warmup);
+        eprintln!("  Interval: every {} tick(s)", args.record_interval);
+        eprintln!();
+        run_headless_record(config, args);
     } else if args.headless {
         // ─────────────────────────────────────────────────────────────────────
         // Headless mode: run simulation without TUI
@@ -1311,6 +1344,118 @@ fn run_headless(config: SimConfig, args: Args) {
     eprintln!(
         "║  Total Orders: {:8}  │  Total Trades: {:8}                   ║",
         stats.total_orders, stats.total_trades
+    );
+    eprintln!("╚═══════════════════════════════════════════════════════════════════════╝");
+}
+
+/// Run simulation in recording mode for ML training data (V5.3).
+fn run_headless_record(config: SimConfig, args: Args) {
+    use std::time::Instant;
+
+    let total_ticks = config.total_ticks;
+    let tick_delay_ms = config.tick_delay_ms;
+
+    // Build simulation (same as run_headless)
+    let sim_config = build_simulation_config(&config, &args);
+    let mut sim = Simulation::new(sim_config);
+
+    let all_symbols: Vec<_> = config.get_symbols().to_vec();
+    let mut rng = rand::thread_rng();
+
+    // Spawn all agents (same as run_headless)
+    let mut next_id = spawn_all_tier1_agents(&mut sim, &config, &all_symbols, &mut rng);
+    spawn_tier2_agents(&mut sim, &mut next_id, &config, &all_symbols, &mut rng);
+    spawn_sector_rotators(&mut sim, &mut next_id, &config, &all_symbols);
+    setup_background_pool(&mut sim, &config, &all_symbols);
+
+    // V5.3: Configure and register recording hook
+    let recording_config = RecordingConfig::new(&args.record_output)
+        .with_warmup(args.record_warmup)
+        .with_interval(args.record_interval)
+        .with_initial_cash(config.quant_initial_cash.to_float())
+        .with_position_limit(config.quant_max_position);
+
+    match RecordingHook::new(recording_config) {
+        Ok(hook) => {
+            sim.add_hook(Arc::new(hook));
+        }
+        Err(e) => {
+            eprintln!("Failed to initialize recording hook: {}", e);
+            eprintln!("Aborting...");
+            return;
+        }
+    }
+
+    // Also register storage hook if requested
+    if let Some(ref storage_path) = args.storage_path {
+        let storage_config = StorageConfig::from_path(storage_path);
+        match StorageHook::new(storage_config) {
+            Ok(hook) => {
+                eprintln!("Storage enabled: {}", storage_path);
+                sim.add_hook(Arc::new(hook));
+            }
+            Err(e) => {
+                eprintln!("Failed to initialize storage at {}: {}", storage_path, e);
+                eprintln!("Continuing without storage...");
+            }
+        }
+    }
+
+    eprintln!("Running {} ticks (recording after warmup)...", total_ticks);
+    let start = Instant::now();
+    let mut segment_start = Instant::now();
+
+    for tick in 0..total_ticks {
+        sim.step();
+
+        if tick_delay_ms > 0 {
+            thread::sleep(Duration::from_millis(tick_delay_ms));
+        }
+
+        // Progress every 10% with segment timing
+        if tick > 0 && tick % (total_ticks / 10).max(1) == 0 {
+            let pct = (tick * 100) / total_ticks;
+            let segment_elapsed = segment_start.elapsed();
+            let status = if tick < args.record_warmup {
+                " (warmup)"
+            } else {
+                ""
+            };
+            eprintln!(
+                "  {}% ({}/{} ticks): {:.2}s{}",
+                pct,
+                tick,
+                total_ticks,
+                segment_elapsed.as_secs_f64(),
+                status
+            );
+            segment_start = Instant::now();
+        }
+    }
+
+    // V5.3: Notify hooks that simulation ended (triggers RecordingHook to flush)
+    sim.finish();
+
+    let elapsed = start.elapsed();
+    let stats = sim.stats();
+
+    eprintln!();
+    eprintln!("╔═══════════════════════════════════════════════════════════════════════╗");
+    eprintln!("║  Recording Complete                                                   ║");
+    eprintln!("╠═══════════════════════════════════════════════════════════════════════╣");
+    eprintln!(
+        "║  Ticks: {:8}  │  Elapsed: {:6.2}s  │  Rate: {:8.0} ticks/s     ║",
+        total_ticks,
+        elapsed.as_secs_f64(),
+        total_ticks as f64 / elapsed.as_secs_f64()
+    );
+    eprintln!(
+        "║  Total Orders: {:8}  │  Total Trades: {:8}                   ║",
+        stats.total_orders, stats.total_trades
+    );
+    eprintln!(
+        "║  Output: {:60} ║",
+        &args.record_output[..args.record_output.len().min(60)]
     );
     eprintln!("╚═══════════════════════════════════════════════════════════════════════╝");
 }

@@ -36,16 +36,16 @@ pub enum IndicatorType {
 }
 
 impl IndicatorType {
-    /// Standard MACD configuration (12, 26, 9).
+    /// Standard MACD configuration (8, 16, 4) - optimized for batch auction.
     pub const MACD_STANDARD: Self = Self::Macd {
-        fast: 12,
-        slow: 26,
-        signal: 9,
+        fast: 8,
+        slow: 16,
+        signal: 4,
     };
 
-    /// Standard Bollinger Bands (20 period, 2 std devs).
+    /// Standard Bollinger Bands (12 period, 2 std devs) - optimized for batch auction.
     pub const BOLLINGER_STANDARD: Self = Self::BollingerBands {
-        period: 20,
+        period: 12,
         std_dev_bp: 200,
     };
 

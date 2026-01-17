@@ -43,9 +43,9 @@ impl Default for MacdCrossoverConfig {
     fn default() -> Self {
         Self {
             symbol: "ACME".to_string(),
-            fast_period: 12,
-            slow_period: 26,
-            signal_period: 9,
+            fast_period: 8,
+            slow_period: 16,
+            signal_period: 4,
             order_size: 50,
             initial_cash: Cash::from_float(100_000.0),
             initial_price: Price::from_float(100.0),

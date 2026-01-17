@@ -95,10 +95,18 @@ impl MarketSnapshot {
     }
 
     /// Add a book snapshot for a symbol.
+    ///
+    /// Computes mid price from bid/ask if available, otherwise falls back to
+    /// last_price. This handles batch auction markets where books are cleared
+    /// between ticks.
     pub fn add_book(&mut self, symbol: Symbol, snapshot: BookSnapshot) {
-        if let (Some(bid), Some(ask)) = (snapshot.best_bid, snapshot.best_ask) {
-            let mid = Price((bid.0 + ask.0) / 2);
-            self.mid_prices.insert(symbol.clone(), mid);
+        // Try to compute mid from bid/ask first
+        let mid = match (snapshot.best_bid, snapshot.best_ask) {
+            (Some(bid), Some(ask)) => Some(Price((bid.0 + ask.0) / 2)),
+            _ => snapshot.last_price, // Fallback to last trade price
+        };
+        if let Some(price) = mid {
+            self.mid_prices.insert(symbol.clone(), price);
         }
         self.books.insert(symbol, snapshot);
     }

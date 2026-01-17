@@ -7,7 +7,12 @@ authors.workspace = true
 [dependencies]
 types = { workspace = true }
 simulation = { workspace = true }
+quant = { workspace = true }  # V5.3: For AgentRiskSnapshot
 rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 parking_lot = { workspace = true }
+
+# V5.3: Parquet recording
+parquet = "57.2"
+arrow = "57.2"
