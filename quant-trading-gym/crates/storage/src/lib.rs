@@ -14,14 +14,17 @@
 //! - Feature extraction (price, technical, fundamental, sentiment, agent state)
 //! - Parquet output for Python ML consumption
 //! - RecordingHook for capturing training data
+//!
+//! **V5.4 Scope:** Split parquet output
+//! - Market features (42): `{name}_market.parquet` - 1 row per tick per symbol
+//! - Agent features (10): `{name}_agents.parquet` - 1 row per agent per tick
 
 mod candles;
 mod hook;
 mod schema;
 
-// V5.3: ML training data recording
+// V5.3/V5.4: ML training data recording
 pub mod comprehensive_features;
-pub mod features;
 pub mod parquet_writer;
 pub mod price_history;
 pub mod recording_hook;
@@ -29,10 +32,9 @@ pub mod recording_hook;
 pub use hook::StorageHook;
 pub use schema::StorageConfig;
 
-// V5.3: Re-export recording types
-pub use comprehensive_features::ComprehensiveFeatures;
-pub use features::{FeatureContext, FeatureExtractor, MlModel};
-pub use parquet_writer::{FeatureRecord, ParquetWriter, ParquetWriterError};
+// V5.4: Re-export recording types
+pub use comprehensive_features::{AgentFeatureContext, AgentFeatures, MarketFeatures};
+pub use parquet_writer::{AgentRecord, DualParquetWriter, MarketRecord, ParquetWriterError};
 pub use price_history::PriceHistory;
 pub use recording_hook::{RecordingConfig, RecordingHook};
 

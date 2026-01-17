@@ -5,19 +5,24 @@ V5.4: Train tree-based models on simulation data and export to JSON for Rust inf
 Models: Decision Tree, Random Forest, Gradient Boosted Trees
 Output: JSON files with tree structure for V5.5 Rust inference
 
+Input: Two Parquet files (market features + agent features, joined on tick)
+  - {base}_market.parquet: tick, symbol, f_price_*, f_indicator_*, f_news_* (42 features)
+  - {base}_agents.parquet: tick, agent_id, agent_name, f_* (10 features), action, rewards
+
 Usage:
     python scripts/train_trees.py                           # Use default config
     python scripts/train_trees.py --config my_config.yaml   # Custom config
-    python scripts/train_trees.py --input data/other.parquet  # Override input
+    python scripts/train_trees.py --input data/training     # Override base path (without _market/_agents suffix)
 """
 import argparse
 import json
+import pickle
 from datetime import datetime
 from pathlib import Path
 
 import polars as pl
 import yaml
-from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
+from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from sklearn.model_selection import train_test_split
 from sklearn.tree import DecisionTreeClassifier
@@ -31,29 +36,100 @@ def load_config(config_path: Path) -> dict:
         return yaml.safe_load(f)
 
 
-def load_data(path: str, agent_filter: str | None = None) -> pl.DataFrame:
-    """Load training data from Parquet file."""
-    df = pl.read_parquet(path)
-    print(f"Loaded {len(df):,} rows from {path}")
-
-    if agent_filter:
-        df = df.filter(pl.col("agent_name").str.contains(agent_filter))
-        print(f"Filtered to {len(df):,} rows matching '{agent_filter}'")
-
+def load_data(base_path: str) -> pl.DataFrame:
+    """Load market data for training.
+    
+    Only uses market parquet (1 row per tick per symbol).
+    Agent data not needed since labels are price-based.
+    
+    Args:
+        base_path: Base path for parquet files (e.g., "data/training" loads 
+                   "data/training_market.parquet")
+        
+    Returns:
+        DataFrame with market features for training
+    """
+    base = Path(base_path)
+    market_path = base.parent / f"{base.stem}_market.parquet"
+    
+    if market_path.exists():
+        df = pl.read_parquet(market_path)
+        n_features = len([c for c in df.columns if c.startswith('f_')])
+        print(f"Loaded {len(df):,} rows, {n_features} features from {market_path.name}")
+    elif base.with_suffix(".parquet").exists():
+        # Legacy single-file format
+        legacy_path = base.with_suffix(".parquet")
+        df = pl.read_parquet(legacy_path)
+        print(f"Loaded {len(df):,} rows from {legacy_path} (legacy format)")
+    else:
+        raise FileNotFoundError(f"Could not find {market_path}")
+    
     return df
 
 
-def prepare_features(df: pl.DataFrame) -> tuple:
-    """Extract features and labels from dataframe."""
+def compute_lookahead_labels(df: pl.DataFrame, label_config: dict) -> pl.DataFrame:
+    """Compute lookahead price return rates for labeling.
+    
+    Args:
+        df: DataFrame with tick, symbol, f_mid_price columns
+        label_config: Config dict with horizons, buy_threshold, sell_threshold
+        
+    Returns:
+        DataFrame with price_return_rate columns
+    """
+    price_horizons = label_config.get("horizons", [4, 8, 16, 32])
+    
+    print(f"Computing lookahead labels: price_horizons={price_horizons}")
+    
+    # Compute percentage return normalized by horizon for each
+    for n in price_horizons:
+        df = df.with_columns([
+            ((pl.col("f_mid_price").shift(-n).over("symbol") - pl.col("f_mid_price")) 
+             / pl.col("f_mid_price") / n)
+            .alias(f"price_return_rate_{n}")
+        ])
+    
+    # Discard rows without future data (last max_horizon ticks)
+    max_horizon = max(price_horizons)
+    max_tick = df["tick"].max()
+    rows_before = len(df)
+    df = df.filter(pl.col("tick") <= max_tick - max_horizon)
+    rows_after = len(df)
+    print(f"Discarded {rows_before - rows_after:,} rows without lookahead data (last {max_horizon} ticks)")
+    
+    return df
+
+
+def prepare_features(df: pl.DataFrame, label_config: dict | None = None) -> tuple:
+    """Extract features and labels from dataframe.
+    
+    Label = avg price return rate across horizons [4, 8, 16, 32]
+    buy if > buy_threshold, sell if < sell_threshold, else hold
+    """
     import numpy as np
 
     feature_cols = [c for c in df.columns if c.startswith("f_")]
     print(f"Using {len(feature_cols)} features")
 
     X = df.select(feature_cols).to_numpy()
-    y = df["action"].to_numpy()
+    
+    # Average price return rate across horizons
+    price_horizons = (label_config or {}).get("horizons", [4, 8, 16, 32])
+    buy_threshold = (label_config or {}).get("buy_threshold", 0.0005)
+    sell_threshold = (label_config or {}).get("sell_threshold", -0.0005)
+    
+    return_rates = []
+    for n in price_horizons:
+        col = f"price_return_rate_{n}"
+        if col in df.columns:
+            return_rates.append(df[col].to_numpy())
+    
+    avg_return = np.nanmean(return_rates, axis=0)
+    y = np.where(avg_return > buy_threshold, 1,
+                np.where(avg_return < sell_threshold, -1, 0))
+    print(f"Label: avg price return rate, buy>{buy_threshold:.4%}/tick, sell<{sell_threshold:.4%}/tick")
 
-    # Check for NaN values
+    # Check for NaN values in features
     nan_count = np.isnan(X).sum()
     if nan_count > 0:
         nan_cols = np.isnan(X).any(axis=0)
@@ -61,8 +137,16 @@ def prepare_features(df: pl.DataFrame) -> tuple:
         print(f"Warning: {nan_count:,} NaN values in {len(nan_features)} features: {nan_features}")
         print("Imputing NaN with 0 (neutral/no history)...")
         X = np.nan_to_num(X, nan=0.0)
+    
+    # Handle NaN in labels (from lookahead at boundaries)
+    nan_labels = np.isnan(y) if np.issubdtype(y.dtype, np.floating) else np.zeros(len(y), dtype=bool)
+    if nan_labels.any():
+        print(f"Dropping {nan_labels.sum():,} rows with NaN labels")
+        X = X[~nan_labels]
+        y = y[~nan_labels]
 
     # Class distribution
+    y = y.astype(int)
     unique, counts = np.unique(y, return_counts=True)
     dist = dict(zip(unique, counts))
     print(f"Class distribution: sell={dist.get(-1, 0)}, hold={dist.get(0, 0)}, buy={dist.get(1, 0)}")
@@ -205,19 +289,21 @@ def train_gradient_boosted(
     feature_names: list[str],
     config: dict,
     name: str
-) -> tuple[HistGradientBoostingClassifier, dict]:
-    """Train a histogram-based gradient boosted classifier (handles NaN natively)."""
+) -> tuple[GradientBoostingClassifier, dict]:
+    """Train a gradient boosted classifier with exportable tree structure."""
     print(f"\n=== Training Gradient Boosted: {name} ===")
 
     n_estimators = config.get("n_estimators", 100)
     learning_rate = config.get("learning_rate", 0.1)
     max_depth = config.get("max_depth", 5)
 
-    clf = HistGradientBoostingClassifier(
-        max_iter=n_estimators,
+    clf = GradientBoostingClassifier(
+        n_estimators=n_estimators,
         max_depth=max_depth,
         learning_rate=learning_rate,
-        min_samples_leaf=config.get("min_samples_leaf", 20),
+        subsample=config.get("subsample", 1.0),
+        min_samples_split=config.get("min_samples_split", 2),
+        min_samples_leaf=config.get("min_samples_leaf", 1),
         random_state=42
     )
     clf.fit(X_train, y_train)
@@ -225,44 +311,85 @@ def train_gradient_boosted(
     y_pred = clf.predict(X_test)
     accuracy = accuracy_score(y_test, y_pred)
     print(f"Accuracy: {accuracy:.4f}")
-    print(f"Iterations: {n_estimators}, max_depth: {max_depth}, lr: {learning_rate}")
+    print(f"Estimators: {n_estimators}, max_depth: {max_depth}, lr: {learning_rate}")
 
-    # HistGradientBoosting doesn't expose feature_importances_ directly in older sklearn
-    # but does in newer versions
-    if hasattr(clf, 'feature_importances_'):
-        importances = clf.feature_importances_.tolist()
-        top_features = sorted(zip(feature_names, importances), key=lambda x: x[1], reverse=True)[:10]
-        print("Top 10 features:")
-        for feat_name, imp in top_features:
-            print(f"  {feat_name}: {imp:.4f}")
-    else:
-        importances = None
-        print("Feature importances not available")
+    # Feature importances
+    importances = clf.feature_importances_.tolist()
+    top_features = sorted(zip(feature_names, importances), key=lambda x: x[1], reverse=True)[:10]
+    print("Top 10 features:")
+    for feat_name, imp in top_features:
+        print(f"  {feat_name}: {imp:.4f}")
 
-    # HistGradientBoostingClassifier uses a different internal structure
-    # We'll export metadata but note that tree extraction is not directly available
+    # Export trees - GradientBoostingClassifier stores trees in estimators_
+    # Shape: (n_estimators, n_classes) for multi-class, each element is a DecisionTreeRegressor
+    # For 3-class classification, there are 3 trees per stage (one per class)
     n_classes = len(clf.classes_)
 
+    # Export all trees organized by stage and class
+    stages = []
+    for stage_idx in range(n_estimators):
+        stage_trees = []
+        for class_idx in range(n_classes):
+            tree = clf.estimators_[stage_idx, class_idx]
+            stage_trees.append(tree_to_dict_regressor(tree, feature_names))
+        stages.append(stage_trees)
+
     result = {
-        "model_type": "hist_gradient_boosted",
+        "model_type": "gradient_boosted",
         "model_name": name,
         "feature_names": feature_names,
         "n_features": len(feature_names),
         "n_classes": n_classes,
         "classes": clf.classes_.tolist(),
-        "n_iterations": n_estimators,
+        "n_estimators": n_estimators,
         "learning_rate": learning_rate,
+        "init_value": clf.init_.class_prior_.tolist() if hasattr(clf.init_, 'class_prior_') else None,
+        "stages": stages,  # List of stages, each stage has n_classes trees
         "feature_importances": importances,
         "metadata": {
             "trained_at": datetime.now().isoformat(),
             "training_rows": len(X_train),
             "config": config,
-            "accuracy": float(accuracy),
-            "note": "HistGradientBoosting uses histogram-based trees, export format differs from standard GB"
+            "accuracy": float(accuracy)
         }
     }
 
     return clf, result
+
+
+def tree_to_dict_regressor(tree_regressor, feature_names: list[str]) -> dict:
+    """Convert sklearn regression tree (used in GradientBoosting) to JSON-serializable dict.
+
+    Unlike classification trees, regression trees store raw prediction values in leaves.
+    """
+    tree_ = tree_regressor.tree_
+    n_nodes = tree_.node_count
+
+    nodes = []
+    for i in range(n_nodes):
+        is_leaf = tree_.children_left[i] == -1
+
+        if is_leaf:
+            # For regression trees, value is the raw prediction
+            # Shape is (1, 1) - just a single value
+            leaf_value = float(tree_.value[i][0, 0])
+            nodes.append({
+                "feature": -1,
+                "threshold": 0.0,
+                "left": -1,
+                "right": -1,
+                "value": leaf_value
+            })
+        else:
+            nodes.append({
+                "feature": int(tree_.feature[i]),
+                "threshold": float(tree_.threshold[i]),
+                "left": int(tree_.children_left[i]),
+                "right": int(tree_.children_right[i]),
+                "value": None
+            })
+
+    return {"n_nodes": n_nodes, "nodes": nodes}
 
 
 def compute_shap(model, X_test, feature_names: list[str], model_name: str, max_samples: int = 1000) -> dict | None:
@@ -319,7 +446,7 @@ def print_classification_report(y_test, y_pred, model_name: str):
 def main():
     parser = argparse.ArgumentParser(description="Train tree-based models for V5.5 Rust inference")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help="YAML config file")
-    parser.add_argument("--input", help="Override input Parquet file")
+    parser.add_argument("--input", help="Base path for Parquet files (loads {input}_market.parquet + {input}_agents.parquet)")
     parser.add_argument("--output-dir", help="Override output directory")
     args = parser.parse_args()
 
@@ -335,8 +462,20 @@ def main():
     output_dir = Path(data_config.get("output_dir", "models"))
     output_dir.mkdir(exist_ok=True)
 
-    df = load_data(data_config.get("input", "data/training.parquet"), data_config.get("agent_filter"))
-    X, y, feature_names = prepare_features(df)
+    # Load and join market + agent data
+    input_base = data_config.get("input", "data/training")
+    # Strip .parquet suffix if user provided it (for backwards compatibility)
+    if input_base.endswith(".parquet"):
+        input_base = input_base[:-8]  # Remove ".parquet"
+        
+    df = load_data(input_base)
+    
+    # Compute lookahead labels
+    label_config = config.get("labels", {})
+    if label_config.get("horizons"):
+        df = compute_lookahead_labels(df, label_config)
+    
+    X, y, feature_names = prepare_features(df, label_config)
 
     test_size = data_config.get("test_size", 0.2)
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42, stratify=y)
@@ -363,6 +502,11 @@ def main():
             with open(output_path, "w") as f:
                 json.dump(result, f, indent=2)
             print(f"Saved to {output_path}")
+            
+            # Also save pickle for SHAP analysis
+            pkl_path = output_dir / f"{name}_{model_type}.pkl"
+            with open(pkl_path, "wb") as f:
+                pickle.dump(clf, f)
 
             trained_models[f"{name}_{model_type}"] = clf
             print_classification_report(y_test, clf.predict(X_test), f"{name} {model_type}")

@@ -1,9 +1,30 @@
 # Development Log
 
-## 2026-01-17: V5.4 Tree-Based Training
+## 2026-01-17: V5.4 Tree-Based Training + Dual Parquet Split
 
 ### Summary
-Implemented Python training script for tree-based ML models. Trains Decision Tree, Random Forest, and Histogram Gradient Boosted trees on V5.3 Parquet data. Exports to JSON for V5.5 Rust inference. Also changed default simulation seed to random.
+Implemented Python training script for tree-based ML models. Trains Decision Tree, Random Forest, and Histogram Gradient Boosted trees. Exports to JSON for V5.5 Rust inference. **Split Parquet output into market features (42, once per tick) vs agent features (10, per agent per tick)** with parallel record building.
+
+### Dual Parquet Architecture
+| File | Rows | Features | Description |
+|------|------|----------|-------------|
+| `*_market.parquet` | 1 per tick | 42 | Price, indicators, news (shared across agents) |
+| `*_agents.parquet` | 1 per agent/tick | 10 | Position, cash, PnL, risk + action/reward labels |
+
+**Rationale**: Market features are identical for all 15K agents at a given tick. Writing once per tick instead of 15K times reduces I/O by ~15,000x for market data.
+
+### Feature Split
+| Category | Count | File | Extraction |
+|----------|-------|------|------------|
+| Price | 25 | market | `MarketFeatures::extract()` |
+| Technical | 13 | market | once per tick |
+| News | 4 | market | |
+| Agent State | 6 | agents | `AgentFeatures::extract()` |
+| Risk | 4 | agents | per agent, parallel |
+
+### Parallel Processing
+- Agent records built with `parallel::filter_map_slice` (CPU-bound feature extraction)
+- Parquet write remains sequential (Arrow writer not thread-safe)
 
 ### Models
 | Model | Library | Output |
@@ -34,26 +55,26 @@ Implemented Python training script for tree-based ML models. Trains Decision Tre
 - `value`: Class probabilities `[p_sell, p_hold, p_buy]` for leaf nodes
 
 ### Files
-- `scripts/train_trees.py` - Main training script (YAML config)
+- `scripts/train_trees.py` - Training script (loads dual parquet, joins on tick)
 - `scripts/train_config.yaml` - Model hyperparameters
+- `crates/storage/src/comprehensive_features.rs` - `MarketFeatures` (42) + `AgentFeatures` (10)
+- `crates/storage/src/parquet_writer.rs` - `DualParquetWriter` (market + agents files)
+- `crates/storage/src/recording_hook.rs` - Parallel agent record building
 - `requirements.txt` - Python dependencies (polars, sklearn, pyyaml, shap)
 
 ### Usage
 ```bash
-# Generate training data (1000 tick warmup for all indicators)
+# Generate training data (outputs data/training_market.parquet + data/training_agents.parquet)
 cargo run --release -- --headless-record --ticks 2000 --record-warmup 1000
 
-# Train models
-python scripts/train_trees.py
-
-# Custom config
-python scripts/train_trees.py --config scripts/train_config.yaml
+# Train models (auto-joins market + agent files)
+python scripts/train_trees.py --input data/training
 ```
 
 ### Config Format
 ```yaml
 data:
-  input: data/training.parquet
+  input: data/training  # loads {input}_market.parquet + {input}_agents.parquet
   output_dir: models
   test_size: 0.2
 

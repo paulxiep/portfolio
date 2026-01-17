@@ -1,7 +1,12 @@
 //! Recording hook for ML training data capture.
 //!
-//! V5.3: Implements SimulationHook to capture features, actions, and outcomes
-//! at each tick, writing to Parquet files for Python ML training.
+//! V5.4: Implements SimulationHook to capture features, actions, and outcomes
+//! at each tick, writing to separate Parquet files for market and agent data.
+//!
+//! ## Output Files
+//!
+//! - `{name}_market.parquet`: Market features (1 row per tick per symbol)
+//! - `{name}_agents.parquet`: Agent features + actions + rewards (1 row per agent per tick)
 
 use std::collections::HashMap;
 
@@ -9,15 +14,14 @@ use parking_lot::Mutex;
 use simulation::{HookContext, SimulationHook, SimulationStats};
 use types::{AgentId, Cash, Order, OrderSide, OrderType, Symbol, Tick, Trade};
 
-use crate::comprehensive_features::ComprehensiveFeatures;
-use crate::features::{FeatureContext, FeatureExtractor};
-use crate::parquet_writer::{FeatureRecord, ParquetWriter, ParquetWriterError};
+use crate::comprehensive_features::{AgentFeatureContext, AgentFeatures, MarketFeatures};
+use crate::parquet_writer::{AgentRecord, DualParquetWriter, MarketRecord, ParquetWriterError};
 use crate::price_history::PriceHistory;
 
 /// Configuration for the recording hook.
 #[derive(Debug, Clone)]
 pub struct RecordingConfig {
-    /// Output Parquet file path.
+    /// Output Parquet file path (base name, creates `{name}_market.parquet` and `{name}_agents.parquet`).
     pub output_path: String,
     /// Skip first N ticks before recording (warmup period).
     pub warmup: u64,
@@ -93,12 +97,10 @@ struct AccumulatedFill {
 
 /// Internal state protected by Mutex.
 struct RecordingState {
-    /// Feature extractor.
-    extractor: ComprehensiveFeatures,
     /// Rolling price history.
     price_history: PriceHistory,
     /// Parquet writer.
-    writer: Option<ParquetWriter>,
+    writer: Option<DualParquetWriter>,
     /// Actions captured this tick (from on_orders_collected).
     captured_actions: HashMap<AgentId, CapturedAction>,
     /// Fills accumulated this tick (from on_trades).
@@ -122,8 +124,8 @@ struct RecordingState {
 /// 1. `on_tick_start()`: Record mid prices to price history, clear state
 /// 2. `on_orders_collected()`: Capture actions (orders submitted)
 /// 3. `on_trades()`: Accumulate fills per agent
-/// 4. `on_tick_end()`: Extract features (enriched data available), write records
-/// 5. `on_simulation_end()`: Final flush and close file
+/// 4. `on_tick_end()`: Extract features, write market + agent records
+/// 5. `on_simulation_end()`: Final flush and close files
 pub struct RecordingHook {
     state: Mutex<RecordingState>,
 }
@@ -131,12 +133,10 @@ pub struct RecordingHook {
 impl RecordingHook {
     /// Create a new recording hook.
     pub fn new(config: RecordingConfig) -> Result<Self, ParquetWriterError> {
-        let extractor = ComprehensiveFeatures::new();
-        let writer = ParquetWriter::new(&config.output_path, &extractor)?;
+        let writer = DualParquetWriter::new(&config.output_path)?;
 
         Ok(Self {
             state: Mutex::new(RecordingState {
-                extractor,
                 price_history: PriceHistory::new(),
                 writer: Some(writer),
                 captured_actions: HashMap::new(),
@@ -260,106 +260,152 @@ impl SimulationHook for RecordingHook {
             None => return, // Can't extract features without enriched data
         };
 
-        // Extract config values
+        // Extract config values (Copy types)
         let initial_cash = state.config.initial_cash;
         let position_limit = state.config.position_limit;
+        let tick = ctx.tick;
 
-        // Build records for all agents with actions or positions
-        let mut records: Vec<FeatureRecord> = Vec::new();
+        // Extract read-only references for parallel closures
+        let price_history = &state.price_history;
+        let market = &ctx.market;
 
-        for agent_summary in &enriched.agent_summaries {
-            let agent_id = agent_summary.id;
+        // Collect symbols for parallel iteration
+        let symbols: Vec<_> = ctx.market.mid_prices.keys().collect();
 
-            // Get captured action (if any) or use "hold"
-            let captured = state.captured_actions.get(&agent_id);
-            let (symbol, action, action_quantity, action_price) = match captured {
-                Some(cap) => (
-                    cap.symbol.clone(),
-                    cap.action,
-                    cap.action_quantity,
-                    cap.action_price,
-                ),
-                None => {
-                    // No action - use first position symbol or skip
-                    match agent_summary.positions.keys().next() {
-                        Some(s) => (s.clone(), 0i8, 0.0, 0.0),
-                        None => continue, // No position, skip this agent
-                    }
+        // Extract market features in PARALLEL (42 features per symbol is CPU-bound)
+        let market_records: Vec<MarketRecord> = parallel::map_slice(
+            &symbols,
+            |symbol| {
+                let market_features =
+                    MarketFeatures::extract(symbol, tick, market, Some(enriched), price_history);
+                MarketRecord {
+                    tick,
+                    symbol: symbol.to_string(),
+                    features: market_features.features,
                 }
-            };
+            },
+            false, // Use parallel when available
+        );
 
-            // Build feature context
-            let risk_snapshot = enriched.risk_metrics.get(&agent_id);
-            let feature_ctx = FeatureContext {
-                tick: ctx.tick,
-                symbol: &symbol,
-                market: &ctx.market,
-                enriched: Some(enriched),
-                agent_summary,
-                risk_snapshot,
-                price_history: &state.price_history,
-                initial_cash,
-                position_limit,
-            };
-
-            // Extract features
-            let features = state.extractor.extract(&feature_ctx);
-
-            // Get fills
-            let fill = state.accumulated_fills.get(&agent_id);
-            let (fill_quantity, fill_price) = match fill {
-                Some(f) if f.quantity > 0.0 => (f.quantity, f.value / f.quantity),
-                _ => (0.0, 0.0),
-            };
-
-            // Compute reward (PnL change)
-            let current_pnl = agent_summary.total_pnl;
-            let previous_pnl = state
-                .previous_pnl
-                .get(&agent_id)
-                .copied()
-                .unwrap_or(Cash(0));
-            let reward = (current_pnl.0 - previous_pnl.0) as f64 / 100.0;
-            let reward_normalized = if initial_cash > 0.0 {
-                reward / initial_cash
-            } else {
-                0.0
-            };
-
-            // Get next-tick values (current state at tick end)
-            let next_mid_price = ctx
-                .market
-                .mid_price(&symbol)
-                .map(|p| p.0 as f64 / 100.0)
-                .unwrap_or(f64::NAN);
-            let next_position = agent_summary.positions.get(&symbol).copied().unwrap_or(0) as f64;
-            let next_pnl = agent_summary.total_pnl.0 as f64 / 100.0;
-
-            // Build complete record
-            let record = FeatureRecord {
-                tick: ctx.tick,
-                agent_id: agent_id.0,
-                agent_name: agent_summary.name.clone(),
-                symbol: symbol.to_string(),
-                features,
-                action,
-                action_quantity,
-                action_price,
-                fill_quantity,
-                fill_price,
-                reward,
-                reward_normalized,
-                next_mid_price,
-                next_position,
-                next_pnl,
-            };
-            records.push(record);
+        // Write market records SEQUENTIALLY (Parquet writer not thread-safe)
+        if let Some(ref mut writer) = state.writer {
+            for market_record in market_records {
+                if let Err(e) = writer.write_market(market_record) {
+                    state.error = Some(e.to_string());
+                    return;
+                }
+            }
         }
 
-        // Write all records
+        // Extract read-only references for agent parallel closure
+        let captured_actions = &state.captured_actions;
+        let accumulated_fills = &state.accumulated_fills;
+        let previous_pnl_map = &state.previous_pnl;
+        let risk_metrics = &enriched.risk_metrics;
+        let agent_summaries = &enriched.agent_summaries;
+
+        // Build agent records in PARALLEL (feature extraction is CPU-bound)
+        let agent_records: Vec<AgentRecord> = parallel::filter_map_slice(
+            agent_summaries,
+            |agent_summary| {
+                let agent_id = agent_summary.id;
+
+                // Skip MarketMaker agents (liquidity providers, not learning)
+                // Skip PairsTrading/SectorRotator (multi-symbol, can't capture with single action)
+                let name = &agent_summary.name;
+                if name.contains("MarketMaker")
+                    || name.contains("PairsTrading")
+                    || name.contains("SectorRotator")
+                {
+                    return None;
+                }
+
+                // Skip multi-symbol agents (catch-all for any new multi-symbol strategies)
+                if agent_summary.positions.len() > 1 {
+                    return None;
+                }
+
+                // Get captured action (if any) or use "hold"
+                let captured = captured_actions.get(&agent_id);
+                let (agent_symbol, action, action_quantity, action_price) = match captured {
+                    Some(cap) => (
+                        cap.symbol.clone(),
+                        cap.action,
+                        cap.action_quantity,
+                        cap.action_price,
+                    ),
+                    None => {
+                        // No action - use first position symbol or skip
+                        match agent_summary.positions.keys().next() {
+                            Some(s) => (s.clone(), 0i8, 0.0, 0.0),
+                            None => return None, // No position, skip this agent
+                        }
+                    }
+                };
+
+                // Build agent feature context
+                let risk_snapshot = risk_metrics.get(&agent_id);
+                let agent_ctx = AgentFeatureContext {
+                    agent_summary,
+                    risk_snapshot,
+                    symbol: &agent_symbol,
+                    initial_cash,
+                    position_limit,
+                };
+
+                // Extract agent features (only 10 features, fast)
+                let agent_features = AgentFeatures::extract(&agent_ctx);
+
+                // Get fills
+                let fill = accumulated_fills.get(&agent_id);
+                let (fill_quantity, fill_price) = match fill {
+                    Some(f) if f.quantity > 0.0 => (f.quantity, f.value / f.quantity),
+                    _ => (0.0, 0.0),
+                };
+
+                // Compute reward (PnL change)
+                let current_pnl = agent_summary.total_pnl;
+                let prev_pnl = previous_pnl_map.get(&agent_id).copied().unwrap_or(Cash(0));
+                let reward = (current_pnl.0 - prev_pnl.0) as f64 / 100.0;
+                let reward_normalized = if initial_cash > 0.0 {
+                    reward / initial_cash
+                } else {
+                    0.0
+                };
+
+                // Get next-tick values (current state at tick end)
+                let next_position = agent_summary
+                    .positions
+                    .get(&agent_symbol)
+                    .copied()
+                    .unwrap_or(0) as f64;
+                let next_pnl = agent_summary.total_pnl.0 as f64 / 100.0;
+
+                // Build agent record
+                Some(AgentRecord {
+                    tick,
+                    symbol: agent_symbol.to_string(),
+                    agent_id: agent_id.0,
+                    agent_name: agent_summary.name.clone(),
+                    features: agent_features.features,
+                    action,
+                    action_quantity,
+                    action_price,
+                    fill_quantity,
+                    fill_price,
+                    reward,
+                    reward_normalized,
+                    next_position,
+                    next_pnl,
+                })
+            },
+            false, // Use parallel when available
+        );
+
+        // Write agent records SEQUENTIALLY (Parquet writer not thread-safe)
         if let Some(ref mut writer) = state.writer {
-            for record in records {
-                if let Err(e) = writer.write_record(record) {
+            for agent_record in agent_records {
+                if let Err(e) = writer.write_agent(agent_record) {
                     state.error = Some(e.to_string());
                     break;
                 }
@@ -378,8 +424,11 @@ impl SimulationHook for RecordingHook {
         // Finish writing
         if let Some(writer) = state.writer.take() {
             match writer.finish() {
-                Ok(count) => {
-                    eprintln!("[RecordingHook] Wrote {} records to Parquet", count);
+                Ok((market_count, agent_count)) => {
+                    eprintln!(
+                        "[RecordingHook] Finished: {} market rows, {} agent rows",
+                        market_count, agent_count
+                    );
                 }
                 Err(e) => {
                     eprintln!("[RecordingHook] Error closing Parquet file: {}", e);

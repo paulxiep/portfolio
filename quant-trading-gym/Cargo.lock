@@ -2513,6 +2513,7 @@ name = "storage"
 version = "0.1.0"
 dependencies = [
  "arrow",
+ "parallel",
  "parking_lot",
  "parquet",
  "quant",
