@@ -336,16 +336,27 @@ impl Simulation {
     /// Build hook context with enriched data for `on_tick_end` (V4.4).
     ///
     /// Includes candles, indicators, agent summaries, risk metrics, etc.
-    fn build_enriched_hook_context(&self) -> HookContext {
+    /// V5.5: Uses IndicatorSnapshot with enum keys for type safety.
+    fn build_enriched_hook_context(&self, indicators: &quant::IndicatorSnapshot) -> HookContext {
         use crate::hooks::EnrichedData;
 
         // Start with base context
         let base = self.build_hook_context();
 
-        // Build enriched data (convert VecDeque to Vec for candles)
+        // Build enriched data
+        // V5.5: Clone indicator values from IndicatorSnapshot (single source of truth)
+        let indicator_values: HashMap<Symbol, HashMap<types::IndicatorType, f64>> = indicators
+            .symbols()
+            .filter_map(|symbol| {
+                indicators
+                    .get_symbol(symbol)
+                    .map(|values| (symbol.clone(), values.clone()))
+            })
+            .collect();
+
         let enriched = EnrichedData {
             candles: self.build_candles_map(),
-            indicators: self.build_indicators_for_hook(),
+            indicators: indicator_values,
             agent_summaries: self.agent_summaries(),
             risk_metrics: self.risk_manager.compute_all_metrics(),
             fair_values: HashMap::new(), // No factor engine in current implementation
@@ -353,11 +364,6 @@ impl Simulation {
         };
 
         base.with_enriched(enriched)
-    }
-
-    /// Build indicator snapshot per symbol for hooks (returns String keys).
-    fn build_indicators_for_hook(&self) -> HashMap<Symbol, HashMap<String, f64>> {
-        self.market_data.build_indicators_for_hook()
     }
 
     /// Get active news events as snapshots for hooks.
@@ -869,6 +875,7 @@ impl Simulation {
         let (indices_to_call, triggered_t2) = self.compute_agents_to_call(&current_prices);
 
         // Phase 3: Build strategy context for agents
+        // V5.5: Single source of truth - indicators computed once and shared
         let candles_map = self.build_candles_map();
         let trades_map = self.build_trades_map();
         let indicators = self.build_indicator_snapshot();
@@ -946,8 +953,9 @@ impl Simulation {
         self.update_risk_tracking();
 
         // Phase 13 (V3.6): Hook - tick end with enriched data (V4.4)
+        // V5.5: Reuse indicators computed in Phase 3 (single source of truth)
         if has_hooks {
-            let hook_ctx = self.build_enriched_hook_context();
+            let hook_ctx = self.build_enriched_hook_context(&indicators);
             self.hooks.on_tick_end(&self.stats, &hook_ctx);
         }
 
@@ -967,9 +975,17 @@ impl Simulation {
         });
 
         // V3.6: Notify hooks that simulation ended
-        self.hooks.on_simulation_end(&self.stats);
+        self.finish();
 
         result
+    }
+
+    /// Notify hooks that simulation has ended (V5.3).
+    ///
+    /// Call this after manual tick loops to trigger `on_simulation_end` hooks.
+    /// This is automatically called by `run()`.
+    pub fn finish(&self) {
+        self.hooks.on_simulation_end(&self.stats);
     }
 
     // =========================================================================

@@ -22,11 +22,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 const SERVER_URL = process.env.SERVER_URL || 'http://localhost:8001';
 
 // Helper for fetch with timeout
-async function fetchWithRetry(
-  url: string,
-  retries = 10,
-  delay = 1000
-): Promise<Response> {
+async function fetchWithRetry(url: string, retries = 10, delay = 1000): Promise<Response> {
   for (let i = 0; i < retries; i++) {
     try {
       const response = await fetch(url);
@@ -134,7 +130,7 @@ describe('Analytics API', () => {
       if (symbols.length > 0) {
         const symbol = symbols[0];
         const response = await fetchWithRetry(
-          `${SERVER_URL}/api/analytics/candles?symbol=${encodeURIComponent(symbol)}`
+          `${SERVER_URL}/api/analytics/candles?symbol=${encodeURIComponent(symbol)}`,
         );
         const data = await response.json();
 
@@ -164,9 +160,9 @@ describe('Analytics API', () => {
       expect(typeof ind.sma).toBe('object');
       expect(ind).toHaveProperty('ema');
       expect(typeof ind.ema).toBe('object');
-      expect(ind).toHaveProperty('rsi_14');
-      // rsi_14 can be number or null
-      expect(ind.rsi_14 === null || typeof ind.rsi_14 === 'number').toBe(true);
+      expect(ind).toHaveProperty('rsi_8');
+      // rsi_8 can be number or null
+      expect(ind.rsi_8 === null || typeof ind.rsi_8 === 'number').toBe(true);
     });
   });
 
@@ -188,9 +184,7 @@ describe('Analytics API', () => {
 
   describe('GET /api/analytics/order-distribution', () => {
     it('returns OrderDistributionResponse shape', async () => {
-      const response = await fetchWithRetry(
-        `${SERVER_URL}/api/analytics/order-distribution`
-      );
+      const response = await fetchWithRetry(`${SERVER_URL}/api/analytics/order-distribution`);
       expect(response.ok).toBe(true);
 
       const data = await response.json();
@@ -270,9 +264,7 @@ describe('Portfolio API', () => {
 
       if (agents.length > 0) {
         const agentId = agents[0].agent_id;
-        const response = await fetchWithRetry(
-          `${SERVER_URL}/api/portfolio/agents/${agentId}`
-        );
+        const response = await fetchWithRetry(`${SERVER_URL}/api/portfolio/agents/${agentId}`);
         expect(response.ok).toBe(true);
 
         const data = await response.json();
@@ -302,9 +294,7 @@ describe('Risk API', () => {
 
       if (agents.length > 0) {
         const agentId = agents[0].agent_id;
-        const response = await fetchWithRetry(
-          `${SERVER_URL}/api/risk/${agentId}`
-        );
+        const response = await fetchWithRetry(`${SERVER_URL}/api/risk/${agentId}`);
         expect(response.ok).toBe(true);
 
         const data = await response.json();

@@ -45,7 +45,7 @@ impl Default for BollingerReversionConfig {
     fn default() -> Self {
         Self {
             symbol: "ACME".to_string(),
-            period: 20,
+            period: 12,
             std_dev_multiplier: 2.0,
             order_size: 50,
             initial_cash: Cash::from_float(100_000.0),
@@ -93,7 +93,7 @@ impl BollingerReversion {
 
     /// Get the IndicatorType this strategy uses.
     pub fn required_indicator(&self) -> IndicatorType {
-        IndicatorType::BollingerBands {
+        IndicatorType::BollingerMiddle {
             period: self.config.period,
             std_dev_bp: (self.config.std_dev_multiplier * 100.0) as u32,
         }

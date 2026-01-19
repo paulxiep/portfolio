@@ -41,7 +41,7 @@ impl Default for MomentumConfig {
     fn default() -> Self {
         Self {
             symbol: "ACME".to_string(),
-            rsi_period: 14,
+            rsi_period: 8,
             oversold_threshold: 30.0,
             overbought_threshold: 70.0,
             order_size: 50,
@@ -107,8 +107,8 @@ impl MomentumTrader {
     /// Generate a buy order at the current reference price.
     fn generate_buy_order(&self, ctx: &StrategyContext<'_>) -> Order {
         let price = self.get_reference_price(ctx);
-        // Slightly below mid to increase fill probability
-        let order_price = Price::from_float(price.to_float() * 0.999);
+        // Bid above mid to qualify in batch auction (bid >= ref_price)
+        let order_price = Price::from_float(price.to_float() * 1.001);
         Order::limit(
             self.id,
             &self.config.symbol,
@@ -121,8 +121,8 @@ impl MomentumTrader {
     /// Generate a sell order at the current reference price.
     fn generate_sell_order(&self, ctx: &StrategyContext<'_>) -> Order {
         let price = self.get_reference_price(ctx);
-        // Slightly above mid to increase fill probability
-        let order_price = Price::from_float(price.to_float() * 1.001);
+        // Ask below mid to qualify in batch auction (ask <= ref_price)
+        let order_price = Price::from_float(price.to_float() * 0.999);
         Order::limit(
             self.id,
             &self.config.symbol,
@@ -194,6 +194,7 @@ mod tests {
     use types::{Candle, Order, OrderId, Symbol};
 
     fn setup_test_context(
+        config: &MomentumConfig,
         rsi: Option<f64>,
     ) -> (
         sim_core::OrderBook,
@@ -202,10 +203,10 @@ mod tests {
         HashMap<Symbol, Vec<Trade>>,
     ) {
         // Create order book with bids and asks
-        let mut book = sim_core::OrderBook::new("ACME");
+        let mut book = sim_core::OrderBook::new(&config.symbol);
         let mut bid = Order::limit(
             AgentId(99),
-            "ACME",
+            &config.symbol,
             OrderSide::Buy,
             Price::from_float(99.0),
             Quantity(100),
@@ -213,7 +214,7 @@ mod tests {
         bid.id = OrderId(1);
         let mut ask = Order::limit(
             AgentId(99),
-            "ACME",
+            &config.symbol,
             OrderSide::Sell,
             Price::from_float(101.0),
             Quantity(100),
@@ -228,8 +229,8 @@ mod tests {
         let mut indicators = IndicatorSnapshot::new(100);
         if let Some(rsi_value) = rsi {
             let mut symbol_indicators = HashMap::new();
-            symbol_indicators.insert(IndicatorType::Rsi(14), rsi_value);
-            indicators.insert("ACME".to_string(), symbol_indicators);
+            symbol_indicators.insert(IndicatorType::Rsi(config.rsi_period), rsi_value);
+            indicators.insert(config.symbol.clone(), symbol_indicators);
         }
 
         (book, candles, indicators, recent_trades)
@@ -237,8 +238,9 @@ mod tests {
 
     #[test]
     fn test_momentum_buys_on_oversold() {
-        let mut trader = MomentumTrader::with_defaults(AgentId(1));
-        let (book, candles, indicators, recent_trades) = setup_test_context(Some(25.0)); // Oversold
+        let config = MomentumConfig::default();
+        let mut trader = MomentumTrader::new(AgentId(1), config.clone());
+        let (book, candles, indicators, recent_trades) = setup_test_context(&config, Some(25.0)); // Oversold
         let market = SingleSymbolMarket::new(&book);
         let events = vec![];
         let fundamentals = news::SymbolFundamentals::default();
@@ -260,8 +262,9 @@ mod tests {
 
     #[test]
     fn test_momentum_sells_on_overbought() {
-        let mut trader = MomentumTrader::with_defaults(AgentId(1));
-        let (book, candles, indicators, recent_trades) = setup_test_context(Some(75.0)); // Overbought
+        let config = MomentumConfig::default();
+        let mut trader = MomentumTrader::new(AgentId(1), config.clone());
+        let (book, candles, indicators, recent_trades) = setup_test_context(&config, Some(75.0)); // Overbought
         let market = SingleSymbolMarket::new(&book);
         let events = vec![];
         let fundamentals = news::SymbolFundamentals::default();
@@ -283,8 +286,9 @@ mod tests {
 
     #[test]
     fn test_momentum_no_action_neutral() {
-        let mut trader = MomentumTrader::with_defaults(AgentId(1));
-        let (book, candles, indicators, recent_trades) = setup_test_context(Some(50.0)); // Neutral
+        let config = MomentumConfig::default();
+        let mut trader = MomentumTrader::new(AgentId(1), config.clone());
+        let (book, candles, indicators, recent_trades) = setup_test_context(&config, Some(50.0)); // Neutral
         let market = SingleSymbolMarket::new(&book);
         let events = vec![];
         let fundamentals = news::SymbolFundamentals::default();
@@ -305,8 +309,9 @@ mod tests {
 
     #[test]
     fn test_momentum_no_action_without_indicator() {
-        let mut trader = MomentumTrader::with_defaults(AgentId(1));
-        let (book, candles, indicators, recent_trades) = setup_test_context(None);
+        let config = MomentumConfig::default();
+        let mut trader = MomentumTrader::new(AgentId(1), config.clone());
+        let (book, candles, indicators, recent_trades) = setup_test_context(&config, None);
         let market = SingleSymbolMarket::new(&book);
         let events = vec![];
         let fundamentals = news::SymbolFundamentals::default();

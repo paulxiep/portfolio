@@ -75,18 +75,119 @@ pub trait Indicator: Send + Sync {
 // =============================================================================
 
 /// Create an indicator from its type specification.
+#[allow(deprecated)]
 pub fn create_indicator(indicator_type: IndicatorType) -> Box<dyn Indicator> {
     match indicator_type {
         IndicatorType::Sma(p) => Box::new(Sma::new(p)),
         IndicatorType::Ema(p) => Box::new(Ema::new(p)),
         IndicatorType::Rsi(p) => Box::new(Rsi::new(p)),
-        IndicatorType::Macd { fast, slow, signal } => Box::new(Macd::new(fast, slow, signal)),
-        IndicatorType::BollingerBands { period, std_dev_bp } => {
+        IndicatorType::Atr(p) => Box::new(Atr::new(p)),
+        // MACD components all use same underlying computation
+        IndicatorType::MacdLine { fast, slow, signal }
+        | IndicatorType::MacdSignal { fast, slow, signal }
+        | IndicatorType::MacdHistogram { fast, slow, signal }
+        | IndicatorType::Macd { fast, slow, signal } => Box::new(Macd::new(fast, slow, signal)),
+        // Bollinger components all use same underlying computation
+        IndicatorType::BollingerUpper { period, std_dev_bp }
+        | IndicatorType::BollingerMiddle { period, std_dev_bp }
+        | IndicatorType::BollingerLower { period, std_dev_bp }
+        | IndicatorType::BollingerBands { period, std_dev_bp } => {
             Box::new(BollingerBands::new(period, std_dev_bp as f64 / 100.0))
         }
-        IndicatorType::Atr(p) => Box::new(Atr::new(p)),
     }
 }
+
+/// Compute all standard indicators for given candles, returning component-level values.
+///
+/// This computes all common indicators and returns a map with separate entries for
+/// each MACD and Bollinger component. This is the single computation point -
+/// use this instead of calling compute_all() on registered indicators.
+pub fn compute_all_indicators(candles: &[Candle]) -> HashMap<IndicatorType, f64> {
+    let mut result = HashMap::new();
+
+    if candles.is_empty() {
+        return result;
+    }
+
+    // Simple indicators
+    if let Some(v) = Sma::new(8).calculate(candles) {
+        result.insert(IndicatorType::Sma(8), v);
+    }
+    if let Some(v) = Sma::new(16).calculate(candles) {
+        result.insert(IndicatorType::Sma(16), v);
+    }
+    if let Some(v) = Ema::new(8).calculate(candles) {
+        result.insert(IndicatorType::Ema(8), v);
+    }
+    if let Some(v) = Ema::new(16).calculate(candles) {
+        result.insert(IndicatorType::Ema(16), v);
+    }
+    if let Some(v) = Rsi::new(8).calculate(candles) {
+        result.insert(IndicatorType::Rsi(8), v);
+    }
+    if let Some(v) = Atr::new(8).calculate(candles) {
+        result.insert(IndicatorType::Atr(8), v);
+    }
+
+    // MACD components (8, 16, 4) - compute once, store all components
+    let macd = Macd::new(8, 16, 4);
+    if let Some(output) = macd.calculate_full(candles) {
+        result.insert(
+            IndicatorType::MacdLine {
+                fast: 8,
+                slow: 16,
+                signal: 4,
+            },
+            output.macd_line,
+        );
+        result.insert(
+            IndicatorType::MacdSignal {
+                fast: 8,
+                slow: 16,
+                signal: 4,
+            },
+            output.signal_line,
+        );
+        result.insert(
+            IndicatorType::MacdHistogram {
+                fast: 8,
+                slow: 16,
+                signal: 4,
+            },
+            output.histogram,
+        );
+    }
+
+    // Bollinger Bands components (12, 2.0) - compute once, store all components
+    let bb = BollingerBands::new(12, 2.0);
+    if let Some(output) = bb.calculate_full(candles) {
+        result.insert(
+            IndicatorType::BollingerUpper {
+                period: 12,
+                std_dev_bp: 200,
+            },
+            output.upper,
+        );
+        result.insert(
+            IndicatorType::BollingerMiddle {
+                period: 12,
+                std_dev_bp: 200,
+            },
+            output.middle,
+        );
+        result.insert(
+            IndicatorType::BollingerLower {
+                period: 12,
+                std_dev_bp: 200,
+            },
+            output.lower,
+        );
+    }
+
+    result
+}
+
+use std::collections::HashMap;
 
 // =============================================================================
 // Tests
@@ -243,10 +344,12 @@ mod tests {
         let sma = create_indicator(IndicatorType::Sma(20));
         assert_eq!(sma.required_periods(), 20);
 
+        // V5.3: MACD_STANDARD is (8, 16, 4) → required = 16 + 4 = 20
         let macd = create_indicator(IndicatorType::MACD_STANDARD);
-        assert_eq!(macd.required_periods(), 35);
+        assert_eq!(macd.required_periods(), 20);
 
+        // V5.3: BOLLINGER_STANDARD is period=12
         let bb = create_indicator(IndicatorType::BOLLINGER_STANDARD);
-        assert_eq!(bb.required_periods(), 20);
+        assert_eq!(bb.required_periods(), 12);
     }
 }

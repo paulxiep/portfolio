@@ -39,8 +39,6 @@ pub trait MarketDataProvider {
     /// Build indicator snapshot for current tick (all symbols).
     ///
     /// Requires mutable access to make candles contiguous for computation.
+    /// V5.5: Single source of truth - returns IndicatorSnapshot with enum keys.
     fn build_indicator_snapshot(&mut self) -> IndicatorSnapshot;
-
-    /// Build indicator values for hooks (String keys for serialization).
-    fn build_indicators_for_hook(&self) -> HashMap<Symbol, HashMap<String, f64>>;
 }

@@ -19,42 +19,165 @@ pub enum IndicatorType {
     Ema(usize),
     /// Relative Strength Index with period.
     Rsi(usize),
+    /// Average True Range with period.
+    Atr(usize),
+
+    // =========================================================================
+    // MACD Components (V5.5)
+    // =========================================================================
+    /// MACD Line (fast EMA - slow EMA).
+    MacdLine {
+        fast: usize,
+        slow: usize,
+        signal: usize,
+    },
+    /// MACD Signal Line (EMA of MACD line).
+    MacdSignal {
+        fast: usize,
+        slow: usize,
+        signal: usize,
+    },
+    /// MACD Histogram (MACD Line - Signal Line).
+    MacdHistogram {
+        fast: usize,
+        slow: usize,
+        signal: usize,
+    },
+
+    // =========================================================================
+    // Bollinger Bands Components (V5.5)
+    // =========================================================================
+    /// Bollinger Upper Band.
+    BollingerUpper {
+        period: usize,
+        /// Standard deviation multiplier * 100 (e.g., 200 = 2.0 std devs).
+        std_dev_bp: u32,
+    },
+    /// Bollinger Middle Band (SMA).
+    BollingerMiddle {
+        period: usize,
+        /// Standard deviation multiplier * 100 (e.g., 200 = 2.0 std devs).
+        std_dev_bp: u32,
+    },
+    /// Bollinger Lower Band.
+    BollingerLower {
+        period: usize,
+        /// Standard deviation multiplier * 100 (e.g., 200 = 2.0 std devs).
+        std_dev_bp: u32,
+    },
+
+    // =========================================================================
+    // Legacy variants (deprecated, use components instead)
+    // =========================================================================
     /// MACD with fast, slow, and signal periods.
+    /// Deprecated: Use MacdLine, MacdSignal, MacdHistogram instead.
+    #[deprecated(note = "Use MacdLine, MacdSignal, MacdHistogram for component access")]
     Macd {
         fast: usize,
         slow: usize,
         signal: usize,
     },
-    /// Bollinger Bands with period and standard deviation multiplier (stored as basis points for precision).
+    /// Bollinger Bands with period and standard deviation multiplier.
+    /// Deprecated: Use BollingerUpper, BollingerMiddle, BollingerLower instead.
+    #[deprecated(note = "Use BollingerUpper, BollingerMiddle, BollingerLower for component access")]
     BollingerBands {
         period: usize,
         /// Standard deviation multiplier * 100 (e.g., 200 = 2.0 std devs).
         std_dev_bp: u32,
     },
-    /// Average True Range with period.
-    Atr(usize),
 }
 
 impl IndicatorType {
-    /// Standard MACD configuration (12, 26, 9).
-    pub const MACD_STANDARD: Self = Self::Macd {
-        fast: 12,
-        slow: 26,
-        signal: 9,
+    /// Standard MACD Line configuration (8, 16, 4) - optimized for batch auction.
+    pub const MACD_LINE_STANDARD: Self = Self::MacdLine {
+        fast: 8,
+        slow: 16,
+        signal: 4,
     };
 
-    /// Standard Bollinger Bands (20 period, 2 std devs).
+    /// Standard MACD Signal configuration (8, 16, 4) - optimized for batch auction.
+    pub const MACD_SIGNAL_STANDARD: Self = Self::MacdSignal {
+        fast: 8,
+        slow: 16,
+        signal: 4,
+    };
+
+    /// Standard MACD Histogram configuration (8, 16, 4) - optimized for batch auction.
+    pub const MACD_HISTOGRAM_STANDARD: Self = Self::MacdHistogram {
+        fast: 8,
+        slow: 16,
+        signal: 4,
+    };
+
+    /// Standard Bollinger Upper Band (12 period, 2 std devs) - optimized for batch auction.
+    pub const BOLLINGER_UPPER_STANDARD: Self = Self::BollingerUpper {
+        period: 12,
+        std_dev_bp: 200,
+    };
+
+    /// Standard Bollinger Middle Band (12 period, 2 std devs) - optimized for batch auction.
+    pub const BOLLINGER_MIDDLE_STANDARD: Self = Self::BollingerMiddle {
+        period: 12,
+        std_dev_bp: 200,
+    };
+
+    /// Standard Bollinger Lower Band (12 period, 2 std devs) - optimized for batch auction.
+    pub const BOLLINGER_LOWER_STANDARD: Self = Self::BollingerLower {
+        period: 12,
+        std_dev_bp: 200,
+    };
+
+    /// Standard MACD configuration (8, 16, 4) - deprecated, use MACD_LINE_STANDARD etc.
+    #[allow(deprecated)]
+    #[deprecated(note = "Use MACD_LINE_STANDARD, MACD_SIGNAL_STANDARD, MACD_HISTOGRAM_STANDARD")]
+    pub const MACD_STANDARD: Self = Self::Macd {
+        fast: 8,
+        slow: 16,
+        signal: 4,
+    };
+
+    /// Standard Bollinger Bands (12 period, 2 std devs) - deprecated.
+    #[allow(deprecated)]
+    #[deprecated(
+        note = "Use BOLLINGER_UPPER_STANDARD, BOLLINGER_MIDDLE_STANDARD, BOLLINGER_LOWER_STANDARD"
+    )]
     pub const BOLLINGER_STANDARD: Self = Self::BollingerBands {
-        period: 20,
+        period: 12,
         std_dev_bp: 200,
     };
 
     /// Get the number of periods required for this indicator to produce valid output.
+    #[allow(deprecated)]
     pub fn required_periods(&self) -> usize {
         match self {
             Self::Sma(p) | Self::Ema(p) | Self::Rsi(p) | Self::Atr(p) => *p,
-            Self::Macd { slow, signal, .. } => slow + signal,
-            Self::BollingerBands { period, .. } => *period,
+            Self::MacdLine { slow, signal, .. }
+            | Self::MacdSignal { slow, signal, .. }
+            | Self::MacdHistogram { slow, signal, .. }
+            | Self::Macd { slow, signal, .. } => slow + signal,
+            Self::BollingerUpper { period, .. }
+            | Self::BollingerMiddle { period, .. }
+            | Self::BollingerLower { period, .. }
+            | Self::BollingerBands { period, .. } => *period,
+        }
+    }
+
+    /// Convert to a canonical string key for serialization.
+    #[allow(deprecated)]
+    pub fn to_key(&self) -> String {
+        match self {
+            Self::Sma(p) => format!("SMA_{p}"),
+            Self::Ema(p) => format!("EMA_{p}"),
+            Self::Rsi(p) => format!("RSI_{p}"),
+            Self::Atr(p) => format!("ATR_{p}"),
+            Self::MacdLine { .. } => "MACD_line".to_string(),
+            Self::MacdSignal { .. } => "MACD_signal".to_string(),
+            Self::MacdHistogram { .. } => "MACD_histogram".to_string(),
+            Self::BollingerUpper { .. } => "BB_upper".to_string(),
+            Self::BollingerMiddle { .. } => "BB_middle".to_string(),
+            Self::BollingerLower { .. } => "BB_lower".to_string(),
+            Self::Macd { .. } => "MACD".to_string(),
+            Self::BollingerBands { .. } => "BB".to_string(),
         }
     }
 }

@@ -1,0 +1,57 @@
+# V5.4 Tree Training Configuration
+
+data:
+  # Base path for training data (loads {input}_market.parquet)
+  # Uses market-only data: 1 row per tick per symbol with 42 market features
+  # Labels computed from future price changes
+  input: data/training
+  output_dir: models
+  test_size: 0.2
+  # Agent data ({input}_agents.parquet) available for future behavioral cloning
+  # Exclude non-learning agents: MarketMaker, PairsTrading, SectorRotator
+  agent_filter: ["MarketMaker", "PairsTrading", "SectorRotator"]
+
+# Label: avg price return rate across horizons
+# buy if > buy_threshold, sell if < sell_threshold, else hold
+labels:
+  horizons: [4, 8, 16, 32]
+  buy_threshold: 0.015
+  sell_threshold: -0.015
+
+# Models grouped by type - each list entry becomes {name}_{type}.json
+decision_trees:
+  - name: shallow
+    max_depth: 16
+
+  - name: medium
+    max_depth: 24
+
+  - name: deep
+    max_depth: 32
+
+random_forests:
+  - name: small
+    n_estimators: 12
+    max_depth: 16
+    max_features: 0.7
+
+  - name: large
+    n_estimators: 24
+    max_depth: 24
+    max_features: 0.8
+
+gradient_boosted:
+  - name: fast
+    n_estimators: 24
+    max_depth: 8
+    learning_rate: 0.2
+
+  - name: slow
+    n_estimators: 48
+    max_depth: 12
+    learning_rate: 0.05
+    subsample: 0.8
+
+shap:
+  enabled: false
+  max_samples: 1000

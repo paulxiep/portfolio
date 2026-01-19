@@ -88,14 +88,14 @@ pub struct IndicatorData {
     pub sma: HashMap<u32, Option<f64>>,
     /// Exponential Moving Average values by period.
     pub ema: HashMap<u32, Option<f64>>,
-    /// Relative Strength Index (14-period).
-    pub rsi_14: Option<f64>,
+    /// Relative Strength Index (8-period).
+    pub rsi_8: Option<f64>,
     /// MACD values (line, signal, histogram).
     pub macd: Option<MacdData>,
     /// Bollinger Bands values.
     pub bollinger: Option<BollingerData>,
-    /// Average True Range (14-period).
-    pub atr_14: Option<f64>,
+    /// Average True Range (8-period).
+    pub atr_8: Option<f64>,
 }
 
 /// MACD indicator data.
@@ -367,17 +367,16 @@ pub async fn get_indicators(
 
     // Build SMA map
     let mut sma = HashMap::new();
-    sma.insert(10, indicators.get("SMA_10").copied());
-    sma.insert(20, indicators.get("SMA_20").copied());
-    sma.insert(50, indicators.get("SMA_50").copied());
+    sma.insert(8, indicators.get("SMA_8").copied());
+    sma.insert(16, indicators.get("SMA_16").copied());
 
     // Build EMA map
     let mut ema = HashMap::new();
-    ema.insert(12, indicators.get("EMA_12").copied());
-    ema.insert(26, indicators.get("EMA_26").copied());
+    ema.insert(8, indicators.get("EMA_8").copied());
+    ema.insert(16, indicators.get("EMA_16").copied());
 
     // RSI
-    let rsi_14 = indicators.get("RSI_14").copied();
+    let rsi_8 = indicators.get("RSI_8").copied();
 
     // MACD
     let macd = match (
@@ -408,15 +407,15 @@ pub async fn get_indicators(
     };
 
     // ATR
-    let atr_14 = indicators.get("ATR_14").copied();
+    let atr_8 = indicators.get("ATR_8").copied();
 
     let indicator_data = IndicatorData {
         sma,
         ema,
-        rsi_14,
+        rsi_8,
         macd,
         bollinger,
-        atr_14,
+        atr_8,
     };
 
     Ok(Json(IndicatorsResponse {

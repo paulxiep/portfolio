@@ -115,13 +115,13 @@ impl Default for SimulationConfig {
             short_selling: ShortSellingConfig::disabled(),
             snapshot_depth: 10,
             max_recent_trades: 100,
-            candle_interval: 10, // Candle every 10 ticks
-            max_candles: 100,    // Keep 100 candles (~1000 ticks of history)
+            candle_interval: 4, // Aggregate 4 ticks per candle (meaningful OHLC)
+            max_candles: 200,   // 200 candles = 800 ticks of history
             enforce_position_limits: true,
             verbose: false,
             news: news::NewsGeneratorConfig::default(),
             fair_value_drift: news::FairValueDriftConfig::default(),
-            seed: 42,
+            seed: rand::random(),
             parallelization: ParallelizationConfig::default(),
         }
     }

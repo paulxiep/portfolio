@@ -234,20 +234,20 @@ impl PairsTrading {
         let qty_b = ((qty_a as f64) * hedge_ratio).round() as u64;
 
         vec![
-            // Buy A (slightly below mid for fill probability)
+            // Buy A (bid above mid to qualify in batch auction)
             Order::limit(
                 self.id,
                 &self.config.symbol_a,
                 OrderSide::Buy,
-                Price::from_float(price_a.to_float() * 0.999),
+                Price::from_float(price_a.to_float() * 1.001),
                 Quantity(qty_a),
             ),
-            // Sell B (slightly above mid)
+            // Sell B (ask below mid to qualify in batch auction)
             Order::limit(
                 self.id,
                 &self.config.symbol_b,
                 OrderSide::Sell,
-                Price::from_float(price_b.to_float() * 1.001),
+                Price::from_float(price_b.to_float() * 0.999),
                 Quantity(qty_b),
             ),
         ]
@@ -268,20 +268,20 @@ impl PairsTrading {
         let qty_b = ((qty_a as f64) * hedge_ratio).round() as u64;
 
         vec![
-            // Sell A (slightly above mid)
+            // Sell A (ask below mid to qualify in batch auction)
             Order::limit(
                 self.id,
                 &self.config.symbol_a,
                 OrderSide::Sell,
-                Price::from_float(price_a.to_float() * 1.001),
+                Price::from_float(price_a.to_float() * 0.999),
                 Quantity(qty_a),
             ),
-            // Buy B (slightly below mid)
+            // Buy B (bid above mid to qualify in batch auction)
             Order::limit(
                 self.id,
                 &self.config.symbol_b,
                 OrderSide::Buy,
-                Price::from_float(price_b.to_float() * 0.999),
+                Price::from_float(price_b.to_float() * 1.001),
                 Quantity(qty_b),
             ),
         ]
@@ -307,9 +307,9 @@ impl PairsTrading {
             .filter_map(|(symbol, pos)| {
                 ctx.mid_price(symbol).map(|price| {
                     let (side, price_mult) = if pos > 0 {
-                        (OrderSide::Sell, 1.001) // Selling, price above mid
+                        (OrderSide::Sell, 0.999) // Ask below mid to qualify
                     } else {
-                        (OrderSide::Buy, 0.999) // Covering short, price below mid
+                        (OrderSide::Buy, 1.001) // Bid above mid to qualify
                     };
                     Order::limit(
                         self.id,

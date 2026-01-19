@@ -64,23 +64,33 @@ impl IndicatorEngine {
     }
 
     /// Create an engine with common indicators pre-registered.
+    /// Periods optimized for batch auction (1 tick = 1 session).
+    ///
+    /// V5.5: Registers component-level indicators for MACD and Bollinger Bands.
+    /// Use `compute_all_indicators()` from the indicators module for single-pass
+    /// computation of all standard indicators.
     pub fn with_common_indicators() -> Self {
         let mut engine = Self::new();
 
-        // Moving averages
-        engine.register(IndicatorType::Sma(10));
-        engine.register(IndicatorType::Sma(20));
-        engine.register(IndicatorType::Sma(50));
-        engine.register(IndicatorType::Ema(10));
-        engine.register(IndicatorType::Ema(20));
+        // Moving averages (8/16 spread)
+        engine.register(IndicatorType::Sma(8));
+        engine.register(IndicatorType::Sma(16));
+        engine.register(IndicatorType::Ema(8)); // MACD fast
+        engine.register(IndicatorType::Ema(16)); // MACD slow
 
         // Momentum
-        engine.register(IndicatorType::Rsi(14));
-        engine.register(IndicatorType::MACD_STANDARD);
+        engine.register(IndicatorType::Rsi(8));
+        // MACD components (8/16/4)
+        engine.register(IndicatorType::MACD_LINE_STANDARD);
+        engine.register(IndicatorType::MACD_SIGNAL_STANDARD);
+        engine.register(IndicatorType::MACD_HISTOGRAM_STANDARD);
 
         // Volatility
-        engine.register(IndicatorType::BOLLINGER_STANDARD);
-        engine.register(IndicatorType::Atr(14));
+        engine.register(IndicatorType::Atr(8));
+        // Bollinger components (12 period, 200bp = 2.0 std dev)
+        engine.register(IndicatorType::BOLLINGER_UPPER_STANDARD);
+        engine.register(IndicatorType::BOLLINGER_MIDDLE_STANDARD);
+        engine.register(IndicatorType::BOLLINGER_LOWER_STANDARD);
 
         engine
     }
@@ -324,9 +334,14 @@ mod tests {
     fn test_engine_with_common() {
         let engine = IndicatorEngine::with_common_indicators();
 
-        assert!(engine.is_registered(&IndicatorType::Sma(20)));
-        assert!(engine.is_registered(&IndicatorType::Rsi(14)));
-        assert!(engine.is_registered(&IndicatorType::MACD_STANDARD));
+        // V5.5: Updated to geometric spread (8/16) optimized for batch auction
+        // Now uses component-level indicators for MACD and Bollinger
+        assert!(engine.is_registered(&IndicatorType::Sma(8)));
+        assert!(engine.is_registered(&IndicatorType::Sma(16)));
+        assert!(engine.is_registered(&IndicatorType::Rsi(8)));
+        assert!(engine.is_registered(&IndicatorType::MACD_LINE_STANDARD));
+        assert!(engine.is_registered(&IndicatorType::MACD_SIGNAL_STANDARD));
+        assert!(engine.is_registered(&IndicatorType::BOLLINGER_UPPER_STANDARD));
     }
 
     #[test]

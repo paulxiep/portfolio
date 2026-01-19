@@ -100,7 +100,9 @@ pub struct StrategyContext<'a> {
     /// Historical candles per symbol.
     candles: &'a HashMap<Symbol, Vec<Candle>>,
 
-    /// Pre-computed indicators for current tick.
+    /// Pre-computed indicators for current tick (V5.5).
+    /// Single source of truth with enum keys for type safety.
+    /// Includes all component-level values (MacdLine, MacdSignal, etc.).
     indicators: &'a IndicatorSnapshot,
 
     /// Recent trades per symbol (most recent first).
@@ -228,6 +230,12 @@ impl<'a> StrategyContext<'a> {
     // =========================================================================
 
     /// Get a specific indicator value for a symbol.
+    ///
+    /// V5.5: Uses enum keys for type safety. Access MACD/BB components directly:
+    /// ```ignore
+    /// ctx.get_indicator(&symbol, IndicatorType::MACD_LINE_STANDARD)
+    /// ctx.get_indicator(&symbol, IndicatorType::BOLLINGER_UPPER_STANDARD)
+    /// ```
     pub fn get_indicator(&self, symbol: &Symbol, indicator_type: IndicatorType) -> Option<f64> {
         self.indicators.get(symbol, indicator_type)
     }

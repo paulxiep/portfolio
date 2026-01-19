@@ -71,10 +71,10 @@ export interface IndicatorsResponse {
   indicators: {
     sma: Record<string, number | null>;
     ema: Record<string, number | null>;
-    rsi_14: number | null;
+    rsi_8: number | null;
     macd: MacdData | null;
     bollinger: BollingerData | null;
-    atr_14: number | null;
+    atr_8: number | null;
   };
 }
 

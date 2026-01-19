@@ -13,7 +13,8 @@ A high-performance trading simulation that models realistic market microstructur
 ## Key Features
 
 - **Multi-Symbol Trading**: 4 symbols across different sectors (Consumer, Energy, Real Estate, Finance)
-- **11 Agent Strategies**: Market makers, momentum, MACD, Bollinger, VWAP, pairs trading, sector rotation
+- **12 Agent Strategies**: Market makers, momentum, MACD, Bollinger, VWAP, pairs trading, sector rotation, ML tree agents
+- **ML Agents (V5.5)**: DecisionTree, RandomForest, GradientBoosted agents using trained sklearn models
 - **Tiered Architecture**: T1 (full logic), T2 (reactive), T3 (45k+ background agents)
 - **News Events**: Earnings surprises, guidance changes, rate decisions, sector news
 - **Fair Value Model**: Gordon Growth Model anchors prices to fundamentals
@@ -42,7 +43,7 @@ Open http://localhost:80 — real-time charts, agent explorer, risk metrics.
 
 ## Current State
 
-**V4 Complete** — Full web frontend with React/Vite/Tailwind dashboard, Axum REST/WebSocket server, real-time simulation visualization, and Docker-based development workflow.
+**V5.5 Complete** — ML tree agents (DecisionTree, RandomForest, GradientBoosted) with trained sklearn models, unified indicator computation, separate long/short position limits. Full web frontend with React dashboard.
 
 ## Technology
 

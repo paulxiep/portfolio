@@ -38,8 +38,8 @@ impl Default for TrendFollowerConfig {
     fn default() -> Self {
         Self {
             symbol: "ACME".to_string(),
-            fast_period: 10,
-            slow_period: 50,
+            fast_period: 8,
+            slow_period: 16,
             order_size: 50,
             initial_cash: Cash::from_float(100_000.0),
             initial_price: Price::from_float(100.0),
@@ -124,7 +124,8 @@ impl TrendFollower {
     /// Generate a buy order.
     fn generate_buy_order(&self, ctx: &StrategyContext<'_>) -> Order {
         let price = self.get_reference_price(ctx);
-        let order_price = Price::from_float(price.to_float() * 0.999);
+        // Bid above mid to qualify in batch auction (bid >= ref_price)
+        let order_price = Price::from_float(price.to_float() * 1.001);
         Order::limit(
             self.id,
             &self.config.symbol,
@@ -137,7 +138,8 @@ impl TrendFollower {
     /// Generate a sell order.
     fn generate_sell_order(&self, ctx: &StrategyContext<'_>) -> Order {
         let price = self.get_reference_price(ctx);
-        let order_price = Price::from_float(price.to_float() * 1.001);
+        // Ask below mid to qualify in batch auction (ask <= ref_price)
+        let order_price = Price::from_float(price.to_float() * 0.999);
         Order::limit(
             self.id,
             &self.config.symbol,
@@ -272,14 +274,18 @@ mod tests {
         book
     }
 
-    fn make_indicators(fast_sma: Option<f64>, slow_sma: Option<f64>) -> IndicatorSnapshot {
+    fn make_indicators(
+        config: &TrendFollowerConfig,
+        fast_sma: Option<f64>,
+        slow_sma: Option<f64>,
+    ) -> IndicatorSnapshot {
         match (fast_sma, slow_sma) {
             (Some(fast), Some(slow)) => {
                 let mut snap = IndicatorSnapshot::new(100);
                 let mut indicators = HashMap::new();
-                indicators.insert(IndicatorType::Sma(10), fast);
-                indicators.insert(IndicatorType::Sma(50), slow);
-                snap.insert("ACME".to_string(), indicators);
+                indicators.insert(IndicatorType::Sma(config.fast_period), fast);
+                indicators.insert(IndicatorType::Sma(config.slow_period), slow);
+                snap.insert(config.symbol.clone(), indicators);
                 snap
             }
             _ => IndicatorSnapshot::default(),
@@ -288,8 +294,9 @@ mod tests {
 
     #[test]
     fn test_trend_golden_cross_buys() {
-        let mut trader = TrendFollower::with_defaults(AgentId(1));
-        let order_book = create_order_book("ACME", 99.0, 101.0);
+        let config = TrendFollowerConfig::default();
+        let mut trader = TrendFollower::new(AgentId(1), config.clone());
+        let order_book = create_order_book(&config.symbol, 99.0, 101.0);
         let market = SingleSymbolMarket::new(&order_book);
         let candles: HashMap<Symbol, Vec<Candle>> = HashMap::new();
         let trades: HashMap<Symbol, Vec<Trade>> = HashMap::new();
@@ -297,7 +304,7 @@ mod tests {
         let fundamentals = news::SymbolFundamentals::default();
 
         // First tick: fast below slow (set prev_state)
-        let indicators1 = make_indicators(Some(49.0), Some(50.0));
+        let indicators1 = make_indicators(&config, Some(49.0), Some(50.0));
         let ctx1 = make_context_with_indicators(
             &order_book,
             &candles,
@@ -310,7 +317,7 @@ mod tests {
         let _ = trader.on_tick(&ctx1);
 
         // Second tick: fast above slow (golden cross!)
-        let indicators2 = make_indicators(Some(51.0), Some(50.0));
+        let indicators2 = make_indicators(&config, Some(51.0), Some(50.0));
         let ctx2 = make_context_with_indicators(
             &order_book,
             &candles,
@@ -328,8 +335,9 @@ mod tests {
 
     #[test]
     fn test_trend_death_cross_sells() {
-        let mut trader = TrendFollower::with_defaults(AgentId(1));
-        let order_book = create_order_book("ACME", 99.0, 101.0);
+        let config = TrendFollowerConfig::default();
+        let mut trader = TrendFollower::new(AgentId(1), config.clone());
+        let order_book = create_order_book(&config.symbol, 99.0, 101.0);
         let market = SingleSymbolMarket::new(&order_book);
         let candles: HashMap<Symbol, Vec<Candle>> = HashMap::new();
         let trades: HashMap<Symbol, Vec<Trade>> = HashMap::new();
@@ -337,7 +345,7 @@ mod tests {
         let fundamentals = news::SymbolFundamentals::default();
 
         // First tick: fast above slow
-        let indicators1 = make_indicators(Some(51.0), Some(50.0));
+        let indicators1 = make_indicators(&config, Some(51.0), Some(50.0));
         let ctx1 = make_context_with_indicators(
             &order_book,
             &candles,
@@ -350,7 +358,7 @@ mod tests {
         let _ = trader.on_tick(&ctx1);
 
         // Second tick: fast below slow (death cross!)
-        let indicators2 = make_indicators(Some(49.0), Some(50.0));
+        let indicators2 = make_indicators(&config, Some(49.0), Some(50.0));
         let ctx2 = make_context_with_indicators(
             &order_book,
             &candles,
@@ -368,8 +376,9 @@ mod tests {
 
     #[test]
     fn test_trend_no_action_without_crossover() {
-        let mut trader = TrendFollower::with_defaults(AgentId(1));
-        let order_book = create_order_book("ACME", 99.0, 101.0);
+        let config = TrendFollowerConfig::default();
+        let mut trader = TrendFollower::new(AgentId(1), config.clone());
+        let order_book = create_order_book(&config.symbol, 99.0, 101.0);
         let market = SingleSymbolMarket::new(&order_book);
         let candles: HashMap<Symbol, Vec<Candle>> = HashMap::new();
         let trades: HashMap<Symbol, Vec<Trade>> = HashMap::new();
@@ -377,7 +386,7 @@ mod tests {
         let fundamentals = news::SymbolFundamentals::default();
 
         // Both ticks: fast above slow (no crossover)
-        let indicators1 = make_indicators(Some(51.0), Some(50.0));
+        let indicators1 = make_indicators(&config, Some(51.0), Some(50.0));
         let ctx1 = make_context_with_indicators(
             &order_book,
             &candles,
@@ -389,7 +398,7 @@ mod tests {
         );
         let _ = trader.on_tick(&ctx1);
 
-        let indicators2 = make_indicators(Some(52.0), Some(50.0));
+        let indicators2 = make_indicators(&config, Some(52.0), Some(50.0));
         let ctx2 = make_context_with_indicators(
             &order_book,
             &candles,

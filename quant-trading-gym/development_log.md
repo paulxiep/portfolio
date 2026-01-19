@@ -1,5 +1,353 @@
 # Development Log
 
+## 2026-01-17: V5.5 Tree-Based ML Agents + Indicator Unification
+
+### Summary
+Implemented Tier 1 tree-based ML agents (DecisionTree, RandomForest, GradientBoosted) that load JSON models exported from Python training. **Unified indicator computation** to single source of truth with enum-based access, eliminating redundant computation and string key overhead.
+
+### Indicator Architecture Unification
+
+**Before (V5.4)**: Dual computation paths
+```
+IndicatorEngine.compute_all() → IndicatorSnapshot (enum keys) → agents
+build_indicators_for_hook()  → HashMap<String, f64>           → hooks/JSON
+```
+
+**After (V5.5)**: Single source of truth
+```
+compute_all_indicators() → IndicatorSnapshot (enum keys) → agents
+                                     ↓
+                        indicators_as_string_keys() → JSON boundary only
+```
+
+### IndicatorType Enum Extension
+| New Variant | Parameters | Description |
+|-------------|------------|-------------|
+| `MacdLine` | fast, slow, signal | MACD line value |
+| `MacdSignal` | fast, slow, signal | Signal line |
+| `MacdHistogram` | fast, slow, signal | Histogram (line - signal) |
+| `BollingerUpper` | period, std_dev_bp | Upper band |
+| `BollingerMiddle` | period, std_dev_bp | Middle band (SMA) |
+| `BollingerLower` | period, std_dev_bp | Lower band |
+
+**Deprecated**: `Macd { fast, slow, signal }` and `BollingerBands { period, std_dev_bp }`
+
+### Standard Constants
+```rust
+IndicatorType::MACD_LINE_STANDARD      // MacdLine { fast: 8, slow: 16, signal: 4 }
+IndicatorType::MACD_SIGNAL_STANDARD    // MacdSignal { fast: 8, slow: 16, signal: 4 }
+IndicatorType::MACD_HISTOGRAM_STANDARD // MacdHistogram { fast: 8, slow: 16, signal: 4 }
+IndicatorType::BOLLINGER_UPPER_STANDARD   // BollingerUpper { period: 12, std_dev_bp: 200 }
+IndicatorType::BOLLINGER_MIDDLE_STANDARD  // BollingerMiddle { period: 12, std_dev_bp: 200 }
+IndicatorType::BOLLINGER_LOWER_STANDARD   // BollingerLower { period: 12, std_dev_bp: 200 }
+```
+
+### ML Model Implementations
+| Model | File | JSON Loading |
+|-------|------|--------------|
+| `DecisionTree` | `decision_tree.rs` | Single tree traversal |
+| `RandomForest` | `random_forest.rs` | Majority vote across trees |
+| `GradientBoosted` | `gradient_boosted.rs` | Softmax over summed tree outputs |
+
+### TreeAgent (Generic ML Agent)
+- Extracts 42 features from `StrategyContext` per symbol
+- Calls `model.predict(features)` → `[p_sell, p_hold, p_buy]`
+- Finds best buy/sell candidate above threshold
+- Executes stronger signal
+
+### StrategyContext Simplification
+**Removed**:
+- `indicator_map: &HashMap<Symbol, HashMap<String, f64>>` field
+- `get_indicator_by_name(symbol, name)` method
+
+**Retained**:
+- `get_indicator(symbol, IndicatorType)` - enum-based access (type-safe)
+- `get_all_indicators(symbol)` - returns `&HashMap<IndicatorType, f64>`
+
+### Files Changed
+| File | Changes |
+|------|---------|
+| `types/src/indicators.rs` | Extended IndicatorType, added `to_key()`, standard constants |
+| `quant/src/indicators/mod.rs` | Added `compute_all_indicators()` |
+| `quant/src/indicators/macd.rs` | Return `MacdLine` from `indicator_type()` |
+| `quant/src/indicators/bollinger.rs` | Return `BollingerMiddle` from `indicator_type()` |
+| `quant/src/engine.rs` | Updated `with_common_indicators()` to register component variants |
+| `simulation/src/subsystems/market_data.rs` | Use `compute_all_indicators()` |
+| `simulation/src/traits/market_data.rs` | Removed `build_indicators_for_hook()` |
+| `simulation/src/hooks.rs` | `EnrichedData.indicators` uses `IndicatorType` keys |
+| `simulation/src/runner.rs` | Pass `IndicatorSnapshot` to enriched hook |
+| `agents/src/context.rs` | Removed `indicator_map` field |
+| `agents/src/tier1/ml/*.rs` | New ML model implementations |
+| `agents/src/tier1/ml/tree_agent.rs` | Generic ML agent |
+| `storage/src/comprehensive_features.rs` | Use enum-based indicator access |
+| `server/src/hooks.rs` | Convert to string keys at JSON boundary |
+
+### API Migration
+```rust
+// OLD (V5.4)
+ctx.get_indicator_by_name(&symbol, "MACD_line")
+
+// NEW (V5.5) - type-safe enum access
+ctx.get_indicator(&symbol, IndicatorType::MACD_LINE_STANDARD)
+```
+
+### JSON Boundary Conversion
+```rust
+// In EnrichedData
+pub fn indicators_as_string_keys(&self) -> HashMap<Symbol, HashMap<String, f64>> {
+    self.indicators
+        .iter()
+        .map(|(symbol, values)| {
+            let string_values = values.iter()
+                .map(|(itype, v)| (itype.to_key(), *v))
+                .collect();
+            (symbol.clone(), string_values)
+        })
+        .collect()
+}
+```
+
+### Performance Impact
+- **Eliminated**: Duplicate indicator computation (was computing MACD/BB twice per tick)
+- **Reduced**: String allocation overhead (enum keys in hot path)
+- **Simplified**: Single `compute_all_indicators()` function as entry point
+
+### Test Results
+- 201 tests pass (139 agents + 50 quant + 12 simulation)
+- Clippy clean (only expected deprecation warnings)
+
+---
+
+## 2026-01-17: V5.4 Tree-Based Training + Market-Only Parquet
+
+### Summary
+Implemented Python training script for tree-based ML models. Trains Decision Tree, Random Forest, and Histogram Gradient Boosted trees. Exports to JSON for V5.5 Rust inference. Records market features (42) to Parquet for Python ML training. Unified feature constants/functions in `types::features` module to eliminate training-serving skew.
+
+### Parquet Architecture
+| File | Rows | Features | Description |
+|------|------|----------|-------------|
+| `*_market.parquet` | 1 per tick per symbol | 42 | Price, indicators, news |
+
+### Feature Schema (types::features)
+| Category | Count | Indices | Description |
+|----------|-------|---------|-------------|
+| Price | 1 | 0 | Mid price |
+| Price Changes | 12 | 1-12 | % change at LOOKBACKS horizons |
+| Log Returns | 12 | 13-24 | ln(current/past) at LOOKBACKS |
+| Technical | 13 | 25-37 | SMA, EMA, RSI, MACD, Bollinger, ATR |
+| News | 4 | 38-41 | Sentiment, magnitude, remaining ticks |
+
+### Unified Feature Module (`types::features`)
+```rust
+// Shared constants
+pub const LOOKBACKS: &[usize] = &[1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64];
+pub const N_MARKET_FEATURES: usize = 42;
+
+// Named indices (eliminates magic numbers)
+pub mod idx {
+    pub const MID_PRICE: usize = 0;
+    pub const PRICE_CHANGE_START: usize = 1;
+    pub const SMA_8: usize = 25;
+    // ... etc
+}
+
+// Pure computation functions (shared training/inference)
+pub fn price_change_pct(current: f64, past: f64) -> f64;
+pub fn log_return(current: f64, past: f64) -> f64;
+pub fn bollinger_percent_b(price: f64, upper: f64, lower: f64) -> f64;
+pub fn price_change_from_candles(candles: &[Candle], lookback: usize) -> f64;
+```
+
+### Models
+| Model | Library | Output |
+|-------|---------|--------|
+| Decision Tree | `sklearn.tree.DecisionTreeClassifier` | `{name}_decision_tree.json` |
+| Random Forest | `sklearn.ensemble.RandomForestClassifier` | `{name}_random_forest.json` |
+| Gradient Boosted | `sklearn.ensemble.HistGradientBoostingClassifier` | `{name}_gradient_boosted.json` |
+
+### JSON Schema (for Rust inference)
+```json
+{
+  "model_type": "decision_tree",
+  "model_name": "shallow",
+  "feature_names": ["f_mid_price", ...],
+  "n_features": 42,
+  "n_classes": 3,
+  "classes": [-1, 0, 1],
+  "tree": {
+    "n_nodes": 33,
+    "nodes": [
+      {"feature": 5, "threshold": 0.5, "left": 1, "right": 2, "value": null},
+      {"feature": -1, "threshold": 0.0, "left": -1, "right": -1, "value": [0.1, 0.7, 0.2]}
+    ]
+  },
+  "metadata": {"accuracy": 0.98, "trained_at": "..."}
+}
+```
+- `value`: Class probabilities `[p_sell, p_hold, p_buy]` for leaf nodes
+
+### Files
+| File | Purpose |
+|------|---------|
+| `types/src/features.rs` | Unified constants, indices, pure functions |
+| `storage/src/comprehensive_features.rs` | `MarketFeatures::extract()` using `types::features` |
+| `storage/src/parquet_writer.rs` | `MarketParquetWriter` |
+| `storage/src/recording_hook.rs` | Market features recording |
+| `agents/src/tier1/ml/tree_agent.rs` | Uses `types::features` for parity |
+| `scripts/train_trees.py` | Training script (loads market parquet) |
+| `scripts/train_config.yaml` | Model hyperparameters
+- `requirements.txt` - Python dependencies (polars, sklearn, pyyaml, shap)
+
+### Usage
+```bash
+# Generate training data (outputs data/training_market.parquet + data/training_agents.parquet)
+cargo run --release -- --headless-record --ticks 2000 --record-warmup 1000
+
+# Train models (auto-joins market + agent files)
+python scripts/train_trees.py --input data/training
+```
+
+### Config Format
+```yaml
+data:
+  input: data/training  # loads {input}_market.parquet + {input}_agents.parquet
+  output_dir: models
+  test_size: 0.2
+
+decision_trees:
+  - name: shallow
+    max_depth: 5
+  - name: deep
+    max_depth: 15
+
+random_forests:
+  - name: small
+    n_estimators: 50
+    max_depth: 8
+
+gradient_boosted:
+  - name: fast
+    n_estimators: 50
+    learning_rate: 0.2
+
+shap:
+  enabled: false
+```
+
+### Changes
+- **Random seed default**: `SimulationConfig::default()` now uses `rand::random()` instead of fixed seed 42
+- **NaN handling**: Training script imputes NaN with 0 (neutral/no history) for features like `f_sharpe`
+- **.gitignore**: Added `quant-trading-gym/models/` to portfolio `.gitignore`
+
+### Results (test run, 15M rows)
+| Model | Accuracy | Notes |
+|-------|----------|-------|
+| Decision Tree (depth=5) | 97.7% | 33 nodes |
+| Random Forest (10 trees) | 97.8% | Top features: f_equity, f_cash |
+| HistGradientBoosting | 97.7% | 10 iterations |
+
+### Deferred to V6
+- Feature normalization
+- Hyperparameter tuning (cross-validation)
+- Neural networks
+- Advanced feature engineering
+
+---
+
+## 2026-01-17: V5.3 Feature Recording Mode
+
+### Summary
+Implemented `--headless-record` mode for ML training data capture. Records 52 features per tick per agent to Parquet files for Python ML training. Updated indicator periods to geometric spread optimized for batch auction (1 tick = 1 candle).
+
+### Storage Architecture
+| Storage | Purpose |
+|---------|---------|
+| **Parquet (RecordingHook)** | ML training data (batch read) |
+| **In-memory (StrategyContext)** | Agent inference (real-time) |
+| **SQL (StorageHook)** | Optional debug/replay only |
+
+### Indicator Periods (Geometric Spread)
+| Indicator | Old | New | Rationale |
+|-----------|-----|-----|-----------|
+| SMA Fast | 10 | 8 | Clean doubling (8→16) |
+| SMA Slow | 50 | 16 | 2x spread for batch auction |
+| EMA Fast | 10 | 8 | Match SMA |
+| EMA Slow | 50 | 16 | Match SMA |
+| RSI | 14 | 8 | Faster response |
+| MACD Fast | 12 | 8 | Clean doubling |
+| MACD Slow | 26 | 16 | 2x spread |
+| MACD Signal | 9 | 4 | Responsive smoothing |
+| Bollinger | 20 | 12 | Between 8 and 16 |
+| ATR | 14 | 8 | Match RSI |
+
+### Features (52 total)
+| Category | Count | Description |
+|----------|-------|-------------|
+| Price | 25 | mid_price + price_change/log_return at 12 lookback horizons |
+| Technical | 13 | SMA 8/16, EMA 8/16, RSI 8, MACD 8/16/4, Bollinger 12, ATR 8 |
+| News | 4 | Active news sentiment, magnitude, duration |
+| Agent State | 6 | Position, cash, PnL (raw + normalized) |
+| Risk | 4 | Equity, drawdown, Sharpe, volatility |
+
+### Files
+- `crates/storage/src/comprehensive_features.rs` - Feature extractor (52 features)
+- `crates/storage/src/recording_hook.rs` - SimulationHook for Parquet capture
+- `crates/storage/src/parquet_writer.rs` - Buffered Arrow/Parquet writer
+- `crates/storage/src/price_history.rs` - Rolling price history
+- `crates/storage/src/features.rs` - FeatureContext, FeatureExtractor trait
+- `crates/types/src/indicators.rs` - MACD_STANDARD, BOLLINGER_STANDARD constants
+- `crates/quant/src/engine.rs` - `with_common_indicators()` registration
+- `crates/agents/src/tier1/strategies/` - Agent config defaults (8/16 periods)
+- `src/main.rs` - CLI flags, `run_headless_record()` function
+- `docs/indicator_period_impact.md` - Full impact analysis document
+
+### CLI
+```bash
+cargo run --release -- --headless-record \
+  --ticks 10000 \
+  --record-output data/training.parquet \
+  --record-warmup 100 \
+  --record-interval 1
+```
+
+### Configuration Locations
+| Setting | File | Location |
+|---------|------|----------|
+| Price lookback horizons | `crates/storage/src/comprehensive_features.rs` | `PRICE_LOOKBACKS` constant |
+| Warmup default (100) | `crates/storage/src/recording_hook.rs` | `RecordingConfig::default()` |
+| Candle interval (4) | `crates/simulation/src/config.rs` | `SimulationConfig::default()` |
+| Max candles (200) | `crates/simulation/src/config.rs` | `SimulationConfig::default()` |
+
+### Candle Interval Rationale
+- **Batch auction model**: Each tick is a single clearing price → candle_interval=1 produces flat OHLC (open=high=low=close)
+- **candle_interval=4**: Aggregates 4 batch auctions into one candle → meaningful OHLC variation
+- **Warmup 100 ticks** = 25 candles → sufficient for all indicators (max period 16)
+- **max_candles=200** = 800 ticks of history
+
+### Server/Frontend Updates
+- Updated indicator periods in `crates/server/src/routes/data.rs` (SMA 8/16, EMA 8/16, RSI 8, ATR 8)
+- Updated frontend types in `frontend/src/types/api.ts` (rsi_8, atr_8)
+- Updated `frontend/src/components/dashboard/IndicatorPanel.tsx` (display names)
+- Updated `frontend/src/api.integration.test.ts` (field checks)
+
+### Bug Fixes
+- **Price scale fix**: `f_mid_price` in feature extraction was using `p.0 / 100.0` (wrong) instead of `p.to_float()` (correct). Fixed in `comprehensive_features.rs`. Now mid_price and SMA/EMA values are in same scale (~$50).
+- **Parquet validation script**: Added `scripts/check_parquet.py` for data quality checks
+
+### Verification
+```
+=== DATA QUALITY CHECK ===
+Total rows: 1,500,000 (100 ticks × 15,000 agents)
+Total columns: 66
+
+=== SAMPLE VALUES (first row) ===
+f_mid_price: 51.22  (correct scale)
+f_sma_8: 49.22      (matches mid_price scale)
+f_rsi_8: 64.38      (valid 0-100 range)
+```
+
+---
+
 ## 2026-01-16: V5.2 Simulation Decomposition & Parallel Crate Migration
 
 ### Summary

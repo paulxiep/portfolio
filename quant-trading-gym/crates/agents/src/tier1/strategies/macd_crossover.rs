@@ -43,9 +43,9 @@ impl Default for MacdCrossoverConfig {
     fn default() -> Self {
         Self {
             symbol: "ACME".to_string(),
-            fast_period: 12,
-            slow_period: 26,
-            signal_period: 9,
+            fast_period: 8,
+            slow_period: 16,
+            signal_period: 4,
             order_size: 50,
             initial_cash: Cash::from_float(100_000.0),
             initial_price: Price::from_float(100.0),
@@ -105,7 +105,7 @@ impl MacdCrossover {
 
     /// Get the IndicatorType this strategy uses.
     pub fn required_indicator(&self) -> IndicatorType {
-        IndicatorType::Macd {
+        IndicatorType::MacdLine {
             fast: self.config.fast_period,
             slow: self.config.slow_period,
             signal: self.config.signal_period,
@@ -132,7 +132,8 @@ impl MacdCrossover {
     /// Generate a buy order.
     fn generate_buy_order(&self, ctx: &StrategyContext<'_>) -> Order {
         let price = self.get_reference_price(ctx);
-        let order_price = Price::from_float(price.to_float() * 0.999);
+        // Bid above mid to qualify in batch auction (bid >= ref_price)
+        let order_price = Price::from_float(price.to_float() * 1.001);
         Order::limit(
             self.id,
             &self.config.symbol,
@@ -145,7 +146,8 @@ impl MacdCrossover {
     /// Generate a sell order.
     fn generate_sell_order(&self, ctx: &StrategyContext<'_>) -> Order {
         let price = self.get_reference_price(ctx);
-        let order_price = Price::from_float(price.to_float() * 1.001);
+        // Ask below mid to qualify in batch auction (ask <= ref_price)
+        let order_price = Price::from_float(price.to_float() * 0.999);
         Order::limit(
             self.id,
             &self.config.symbol,
