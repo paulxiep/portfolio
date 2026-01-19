@@ -13,4 +13,5 @@ news.workspace = true
 rand.workspace = true
 rand_distr = "0.4"  # V3.4: Statistical distributions for background pool
 serde = { workspace = true, features = ["derive"] }
+serde_json = "1.0"  # V5.5: JSON model loading for tree-based ML agents
 smallvec = { version = "1.15", features = ["serde"] }

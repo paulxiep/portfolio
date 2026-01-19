@@ -14,7 +14,7 @@ More project info can be found on the projects' own readme.
 
 ## 2025 onwards (AI-assisted projects)
 
-1. [quant-trading-gym](quant-trading-gym) (Rust + TS + Dockerfile - for now): a quantitative trading simulation in Rust with RL training in Python, modular quant strategies, risk management, microservices architecture, and web interface for portfolio manager game.
+1. [quant-trading-gym](quant-trading-gym) (Rust + Python + TS + Dockerfile): a quantitative trading simulation in Rust with RL training in Python, modular quant strategies, risk management, microservices architecture, and web interface for portfolio manager game.
 2. [portfolio-rag-chat](portfolio-rag-chat) (Rust + Dockerfile): Chatbot and RAG implemented in Rust. Uses chatbot to answer questions about this portfolio.
 
 ## 2023-2024 (100% hand-written)
@@ -37,11 +37,11 @@ the rest are 1-day projects.
 *Keywords extracted by GitHub Copilot*
 
 - **Programming Languages:** `Python` · `Rust` · `Typescript` · `SQL`
-- **Machine Learning & AI:** `TensorFlow` · `Keras` · `Scikit-learn` · `CatBoost` · `XGBoost` · `Deep Q-Learning (DQN)` · `Reinforcement Learning` · `LSTM` · `Bidirectional LSTM` · `Neural Networks` · `Embeddings` · `Experience Replay` · `Target Networks` · `Policy Networks` · `Gymnasium` · `Distributed Training` · `MirroredStrategy` · `WandB Experiment Tracking`
+- **Machine Learning & AI:** `TensorFlow` · `Keras` · `Scikit-learn` · `CatBoost` · `XGBoost` · `Deep Q-Learning (DQN)` · `Reinforcement Learning` · `LSTM` · `Bidirectional LSTM` · `Neural Networks` · `Embeddings` · `Experience Replay` · `Target Networks` · `Policy Networks` · `Gymnasium` · `Distributed Training` · `MirroredStrategy` · `WandB Experiment Tracking` · `Decision Tree` · `Random Forest` · `Gradient Boosted Trees` · `Feature Engineering` · `Training-Serving Parity`
 - **NLP & LLM:** `LangChain` · `OpenAI API (GPT-4/GPT-3.5)` · `Google Gemini` · `RAG (Retrieval-Augmented Generation)` · `Vector Databases` · `LanceDB` · `FastEmbed` · `BGE Embeddings` · `Semantic Search` · `Sentiment Analysis` · `Text Classification` · `TF-IDF Vectorization` · `PyThaiNLP` · `Tokenization` · `Prompt Engineering` · `Natural Language to SQL`
-- **Quantitative Finance:** `Trading Simulation` · `Order Book / LOB` · `Matching Engine` · `Market Microstructure` · `Technical Indicators (SMA, EMA, RSI, MACD, Bollinger Bands, ATR)` · `Risk Metrics (VaR, Sharpe, Sortino, Max Drawdown)` · `VWAP Execution` · `Market Making` · `Fair Value Models` · `Fixed-Point Arithmetic` · `Batch Auction` · `Pairs Trading` · `Statistical Arbitrage`
+- **Quantitative Finance:** `Trading Simulation` · `Order Book / LOB` · `Matching Engine` · `Market Microstructure` · `Technical Indicators (SMA, EMA, RSI, MACD, Bollinger Bands, ATR)` · `Risk Metrics (VaR, Sharpe, Sortino, Max Drawdown)` · `VWAP Execution` · `Market Making` · `Fair Value Models` · `Random Walk` · `Fixed-Point Arithmetic` · `Batch Auction` · `Pairs Trading` · `Statistical Arbitrage`
 - **Web Development & APIs:** `Axum 0.8` · `Flask` · `REST API` · `WebSocket` · `Streamlit` · `htmx` · `Askama Templates` · `Tower HTTP` · `CORS` · `React 19` · `Vite 6` · `Tailwind CSS` · `Recharts` · `React Query (TanStack)` · `Real-Time Dashboard`
-- **Data Engineering & Visualization:** `Pandas` · `Plotly` · `Interactive Dashboards` · `Geospatial Visualization` · `Time Series Analysis` · `Signal Processing` · `Data Pipelines` · `Kaggle API` · `OHLCV Candle Aggregation`
+- **Data Engineering & Visualization:** `Pandas` · `Polars` · `Apache Arrow` · `Apache Parquet` · `Plotly` · `Interactive Dashboards` · `Geospatial Visualization` · `Time Series Analysis` · `Signal Processing` · `Data Pipelines` · `Kaggle API` · `OHLCV Candle Aggregation`
 - **Databases:** `PostgreSQL` · `SQLAlchemy` · `LanceDB` · `Vector Search` · `SQLite` · `rusqlite`
 - **DevOps & MLOps:** `Docker` · `Docker Compose` · `Apache Airflow` · `DAG Orchestration` · `Model Serving` · `Batch Prediction` · `Containerization` · `CI/CD Concepts` · `Distroless Containers`
 - **Systems Programming (Rust):** `Tokio (Async Runtime)` · `Cargo Workspaces` · `Rayon (Parallel Iterators)` · *`PyO3 Python Bindings (planned)`* · `Tree-sitter (AST Parsing)` · `Ratatui/Crossterm (TUI)` · `Serde` · `Error Handling (anyhow/thiserror)` · `tracing` · `clap (CLI)` · `tokio-tungstenite`

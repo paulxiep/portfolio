@@ -82,7 +82,8 @@ impl Macd {
 
 impl Indicator for Macd {
     fn indicator_type(&self) -> IndicatorType {
-        IndicatorType::Macd {
+        // Return MacdLine as the primary type (calculate returns macd_line)
+        IndicatorType::MacdLine {
             fast: self.fast_period,
             slow: self.slow_period,
             signal: self.signal_period,

@@ -30,9 +30,10 @@ use std::time::Duration;
 
 use agents::{
     Agent, BackgroundAgentPool, BackgroundPoolConfig, BollingerReversion, BollingerReversionConfig,
-    MacdCrossover, MacdCrossoverConfig, MarketMaker, MarketMakerConfig, MomentumConfig,
-    MomentumTrader, NoiseTrader, NoiseTraderConfig, PairsTrading, PairsTradingConfig,
-    ReactiveAgent, ReactiveStrategyType, SectorRotator, SectorRotatorConfig, TrendFollower,
+    DecisionTree, GradientBoosted, MacdCrossover, MacdCrossoverConfig, MarketMaker,
+    MarketMakerConfig, MomentumConfig, MomentumTrader, NoiseTrader, NoiseTraderConfig,
+    PairsTrading, PairsTradingConfig, RandomForest, ReactiveAgent, ReactiveStrategyType,
+    SectorRotator, SectorRotatorConfig, TreeAgent, TreeAgentConfig, TrendFollower,
     TrendFollowerConfig, VwapExecutor, VwapExecutorConfig,
 };
 use clap::Parser;
@@ -43,6 +44,7 @@ use news::config::{
 };
 use rand::Rng;
 use rand::prelude::SliceRandom;
+use serde::Deserialize;
 use server::{BroadcastHook, DataServiceHook, ServerState, create_app};
 use simulation::{Simulation, SimulationConfig};
 use storage::{RecordingConfig, RecordingHook, StorageConfig, StorageHook};
@@ -165,6 +167,46 @@ fn digit_width(n: usize) -> usize {
     } else {
         (n as f64).log10().floor() as usize + 1
     }
+}
+
+/// Find the next incremental number for recording output files.
+///
+/// Scans the directory for files matching `{stem}_NNN_market.parquet` pattern
+/// and returns the next available number (highest + 1).
+fn next_recording_number(base_path: &str) -> u32 {
+    use std::path::Path;
+
+    let path = Path::new(base_path);
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("training");
+
+    // Create directory if it doesn't exist
+    if let Err(e) = std::fs::create_dir_all(parent) {
+        eprintln!("Warning: Could not create directory {:?}: {}", parent, e);
+        return 1;
+    }
+
+    // Find existing numbered files
+    let mut max_num: u32 = 0;
+    if let Ok(entries) = std::fs::read_dir(parent) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+
+            // Match pattern: {stem}_NNN_market.parquet
+            if let Some(rest) = name_str.strip_prefix(&format!("{}_", stem))
+                && let Some(num_str) = rest.strip_suffix("_market.parquet")
+                && let Ok(num) = num_str.parse::<u32>()
+            {
+                max_num = max_num.max(num);
+            }
+        }
+    }
+
+    max_num + 1
 }
 
 /// Build a SimUpdate from current simulation state.
@@ -342,7 +384,7 @@ fn create_agent(
                 initial_price,
                 initial_cash: config.quant_initial_cash,
                 order_size: config.quant_order_size,
-                max_position: config.quant_max_position,
+                max_position: config.quant_max_long_position,
                 ..Default::default()
             };
             Box::new(MomentumTrader::new(id, momentum_config))
@@ -353,7 +395,7 @@ fn create_agent(
                 initial_price,
                 initial_cash: config.quant_initial_cash,
                 order_size: config.quant_order_size,
-                max_position: config.quant_max_position,
+                max_position: config.quant_max_long_position,
                 ..Default::default()
             };
             Box::new(TrendFollower::new(id, trend_config))
@@ -364,7 +406,7 @@ fn create_agent(
                 initial_price,
                 initial_cash: config.quant_initial_cash,
                 order_size: config.quant_order_size,
-                max_position: config.quant_max_position,
+                max_position: config.quant_max_long_position,
                 ..Default::default()
             };
             Box::new(MacdCrossover::new(id, macd_config))
@@ -375,7 +417,7 @@ fn create_agent(
                 initial_price,
                 initial_cash: config.quant_initial_cash,
                 order_size: config.quant_order_size,
-                max_position: config.quant_max_position,
+                max_position: config.quant_max_long_position,
                 ..Default::default()
             };
             Box::new(BollingerReversion::new(id, bollinger_config))
@@ -394,7 +436,7 @@ fn create_agent(
             // This is a fallback that creates a self-referencing pair (effectively no-op)
             let pairs_config = PairsTradingConfig::new(symbol, symbol)
                 .with_initial_cash(config.quant_initial_cash)
-                .with_max_position(config.quant_max_position);
+                .with_max_position(config.quant_max_long_position);
             Box::new(PairsTrading::new(id, pairs_config))
         }
     }
@@ -828,7 +870,7 @@ fn spawn_pairs_traders(
 
             let pairs_config = PairsTradingConfig::new(&spec_a.symbol, &spec_b.symbol)
                 .with_initial_cash(config.quant_initial_cash)
-                .with_max_position(config.quant_max_position);
+                .with_max_position(config.quant_max_long_position);
 
             Box::new(PairsTrading::new(AgentId(id), pairs_config)) as Box<dyn Agent>
         })
@@ -859,6 +901,134 @@ fn spawn_random_tier1_agents(
     (agents, next_id)
 }
 
+/// Spawn tree-based ML agents (DecisionTree, RandomForest, GradientBoosted).
+/// Returns (agents, next_id).
+///
+/// Models are discovered from JSON files in the models/ directory.
+/// The model_type field in each JSON determines which loader to use.
+/// Agents are distributed evenly across available models per type.
+fn spawn_tree_agents(
+    config: &SimConfig,
+    symbols: &[SymbolSpec],
+    start_id: u64,
+) -> (Vec<Box<dyn Agent>>, u64) {
+    let mut agents: Vec<Box<dyn Agent>> = Vec::new();
+    let mut next_id = start_id;
+
+    // Get all symbol names for agent config
+    let symbol_names: Vec<String> = symbols.iter().map(|s| s.symbol.clone()).collect();
+
+    // Helper to create TreeAgentConfig
+    let make_config = |symbols: &[String]| TreeAgentConfig {
+        symbols: symbols.to_vec(),
+        buy_threshold: config.tree_agent_buy_threshold,
+        sell_threshold: config.tree_agent_sell_threshold,
+        order_size: config.tree_agent_order_size,
+        max_long_position: config.tree_agent_max_long_position,
+        max_short_position: config.tree_agent_max_short_position,
+        initial_cash: config.tree_agent_initial_cash,
+        initial_price: symbols
+            .first()
+            .and_then(|s| {
+                config
+                    .symbols
+                    .iter()
+                    .find(|spec| &spec.symbol == s)
+                    .map(|spec| spec.initial_price)
+            })
+            .unwrap_or(Price::from_float(100.0)),
+    };
+
+    // Discover models from the models/ directory
+    let models_dir = std::path::Path::new("models");
+    if !models_dir.exists() {
+        eprintln!("  Warning: models/ directory not found");
+        return (agents, next_id);
+    }
+
+    // Collect models by type
+    let mut decision_trees: Vec<DecisionTree> = Vec::new();
+    let mut random_forests: Vec<RandomForest> = Vec::new();
+    let mut gradient_boosteds: Vec<GradientBoosted> = Vec::new();
+
+    if let Ok(entries) = std::fs::read_dir(models_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().map(|e| e == "json").unwrap_or(false) {
+                // Peek at model_type to determine loader
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    // Quick parse to get model_type
+                    #[derive(Deserialize)]
+                    struct ModelHeader {
+                        model_type: String,
+                    }
+                    if let Ok(header) = serde_json::from_str::<ModelHeader>(&content) {
+                        match header.model_type.as_str() {
+                            "decision_tree" => match DecisionTree::from_json(&path) {
+                                Ok(model) => decision_trees.push(model),
+                                Err(e) => {
+                                    eprintln!("  Warning: Failed to load {}: {}", path.display(), e)
+                                }
+                            },
+                            "random_forest" => match RandomForest::from_json(&path) {
+                                Ok(model) => random_forests.push(model),
+                                Err(e) => {
+                                    eprintln!("  Warning: Failed to load {}: {}", path.display(), e)
+                                }
+                            },
+                            "gradient_boosted" => match GradientBoosted::from_json(&path) {
+                                Ok(model) => gradient_boosteds.push(model),
+                                Err(e) => {
+                                    eprintln!("  Warning: Failed to load {}: {}", path.display(), e)
+                                }
+                            },
+                            _ => {} // Unknown model type, skip
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Spawn Decision Tree agents distributed across available models
+    if !decision_trees.is_empty() && config.num_decision_tree_agents > 0 {
+        for i in 0..config.num_decision_tree_agents {
+            let model = &decision_trees[i % decision_trees.len()];
+            let agent = TreeAgent::new(AgentId(next_id), model.clone(), make_config(&symbol_names));
+            agents.push(Box::new(agent));
+            next_id += 1;
+        }
+    } else if config.num_decision_tree_agents > 0 {
+        eprintln!("  Warning: No decision tree models found in models/");
+    }
+
+    // Spawn Random Forest agents distributed across available models
+    if !random_forests.is_empty() && config.num_random_forest_agents > 0 {
+        for i in 0..config.num_random_forest_agents {
+            let model = &random_forests[i % random_forests.len()];
+            let agent = TreeAgent::new(AgentId(next_id), model.clone(), make_config(&symbol_names));
+            agents.push(Box::new(agent));
+            next_id += 1;
+        }
+    } else if config.num_random_forest_agents > 0 {
+        eprintln!("  Warning: No random forest models found in models/");
+    }
+
+    // Spawn Gradient Boosted agents distributed across available models
+    if !gradient_boosteds.is_empty() && config.num_gradient_boosted_agents > 0 {
+        for i in 0..config.num_gradient_boosted_agents {
+            let model = &gradient_boosteds[i % gradient_boosteds.len()];
+            let agent = TreeAgent::new(AgentId(next_id), model.clone(), make_config(&symbol_names));
+            agents.push(Box::new(agent));
+            next_id += 1;
+        }
+    } else if config.num_gradient_boosted_agents > 0 {
+        eprintln!("  Warning: No gradient boosted models found in models/");
+    }
+
+    (agents, next_id)
+}
+
 /// Spawn all Tier 1 agents and add them to the simulation.
 /// Returns next available agent ID.
 fn spawn_all_tier1_agents(
@@ -881,6 +1051,9 @@ fn spawn_all_tier1_agents(
     let (pairs_agents, id) = spawn_pairs_traders(config, symbols, next_id);
     next_id = id;
 
+    let (tree_agents, id) = spawn_tree_agents(config, symbols, next_id);
+    next_id = id;
+
     let (random_agents, id) = spawn_random_tier1_agents(config, symbols, next_id, rng);
     next_id = id;
 
@@ -890,6 +1063,7 @@ fn spawn_all_tier1_agents(
         .chain(nt_agents)
         .chain(quant_agents)
         .chain(pairs_agents)
+        .chain(tree_agents)
         .chain(random_agents)
     {
         sim.add_agent(agent);
@@ -1207,8 +1381,18 @@ fn main() {
         config.num_macd_traders, config.num_bollinger_traders
     );
     eprintln!(
-        "║    VWAP Executors:  {:2}  │                                              ║",
-        config.num_vwap_executors
+        "║    VWAP Executors:  {:2}  │  Pairs Traders:    {:2}                      ║",
+        config.num_vwap_executors, config.num_pairs_traders
+    );
+    eprintln!("║  ML Tree Agents:                                                      ║");
+    eprintln!(
+        "║    DecisionTree:   {:3}  │  RandomForest:    {:3}                      ║",
+        config.num_decision_tree_agents, config.num_random_forest_agents
+    );
+    eprintln!(
+        "║    GradientBoosted:{:3}  │  Total ML:        {:3}                      ║",
+        config.num_gradient_boosted_agents,
+        config.total_tree_agents()
     );
     eprintln!("╠═══════════════════════════════════════════════════════════════════════╣");
     eprintln!(
@@ -1247,7 +1431,7 @@ fn main() {
         // Recording mode: capture ML training data (V5.3)
         // ─────────────────────────────────────────────────────────────────────
         eprintln!("  Recording mode enabled");
-        eprintln!("  Output: {}", args.record_output);
+        eprintln!("  Base path: {}", args.record_output);
         eprintln!("  Warmup: {} ticks", args.record_warmup);
         eprintln!("  Interval: every {} tick(s)", args.record_interval);
         eprintln!();
@@ -1350,6 +1534,7 @@ fn run_headless(config: SimConfig, args: Args) {
 
 /// Run simulation in recording mode for ML training data (V5.3).
 fn run_headless_record(config: SimConfig, args: Args) {
+    use std::path::Path;
     use std::time::Instant;
 
     let total_ticks = config.total_ticks;
@@ -1368,12 +1553,28 @@ fn run_headless_record(config: SimConfig, args: Args) {
     spawn_sector_rotators(&mut sim, &mut next_id, &config, &all_symbols);
     setup_background_pool(&mut sim, &config, &all_symbols);
 
-    // V5.3: Configure and register recording hook
-    let recording_config = RecordingConfig::new(&args.record_output)
+    // Generate incremental output path: {base}_{NNN}.parquet
+    let base_path = Path::new(&args.record_output);
+    let parent = base_path.parent().unwrap_or(Path::new("."));
+    let stem = base_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("training");
+
+    let next_num = next_recording_number(&args.record_output);
+    let output_path = parent.join(format!("{}_{:03}", stem, next_num));
+    let output_path_str = output_path.to_string_lossy().to_string();
+
+    eprintln!(
+        "  Recording to: {}_market.parquet (run #{})",
+        output_path.display(),
+        next_num
+    );
+
+    // Configure and register recording hook (market features only)
+    let recording_config = RecordingConfig::new(&output_path_str)
         .with_warmup(args.record_warmup)
-        .with_interval(args.record_interval)
-        .with_initial_cash(config.quant_initial_cash.to_float())
-        .with_position_limit(config.quant_max_position);
+        .with_interval(args.record_interval);
 
     match RecordingHook::new(recording_config) {
         Ok(hook) => {

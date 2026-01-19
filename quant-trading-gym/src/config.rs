@@ -100,6 +100,16 @@ pub struct SimConfig {
     pub num_sector_rotators: usize,
 
     // ─────────────────────────────────────────────────────────────────────────
+    // Tier 1 ML Agent Counts (V5.5)
+    // ─────────────────────────────────────────────────────────────────────────
+    /// Number of Decision Tree agents (split equally between shallow/medium models).
+    pub num_decision_tree_agents: usize,
+    /// Number of Random Forest agents (split equally between small/large models).
+    pub num_random_forest_agents: usize,
+    /// Number of Gradient Boosted agents (split equally between fast/slow models).
+    pub num_gradient_boosted_agents: usize,
+
+    // ─────────────────────────────────────────────────────────────────────────
     // Tier Minimums
     // ─────────────────────────────────────────────────────────────────────────
     /// Minimum total Tier 1 agents. If specific agent types don't reach this,
@@ -204,8 +214,26 @@ pub struct SimConfig {
     pub quant_initial_cash: Cash,
     /// Order size for quant strategies.
     pub quant_order_size: u64,
-    /// Maximum position for quant strategies.
-    pub quant_max_position: i64,
+    /// Maximum long position for quant strategies.
+    pub quant_max_long_position: i64,
+    /// Maximum short position for quant strategies (as positive number).
+    pub quant_max_short_position: i64,
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Tree Agent Parameters (V5.5)
+    // ─────────────────────────────────────────────────────────────────────────
+    /// Starting cash for tree-based ML agents.
+    pub tree_agent_initial_cash: Cash,
+    /// Order size for tree agents.
+    pub tree_agent_order_size: u64,
+    /// Maximum long position per symbol for tree agents.
+    pub tree_agent_max_long_position: i64,
+    /// Maximum short position per symbol for tree agents (as positive number).
+    pub tree_agent_max_short_position: i64,
+    /// Buy threshold probability (0.5-1.0).
+    pub tree_agent_buy_threshold: f64,
+    /// Sell threshold probability (0.5-1.0).
+    pub tree_agent_sell_threshold: f64,
 
     // ─────────────────────────────────────────────────────────────────────────
     // TUI Parameters
@@ -262,33 +290,39 @@ impl Default for SimConfig {
 
             // V3.5: Doubled agent counts for parallel execution benchmarking
             // Tier 1 Agent Counts (minimums per type)
-            num_market_makers: 200,
-            num_noise_traders: 1000,
-            num_momentum_traders: 300,
-            num_trend_followers: 300,
-            num_macd_traders: 300,
-            num_bollinger_traders: 300,
-            num_vwap_executors: 300,
-            num_pairs_traders: 300,    // V3.3: multi-symbol pairs traders
-            num_sector_rotators: 1000, // V3.3: sector rotation agents (special T2)
+            num_market_makers: 300,
+            num_noise_traders: 1500,
+            num_momentum_traders: 400,
+            num_trend_followers: 400,
+            num_macd_traders: 400,
+            num_bollinger_traders: 400,
+            num_vwap_executors: 400,
+            num_pairs_traders: 0,   // V3.3: multi-symbol pairs traders
+            num_sector_rotators: 0, // V3.3: sector rotation agents (special T2)
+
+            // V5.5: ML Agent Counts (split equally between sub-models)
+            num_decision_tree_agents: 200,
+            num_random_forest_agents: 0,
+            num_gradient_boosted_agents: 0,
+
             // Tier Minimums
-            min_tier1_agents: 3000, // Random agents fill the gap
+            min_tier1_agents: 4000, // Random agents fill the gap
 
             // Tier 2 Reactive Agents (V3.2)
-            num_tier2_agents: 11000,
+            num_tier2_agents: 6000,
 
             // Tier 2 Reactive Agent Parameters (V3.2)
             // Equal starting cash to noise traders for fair comparison
             t2_initial_cash: Cash::from_float(100_000.0),
             t2_max_position: 1000,
-            t2_buy_threshold_min: 60.0, // Buy when price drops to $50-75
-            t2_buy_threshold_max: 90.0,
+            t2_buy_threshold_min: 30.0, // Buy when price drops to $50-75
+            t2_buy_threshold_max: 60.0,
             t2_stop_loss_min: 0.25, // StopLoss 25-50% (wider to avoid noise)
             t2_stop_loss_max: 0.5,
             t2_take_profit_min: 0.25, // TakeProfit 25-50% (aggressive targets)
             t2_take_profit_max: 0.5,
-            t2_sell_threshold_min: 105.0, // ThresholdSeller $110-140
-            t2_sell_threshold_max: 130.0,
+            t2_sell_threshold_min: 75.0, // ThresholdSeller $110-140
+            t2_sell_threshold_max: 100.0,
             t2_take_profit_prob: 0.5,  // 50% TakeProfit, 50% ThresholdSeller
             t2_news_reactor_prob: 0.1, // 10% have NewsReactor
             t2_order_size_min: 0.2,    // Min 30% of max position per order
@@ -297,7 +331,7 @@ impl Default for SimConfig {
             // Tier 3 Background Pool (V3.4)
             // V3.5: Doubled pool size for parallel execution benchmarking
             enable_background_pool: true,
-            background_pool_size: 85000,
+            background_pool_size: 90000,
             background_regime: MarketRegime::Normal,
             t3_mean_order_size: 25.0,
             t3_max_order_size: 100,
@@ -308,7 +342,7 @@ impl Default for SimConfig {
 
             // Market Maker Parameters
             mm_initial_cash: Cash::from_float(1_000_000.0),
-            mm_half_spread: 0.005, // 0.25% half-spread = $0.25 on $100
+            mm_half_spread: 0.0005, // 0.05% half-spread - tight enough for 0.1% orders to cross
             mm_quote_size: 100,
             mm_refresh_interval: 1, // Quote every tick (required for IOC mode)
             mm_max_inventory: 200,
@@ -319,15 +353,24 @@ impl Default for SimConfig {
             // from market makers. Cash equals quant_initial_cash for equal net worth.
             nt_initial_cash: Cash::from_float(100_000.0),
             nt_initial_position: 0,
-            nt_order_probability: 0.3, // 30% chance each tick
-            nt_price_deviation: 0.02,  // 1% from mid price
+            nt_order_probability: 0.1, // 10% chance each tick
+            nt_price_deviation: 0.01,  // 1% from mid price
             nt_min_quantity: 15,
-            nt_max_quantity: 50,
+            nt_max_quantity: 15,
 
             // Quant Strategy Parameters
             quant_initial_cash: Cash::from_float(100_000.0),
-            quant_order_size: 35,
-            quant_max_position: 200,
+            quant_order_size: 10,
+            quant_max_long_position: 2000,
+            quant_max_short_position: 300,
+
+            // Tree Agent Parameters (V5.5)
+            tree_agent_initial_cash: Cash::from_float(100_000.0),
+            tree_agent_order_size: 15,
+            tree_agent_max_long_position: 2500,
+            tree_agent_max_short_position: 300,
+            tree_agent_buy_threshold: 0.55,  // 55% confidence
+            tree_agent_sell_threshold: 0.75, // 75% confidence
 
             // TUI Parameters
             max_price_history: 500,
@@ -339,11 +382,11 @@ impl Default for SimConfig {
             events_enabled: true,
             event_earnings_prob: 0.006, // ~1 per 500 ticks per symbol
             event_earnings_interval: 25,
-            event_guidance_prob: 0.003, // ~1 per 1000 ticks
+            event_guidance_prob: 0.002, // ~1 per 1000 ticks
             event_guidance_interval: 50,
-            event_rate_decision_prob: 0.0015, // ~1 per 2000 ticks (rare)
+            event_rate_decision_prob: 0.001, // ~1 per 2000 ticks (rare)
             event_rate_decision_interval: 125,
-            event_sector_news_prob: 0.009, // ~1 per 333 ticks
+            event_sector_news_prob: 0.006, // ~1 per 333 ticks
             event_sector_news_interval: 12,
         }
     }
@@ -489,6 +532,24 @@ impl SimConfig {
         self
     }
 
+    /// Set number of Decision Tree agents (V5.5).
+    pub fn decision_tree_agents(mut self, count: usize) -> Self {
+        self.num_decision_tree_agents = count;
+        self
+    }
+
+    /// Set number of Random Forest agents (V5.5).
+    pub fn random_forest_agents(mut self, count: usize) -> Self {
+        self.num_random_forest_agents = count;
+        self
+    }
+
+    /// Set number of Gradient Boosted agents (V5.5).
+    pub fn gradient_boosted_agents(mut self, count: usize) -> Self {
+        self.num_gradient_boosted_agents = count;
+        self
+    }
+
     /// Set minimum total Tier 1 agents.
     pub fn min_tier1(mut self, count: usize) -> Self {
         self.min_tier1_agents = count;
@@ -583,6 +644,16 @@ impl SimConfig {
             + self.num_bollinger_traders
             + self.num_vwap_executors
             + self.num_pairs_traders
+            + self.num_decision_tree_agents
+            + self.num_random_forest_agents
+            + self.num_gradient_boosted_agents
+    }
+
+    /// Total number of ML tree agents.
+    pub fn total_tree_agents(&self) -> usize {
+        self.num_decision_tree_agents
+            + self.num_random_forest_agents
+            + self.num_gradient_boosted_agents
     }
 
     /// Number of random Tier 1 agents to spawn to meet minimum.
@@ -612,7 +683,10 @@ impl SimConfig {
             + self.num_macd_traders
             + self.num_bollinger_traders;
         let quant_total = Cash::from_float(self.quant_initial_cash.to_float() * quant_count as f64);
-        mm_total + nt_total + quant_total
+        let tree_total = Cash::from_float(
+            self.tree_agent_initial_cash.to_float() * self.total_tree_agents() as f64,
+        );
+        mm_total + nt_total + quant_total + tree_total
     }
 }
 
@@ -654,7 +728,7 @@ impl SimConfig {
             .macd_traders(10)
             .bollinger_traders(10)
             .vwap_executors(10)
-            .nt_probability(0.1)
+            .nt_probability(0.05) // Lower than default 0.1
             .min_tier1(200)
     }
 
@@ -696,7 +770,10 @@ mod tests {
             + config.num_macd_traders
             + config.num_bollinger_traders
             + config.num_vwap_executors
-            + config.num_pairs_traders;
+            + config.num_pairs_traders
+            + config.num_decision_tree_agents
+            + config.num_random_forest_agents
+            + config.num_gradient_boosted_agents;
         assert_eq!(config.specified_tier1_agents(), expected_specified);
 
         // Sanity checks - defaults should be reasonable
@@ -733,6 +810,9 @@ mod tests {
             .bollinger_traders(0)
             .vwap_executors(0)
             .pairs_traders(0)
+            .decision_tree_agents(0)
+            .random_forest_agents(0)
+            .gradient_boosted_agents(0)
             .min_tier1(10)
             .tier2_agents(0); // Explicitly set tier2 to 0 for this test
 
@@ -761,6 +841,9 @@ mod tests {
             .trend_followers(1)
             .macd_traders(0)
             .bollinger_traders(0)
+            .decision_tree_agents(0)
+            .random_forest_agents(0)
+            .gradient_boosted_agents(0)
             .mm_cash(1_000_000.0)
             .nt_cash(10_000.0)
             .quant_cash(100_000.0);

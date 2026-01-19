@@ -39,7 +39,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use quant::AgentRiskSnapshot;
-use types::{AgentId, Candle, Order, Price, Quantity, Symbol, Tick, Timestamp, Trade};
+use types::{
+    AgentId, Candle, IndicatorType, Order, Price, Quantity, Symbol, Tick, Timestamp, Trade,
+};
 
 use crate::SimulationStats;
 
@@ -132,12 +134,15 @@ use crate::traits::AgentSummary;
 ///
 /// Contains optional snapshots of candles, indicators, agents, etc.
 /// Set by the simulation runner when calling `on_tick_end`.
+///
+/// V5.5: Indicators use `IndicatorType` enum keys for type safety.
+/// Convert to string keys using `IndicatorType::to_key()` at JSON serialization boundary.
 #[derive(Debug, Clone, Default)]
 pub struct EnrichedData {
     /// Historical candles per symbol.
     pub candles: HashMap<Symbol, Vec<Candle>>,
-    /// Indicator values per symbol: indicator_name → value.
-    pub indicators: HashMap<Symbol, HashMap<String, f64>>,
+    /// Indicator values per symbol with enum keys (V5.5).
+    pub indicators: HashMap<Symbol, HashMap<IndicatorType, f64>>,
     /// Agent summaries.
     pub agent_summaries: Vec<AgentSummary>,
     /// Risk metrics per agent.
@@ -146,6 +151,24 @@ pub struct EnrichedData {
     pub fair_values: HashMap<Symbol, Price>,
     /// Active news events.
     pub news_events: Vec<NewsEventSnapshot>,
+}
+
+impl EnrichedData {
+    /// Convert indicators to string keys for JSON serialization.
+    ///
+    /// Use this at the boundary when serializing to external systems.
+    pub fn indicators_as_string_keys(&self) -> HashMap<Symbol, HashMap<String, f64>> {
+        self.indicators
+            .iter()
+            .map(|(symbol, values)| {
+                let string_values: HashMap<String, f64> = values
+                    .iter()
+                    .map(|(itype, v)| (itype.to_key(), *v))
+                    .collect();
+                (symbol.clone(), string_values)
+            })
+            .collect()
+    }
 }
 
 /// Snapshot of a news event for hooks.

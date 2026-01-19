@@ -5,14 +5,15 @@ V5.4: Train tree-based models on simulation data and export to JSON for Rust inf
 Models: Decision Tree, Random Forest, Gradient Boosted Trees
 Output: JSON files with tree structure for V5.5 Rust inference
 
-Input: Two Parquet files (market features + agent features, joined on tick)
-  - {base}_market.parquet: tick, symbol, f_price_*, f_indicator_*, f_news_* (42 features)
-  - {base}_agents.parquet: tick, agent_id, agent_name, f_* (10 features), action, rewards
+Input: Parquet files with market features (42 columns)
+  - Supports multiple numbered files: {base}_001_market.parquet, {base}_002_market.parquet, ...
+  - Falls back to single file: {base}_market.parquet
+  - Legacy support: {base}.parquet
 
 Usage:
     python scripts/train_trees.py                           # Use default config
     python scripts/train_trees.py --config my_config.yaml   # Custom config
-    python scripts/train_trees.py --input data/training     # Override base path (without _market/_agents suffix)
+    python scripts/train_trees.py --input data/training     # Base path (loads all matching files)
 """
 import argparse
 import json
@@ -39,30 +40,74 @@ def load_config(config_path: Path) -> dict:
 def load_data(base_path: str) -> pl.DataFrame:
     """Load market data for training.
     
-    Only uses market parquet (1 row per tick per symbol).
-    Agent data not needed since labels are price-based.
+    Loads all numbered parquet files matching {stem}_NNN_market.parquet pattern
+    and concatenates them into a single DataFrame. Falls back to single file
+    if no numbered files exist.
     
     Args:
         base_path: Base path for parquet files (e.g., "data/training" loads 
-                   "data/training_market.parquet")
+                   all "data/training_NNN_market.parquet" files)
         
     Returns:
-        DataFrame with market features for training
+        DataFrame with market features for training (concatenated from all files)
     """
-    base = Path(base_path)
-    market_path = base.parent / f"{base.stem}_market.parquet"
+    import re
     
+    base = Path(base_path)
+    parent = base.parent
+    stem = base.stem
+    
+    # Find all numbered market parquet files: {stem}_NNN_market.parquet
+    pattern = re.compile(rf"^{re.escape(stem)}_(\d+)_market\.parquet$")
+    numbered_files = []
+    
+    if parent.exists():
+        for f in parent.iterdir():
+            match = pattern.match(f.name)
+            if match:
+                num = int(match.group(1))
+                numbered_files.append((num, f))
+    
+    if numbered_files:
+        # Sort by number and load all
+        numbered_files.sort(key=lambda x: x[0])
+        print(f"Found {len(numbered_files)} recording files:")
+        
+        dfs = []
+        total_rows = 0
+        for num, filepath in numbered_files:
+            df = pl.read_parquet(filepath)
+            # Add run_id column to distinguish runs
+            df = df.with_columns(pl.lit(num).alias("run_id").cast(pl.UInt32))
+            dfs.append(df)
+            total_rows += len(df)
+            print(f"  #{num:03d}: {len(df):,} rows from {filepath.name}")
+        
+        df = pl.concat(dfs)
+        n_features = len([c for c in df.columns if c.startswith('f_')])
+        print(f"Combined: {total_rows:,} total rows, {n_features} features")
+        return df
+    
+    # Fallback: single file formats
+    market_path = parent / f"{stem}_market.parquet"
     if market_path.exists():
         df = pl.read_parquet(market_path)
         n_features = len([c for c in df.columns if c.startswith('f_')])
         print(f"Loaded {len(df):,} rows, {n_features} features from {market_path.name}")
-    elif base.with_suffix(".parquet").exists():
-        # Legacy single-file format
-        legacy_path = base.with_suffix(".parquet")
+        return df
+    
+    legacy_path = base.with_suffix(".parquet")
+    if legacy_path.exists():
         df = pl.read_parquet(legacy_path)
         print(f"Loaded {len(df):,} rows from {legacy_path} (legacy format)")
-    else:
-        raise FileNotFoundError(f"Could not find {market_path}")
+        return df
+    
+    raise FileNotFoundError(
+        f"No parquet files found. Expected:\n"
+        f"  - {parent / f'{stem}_NNN_market.parquet'} (numbered files)\n"
+        f"  - {market_path} (single file)\n"
+        f"  - {legacy_path} (legacy)"
+    )
     
     return df
 
@@ -85,7 +130,7 @@ def compute_lookahead_labels(df: pl.DataFrame, label_config: dict) -> pl.DataFra
     for n in price_horizons:
         df = df.with_columns([
             ((pl.col("f_mid_price").shift(-n).over("symbol") - pl.col("f_mid_price")) 
-             / pl.col("f_mid_price") / n)
+             / pl.col("f_mid_price") )#/ n)
             .alias(f"price_return_rate_{n}")
         ])
     
@@ -115,8 +160,8 @@ def prepare_features(df: pl.DataFrame, label_config: dict | None = None) -> tupl
     
     # Average price return rate across horizons
     price_horizons = (label_config or {}).get("horizons", [4, 8, 16, 32])
-    buy_threshold = (label_config or {}).get("buy_threshold", 0.0005)
-    sell_threshold = (label_config or {}).get("sell_threshold", -0.0005)
+    buy_threshold = (label_config or {}).get("buy_threshold", 0.005)
+    sell_threshold = (label_config or {}).get("sell_threshold", -0.005)
     
     return_rates = []
     for n in price_horizons:
@@ -152,6 +197,12 @@ def prepare_features(df: pl.DataFrame, label_config: dict | None = None) -> tupl
     print(f"Class distribution: sell={dist.get(-1, 0)}, hold={dist.get(0, 0)}, buy={dist.get(1, 0)}")
 
     return X, y, feature_cols
+
+
+def compute_balanced_sample_weights(y):
+    """Compute balanced sample weights for classes (for GradientBoosting)."""
+    from sklearn.utils.class_weight import compute_sample_weight
+    return compute_sample_weight('balanced', y)
 
 
 def tree_to_dict(tree, feature_names: list[str]) -> dict:
@@ -200,6 +251,7 @@ def train_decision_tree(
         max_depth=config.get("max_depth", 10),
         min_samples_split=config.get("min_samples_split", 2),
         min_samples_leaf=config.get("min_samples_leaf", 1),
+        class_weight='balanced',
         random_state=42
     )
     clf.fit(X_train, y_train)
@@ -245,6 +297,7 @@ def train_random_forest(
         min_samples_split=config.get("min_samples_split", 2),
         min_samples_leaf=config.get("min_samples_leaf", 1),
         max_features=config.get("max_features", "sqrt"),
+        class_weight='balanced',
         random_state=42,
         n_jobs=-1
     )
@@ -306,7 +359,8 @@ def train_gradient_boosted(
         min_samples_leaf=config.get("min_samples_leaf", 1),
         random_state=42
     )
-    clf.fit(X_train, y_train)
+    sample_weights = compute_balanced_sample_weights(y_train)
+    clf.fit(X_train, y_train, sample_weight=sample_weights)
 
     y_pred = clf.predict(X_test)
     accuracy = accuracy_score(y_test, y_pred)

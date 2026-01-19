@@ -65,6 +65,10 @@ impl IndicatorEngine {
 
     /// Create an engine with common indicators pre-registered.
     /// Periods optimized for batch auction (1 tick = 1 session).
+    ///
+    /// V5.5: Registers component-level indicators for MACD and Bollinger Bands.
+    /// Use `compute_all_indicators()` from the indicators module for single-pass
+    /// computation of all standard indicators.
     pub fn with_common_indicators() -> Self {
         let mut engine = Self::new();
 
@@ -76,11 +80,17 @@ impl IndicatorEngine {
 
         // Momentum
         engine.register(IndicatorType::Rsi(8));
-        engine.register(IndicatorType::MACD_STANDARD); // 8/16/4
+        // MACD components (8/16/4)
+        engine.register(IndicatorType::MACD_LINE_STANDARD);
+        engine.register(IndicatorType::MACD_SIGNAL_STANDARD);
+        engine.register(IndicatorType::MACD_HISTOGRAM_STANDARD);
 
         // Volatility
-        engine.register(IndicatorType::BOLLINGER_STANDARD); // 12 period
         engine.register(IndicatorType::Atr(8));
+        // Bollinger components (12 period, 200bp = 2.0 std dev)
+        engine.register(IndicatorType::BOLLINGER_UPPER_STANDARD);
+        engine.register(IndicatorType::BOLLINGER_MIDDLE_STANDARD);
+        engine.register(IndicatorType::BOLLINGER_LOWER_STANDARD);
 
         engine
     }
@@ -324,11 +334,14 @@ mod tests {
     fn test_engine_with_common() {
         let engine = IndicatorEngine::with_common_indicators();
 
-        // V5.3: Updated to geometric spread (8/16) optimized for batch auction
+        // V5.5: Updated to geometric spread (8/16) optimized for batch auction
+        // Now uses component-level indicators for MACD and Bollinger
         assert!(engine.is_registered(&IndicatorType::Sma(8)));
         assert!(engine.is_registered(&IndicatorType::Sma(16)));
         assert!(engine.is_registered(&IndicatorType::Rsi(8)));
-        assert!(engine.is_registered(&IndicatorType::MACD_STANDARD));
+        assert!(engine.is_registered(&IndicatorType::MACD_LINE_STANDARD));
+        assert!(engine.is_registered(&IndicatorType::MACD_SIGNAL_STANDARD));
+        assert!(engine.is_registered(&IndicatorType::BOLLINGER_UPPER_STANDARD));
     }
 
     #[test]

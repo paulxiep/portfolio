@@ -1,30 +1,162 @@
 # Development Log
 
-## 2026-01-17: V5.4 Tree-Based Training + Dual Parquet Split
+## 2026-01-17: V5.5 Tree-Based ML Agents + Indicator Unification
 
 ### Summary
-Implemented Python training script for tree-based ML models. Trains Decision Tree, Random Forest, and Histogram Gradient Boosted trees. Exports to JSON for V5.5 Rust inference. **Split Parquet output into market features (42, once per tick) vs agent features (10, per agent per tick)** with parallel record building.
+Implemented Tier 1 tree-based ML agents (DecisionTree, RandomForest, GradientBoosted) that load JSON models exported from Python training. **Unified indicator computation** to single source of truth with enum-based access, eliminating redundant computation and string key overhead.
 
-### Dual Parquet Architecture
+### Indicator Architecture Unification
+
+**Before (V5.4)**: Dual computation paths
+```
+IndicatorEngine.compute_all() → IndicatorSnapshot (enum keys) → agents
+build_indicators_for_hook()  → HashMap<String, f64>           → hooks/JSON
+```
+
+**After (V5.5)**: Single source of truth
+```
+compute_all_indicators() → IndicatorSnapshot (enum keys) → agents
+                                     ↓
+                        indicators_as_string_keys() → JSON boundary only
+```
+
+### IndicatorType Enum Extension
+| New Variant | Parameters | Description |
+|-------------|------------|-------------|
+| `MacdLine` | fast, slow, signal | MACD line value |
+| `MacdSignal` | fast, slow, signal | Signal line |
+| `MacdHistogram` | fast, slow, signal | Histogram (line - signal) |
+| `BollingerUpper` | period, std_dev_bp | Upper band |
+| `BollingerMiddle` | period, std_dev_bp | Middle band (SMA) |
+| `BollingerLower` | period, std_dev_bp | Lower band |
+
+**Deprecated**: `Macd { fast, slow, signal }` and `BollingerBands { period, std_dev_bp }`
+
+### Standard Constants
+```rust
+IndicatorType::MACD_LINE_STANDARD      // MacdLine { fast: 8, slow: 16, signal: 4 }
+IndicatorType::MACD_SIGNAL_STANDARD    // MacdSignal { fast: 8, slow: 16, signal: 4 }
+IndicatorType::MACD_HISTOGRAM_STANDARD // MacdHistogram { fast: 8, slow: 16, signal: 4 }
+IndicatorType::BOLLINGER_UPPER_STANDARD   // BollingerUpper { period: 12, std_dev_bp: 200 }
+IndicatorType::BOLLINGER_MIDDLE_STANDARD  // BollingerMiddle { period: 12, std_dev_bp: 200 }
+IndicatorType::BOLLINGER_LOWER_STANDARD   // BollingerLower { period: 12, std_dev_bp: 200 }
+```
+
+### ML Model Implementations
+| Model | File | JSON Loading |
+|-------|------|--------------|
+| `DecisionTree` | `decision_tree.rs` | Single tree traversal |
+| `RandomForest` | `random_forest.rs` | Majority vote across trees |
+| `GradientBoosted` | `gradient_boosted.rs` | Softmax over summed tree outputs |
+
+### TreeAgent (Generic ML Agent)
+- Extracts 42 features from `StrategyContext` per symbol
+- Calls `model.predict(features)` → `[p_sell, p_hold, p_buy]`
+- Finds best buy/sell candidate above threshold
+- Executes stronger signal
+
+### StrategyContext Simplification
+**Removed**:
+- `indicator_map: &HashMap<Symbol, HashMap<String, f64>>` field
+- `get_indicator_by_name(symbol, name)` method
+
+**Retained**:
+- `get_indicator(symbol, IndicatorType)` - enum-based access (type-safe)
+- `get_all_indicators(symbol)` - returns `&HashMap<IndicatorType, f64>`
+
+### Files Changed
+| File | Changes |
+|------|---------|
+| `types/src/indicators.rs` | Extended IndicatorType, added `to_key()`, standard constants |
+| `quant/src/indicators/mod.rs` | Added `compute_all_indicators()` |
+| `quant/src/indicators/macd.rs` | Return `MacdLine` from `indicator_type()` |
+| `quant/src/indicators/bollinger.rs` | Return `BollingerMiddle` from `indicator_type()` |
+| `quant/src/engine.rs` | Updated `with_common_indicators()` to register component variants |
+| `simulation/src/subsystems/market_data.rs` | Use `compute_all_indicators()` |
+| `simulation/src/traits/market_data.rs` | Removed `build_indicators_for_hook()` |
+| `simulation/src/hooks.rs` | `EnrichedData.indicators` uses `IndicatorType` keys |
+| `simulation/src/runner.rs` | Pass `IndicatorSnapshot` to enriched hook |
+| `agents/src/context.rs` | Removed `indicator_map` field |
+| `agents/src/tier1/ml/*.rs` | New ML model implementations |
+| `agents/src/tier1/ml/tree_agent.rs` | Generic ML agent |
+| `storage/src/comprehensive_features.rs` | Use enum-based indicator access |
+| `server/src/hooks.rs` | Convert to string keys at JSON boundary |
+
+### API Migration
+```rust
+// OLD (V5.4)
+ctx.get_indicator_by_name(&symbol, "MACD_line")
+
+// NEW (V5.5) - type-safe enum access
+ctx.get_indicator(&symbol, IndicatorType::MACD_LINE_STANDARD)
+```
+
+### JSON Boundary Conversion
+```rust
+// In EnrichedData
+pub fn indicators_as_string_keys(&self) -> HashMap<Symbol, HashMap<String, f64>> {
+    self.indicators
+        .iter()
+        .map(|(symbol, values)| {
+            let string_values = values.iter()
+                .map(|(itype, v)| (itype.to_key(), *v))
+                .collect();
+            (symbol.clone(), string_values)
+        })
+        .collect()
+}
+```
+
+### Performance Impact
+- **Eliminated**: Duplicate indicator computation (was computing MACD/BB twice per tick)
+- **Reduced**: String allocation overhead (enum keys in hot path)
+- **Simplified**: Single `compute_all_indicators()` function as entry point
+
+### Test Results
+- 201 tests pass (139 agents + 50 quant + 12 simulation)
+- Clippy clean (only expected deprecation warnings)
+
+---
+
+## 2026-01-17: V5.4 Tree-Based Training + Market-Only Parquet
+
+### Summary
+Implemented Python training script for tree-based ML models. Trains Decision Tree, Random Forest, and Histogram Gradient Boosted trees. Exports to JSON for V5.5 Rust inference. Records market features (42) to Parquet for Python ML training. Unified feature constants/functions in `types::features` module to eliminate training-serving skew.
+
+### Parquet Architecture
 | File | Rows | Features | Description |
 |------|------|----------|-------------|
-| `*_market.parquet` | 1 per tick | 42 | Price, indicators, news (shared across agents) |
-| `*_agents.parquet` | 1 per agent/tick | 10 | Position, cash, PnL, risk + action/reward labels |
+| `*_market.parquet` | 1 per tick per symbol | 42 | Price, indicators, news |
 
-**Rationale**: Market features are identical for all 15K agents at a given tick. Writing once per tick instead of 15K times reduces I/O by ~15,000x for market data.
+### Feature Schema (types::features)
+| Category | Count | Indices | Description |
+|----------|-------|---------|-------------|
+| Price | 1 | 0 | Mid price |
+| Price Changes | 12 | 1-12 | % change at LOOKBACKS horizons |
+| Log Returns | 12 | 13-24 | ln(current/past) at LOOKBACKS |
+| Technical | 13 | 25-37 | SMA, EMA, RSI, MACD, Bollinger, ATR |
+| News | 4 | 38-41 | Sentiment, magnitude, remaining ticks |
 
-### Feature Split
-| Category | Count | File | Extraction |
-|----------|-------|------|------------|
-| Price | 25 | market | `MarketFeatures::extract()` |
-| Technical | 13 | market | once per tick |
-| News | 4 | market | |
-| Agent State | 6 | agents | `AgentFeatures::extract()` |
-| Risk | 4 | agents | per agent, parallel |
+### Unified Feature Module (`types::features`)
+```rust
+// Shared constants
+pub const LOOKBACKS: &[usize] = &[1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64];
+pub const N_MARKET_FEATURES: usize = 42;
 
-### Parallel Processing
-- Agent records built with `parallel::filter_map_slice` (CPU-bound feature extraction)
-- Parquet write remains sequential (Arrow writer not thread-safe)
+// Named indices (eliminates magic numbers)
+pub mod idx {
+    pub const MID_PRICE: usize = 0;
+    pub const PRICE_CHANGE_START: usize = 1;
+    pub const SMA_8: usize = 25;
+    // ... etc
+}
+
+// Pure computation functions (shared training/inference)
+pub fn price_change_pct(current: f64, past: f64) -> f64;
+pub fn log_return(current: f64, past: f64) -> f64;
+pub fn bollinger_percent_b(price: f64, upper: f64, lower: f64) -> f64;
+pub fn price_change_from_candles(candles: &[Candle], lookback: usize) -> f64;
+```
 
 ### Models
 | Model | Library | Output |
@@ -39,7 +171,7 @@ Implemented Python training script for tree-based ML models. Trains Decision Tre
   "model_type": "decision_tree",
   "model_name": "shallow",
   "feature_names": ["f_mid_price", ...],
-  "n_features": 52,
+  "n_features": 42,
   "n_classes": 3,
   "classes": [-1, 0, 1],
   "tree": {
@@ -55,11 +187,15 @@ Implemented Python training script for tree-based ML models. Trains Decision Tre
 - `value`: Class probabilities `[p_sell, p_hold, p_buy]` for leaf nodes
 
 ### Files
-- `scripts/train_trees.py` - Training script (loads dual parquet, joins on tick)
-- `scripts/train_config.yaml` - Model hyperparameters
-- `crates/storage/src/comprehensive_features.rs` - `MarketFeatures` (42) + `AgentFeatures` (10)
-- `crates/storage/src/parquet_writer.rs` - `DualParquetWriter` (market + agents files)
-- `crates/storage/src/recording_hook.rs` - Parallel agent record building
+| File | Purpose |
+|------|---------|
+| `types/src/features.rs` | Unified constants, indices, pure functions |
+| `storage/src/comprehensive_features.rs` | `MarketFeatures::extract()` using `types::features` |
+| `storage/src/parquet_writer.rs` | `MarketParquetWriter` |
+| `storage/src/recording_hook.rs` | Market features recording |
+| `agents/src/tier1/ml/tree_agent.rs` | Uses `types::features` for parity |
+| `scripts/train_trees.py` | Training script (loads market parquet) |
+| `scripts/train_config.yaml` | Model hyperparameters
 - `requirements.txt` - Python dependencies (polars, sklearn, pyyaml, shap)
 
 ### Usage

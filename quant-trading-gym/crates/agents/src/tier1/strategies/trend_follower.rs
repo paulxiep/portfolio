@@ -124,7 +124,8 @@ impl TrendFollower {
     /// Generate a buy order.
     fn generate_buy_order(&self, ctx: &StrategyContext<'_>) -> Order {
         let price = self.get_reference_price(ctx);
-        let order_price = Price::from_float(price.to_float() * 0.999);
+        // Bid above mid to qualify in batch auction (bid >= ref_price)
+        let order_price = Price::from_float(price.to_float() * 1.001);
         Order::limit(
             self.id,
             &self.config.symbol,
@@ -137,7 +138,8 @@ impl TrendFollower {
     /// Generate a sell order.
     fn generate_sell_order(&self, ctx: &StrategyContext<'_>) -> Order {
         let price = self.get_reference_price(ctx);
-        let order_price = Price::from_float(price.to_float() * 1.001);
+        // Ask below mid to qualify in batch auction (ask <= ref_price)
+        let order_price = Price::from_float(price.to_float() * 0.999);
         Order::limit(
             self.id,
             &self.config.symbol,

@@ -12,7 +12,9 @@
 //!
 //! # Module Structure
 //! - `strategies/` - Concrete strategy implementations
+//! - `ml/` - Tree-based ML model agents (V5.5)
 
+pub mod ml;
 pub mod strategies;
 
 // Re-export all strategies at tier1 level for convenience
@@ -21,4 +23,10 @@ pub use strategies::{
     MarketMakerConfig, MomentumConfig, MomentumTrader, NoiseTrader, NoiseTraderConfig,
     PairsTrading, PairsTradingConfig, TrendFollower, TrendFollowerConfig, VwapExecutor,
     VwapExecutorConfig,
+};
+
+// Re-export ML model types (V5.5)
+pub use ml::{
+    ClassProbabilities, DecisionTree, DecisionTreeAgent, GradientBoosted, GradientBoostedAgent,
+    MlModel, RandomForest, RandomForestAgent, TreeAgent, TreeAgentConfig,
 };

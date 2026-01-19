@@ -255,6 +255,8 @@ impl MarketDataProvider for MarketDataManager {
     }
 
     fn build_indicator_snapshot(&mut self) -> IndicatorSnapshot {
+        use quant::indicators::compute_all_indicators;
+
         // Make all candles contiguous for indicator computation
         for deque in self.candles.values_mut() {
             deque.make_contiguous();
@@ -266,59 +268,13 @@ impl MarketDataProvider for MarketDataManager {
             .filter(|(_, symbol_candles)| !symbol_candles.is_empty())
             .filter_map(|(symbol, symbol_candles)| {
                 let (slice, _) = symbol_candles.as_slices();
-                let values = self.indicator_engine.compute_all(slice);
+                // V5.5: Single source of truth - compute_all_indicators returns
+                // all component-level values (MacdLine, MacdSignal, etc.)
+                let values = compute_all_indicators(slice);
                 (!values.is_empty()).then(|| (symbol.clone(), values))
             })
             .collect();
 
         IndicatorSnapshot::from_map(0, indicators) // tick is set by caller
-    }
-
-    fn build_indicators_for_hook(&self) -> HashMap<Symbol, HashMap<String, f64>> {
-        use quant::indicators::{BollingerBands, Macd};
-        use types::IndicatorType;
-
-        self.candles
-            .iter()
-            .filter(|(_, candles_deque)| !candles_deque.is_empty())
-            .map(|(symbol, candles_deque)| {
-                // Convert to Vec for indicator computation
-                let candles: Vec<Candle> = candles_deque.iter().cloned().collect();
-
-                let mut values: HashMap<String, f64> = self
-                    .indicator_engine
-                    .compute_all(&candles)
-                    .into_iter()
-                    .filter_map(|(itype, v)| {
-                        let key = match itype {
-                            IndicatorType::Sma(p) => format!("SMA_{p}"),
-                            IndicatorType::Ema(p) => format!("EMA_{p}"),
-                            IndicatorType::Rsi(p) => format!("RSI_{p}"),
-                            IndicatorType::Atr(p) => format!("ATR_{p}"),
-                            IndicatorType::Macd { .. } | IndicatorType::BollingerBands { .. } => {
-                                return None;
-                            }
-                        };
-                        Some((key, v))
-                    })
-                    .collect();
-
-                // Compute full MACD output
-                if let Some(macd_output) = Macd::standard().calculate_full(&candles) {
-                    values.insert("MACD_line".to_string(), macd_output.macd_line);
-                    values.insert("MACD_signal".to_string(), macd_output.signal_line);
-                    values.insert("MACD_histogram".to_string(), macd_output.histogram);
-                }
-
-                // Compute full Bollinger Bands output
-                if let Some(bb_output) = BollingerBands::standard().calculate_full(&candles) {
-                    values.insert("BB_upper".to_string(), bb_output.upper);
-                    values.insert("BB_middle".to_string(), bb_output.middle);
-                    values.insert("BB_lower".to_string(), bb_output.lower);
-                }
-
-                (symbol.clone(), values)
-            })
-            .collect()
     }
 }

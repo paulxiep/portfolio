@@ -93,7 +93,7 @@ impl BollingerReversion {
 
     /// Get the IndicatorType this strategy uses.
     pub fn required_indicator(&self) -> IndicatorType {
-        IndicatorType::BollingerBands {
+        IndicatorType::BollingerMiddle {
             period: self.config.period,
             std_dev_bp: (self.config.std_dev_multiplier * 100.0) as u32,
         }

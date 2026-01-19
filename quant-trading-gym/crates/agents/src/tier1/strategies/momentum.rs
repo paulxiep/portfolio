@@ -107,8 +107,8 @@ impl MomentumTrader {
     /// Generate a buy order at the current reference price.
     fn generate_buy_order(&self, ctx: &StrategyContext<'_>) -> Order {
         let price = self.get_reference_price(ctx);
-        // Slightly below mid to increase fill probability
-        let order_price = Price::from_float(price.to_float() * 0.999);
+        // Bid above mid to qualify in batch auction (bid >= ref_price)
+        let order_price = Price::from_float(price.to_float() * 1.001);
         Order::limit(
             self.id,
             &self.config.symbol,
@@ -121,8 +121,8 @@ impl MomentumTrader {
     /// Generate a sell order at the current reference price.
     fn generate_sell_order(&self, ctx: &StrategyContext<'_>) -> Order {
         let price = self.get_reference_price(ctx);
-        // Slightly above mid to increase fill probability
-        let order_price = Price::from_float(price.to_float() * 1.001);
+        // Ask below mid to qualify in batch auction (ask <= ref_price)
+        let order_price = Price::from_float(price.to_float() * 0.999);
         Order::limit(
             self.id,
             &self.config.symbol,

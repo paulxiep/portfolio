@@ -383,9 +383,9 @@ impl SectorRotator {
                         }
 
                         let (side, price_mult, qty) = if delta_shares > 0 {
-                            (OrderSide::Buy, 0.999, delta_shares as u64)
+                            (OrderSide::Buy, 1.001, delta_shares as u64) // Bid above mid to qualify
                         } else {
-                            (OrderSide::Sell, 1.001, (-delta_shares) as u64)
+                            (OrderSide::Sell, 0.999, (-delta_shares) as u64) // Ask below mid to qualify
                         };
 
                         Some(Order::limit(

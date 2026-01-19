@@ -25,6 +25,7 @@
 // =============================================================================
 
 pub mod config;
+pub mod features;
 pub mod ids;
 pub mod indicators;
 pub mod market_data;
@@ -56,6 +57,13 @@ pub use indicators::{BollingerOutput, IndicatorType, IndicatorValue, MacdOutput}
 
 // Configuration types
 pub use config::{RiskViolation, Sector, ShortSellingConfig, SymbolConfig};
+
+// Feature extraction types (V5.5.2 - unified training/inference)
+pub use features::{
+    LOOKBACKS, MARKET_FEATURE_NAMES, N_LOOKBACKS, N_MARKET_FEATURES, bollinger_percent_b,
+    idx as feature_idx, log_return, log_return_from_candles, price_change_from_candles,
+    price_change_pct, required_indicators,
+};
 
 // =============================================================================
 // Tests

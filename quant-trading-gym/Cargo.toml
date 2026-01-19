@@ -81,4 +81,6 @@ rand.workspace = true
 clap.workspace = true
 rayon.workspace = true
 tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 axum = { version = "0.8", features = ["ws"] }

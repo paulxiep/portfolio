@@ -1,24 +1,8 @@
 //! Comprehensive feature extractor for ML training.
 //!
-//! V5.3: Extracts features covering price, technical indicators,
-//! news, agent state, and risk metrics.
-//!
-//! V5.4: Split into market features (42) and agent features (10).
-//! Market features are stored once per tick, agent features per agent per tick.
-//!
-//! ## Feature Split
-//!
-//! | Category | Count | File |
-//! |----------|-------|------|
-//! | Market | 42 | `{name}_market.parquet` |
-//! | Agent | 10 | `{name}_agents.parquet` |
-//!
-//! ## Features Removed (incompatible with batch auction mode)
-//!
-//! | Feature | Reason |
-//! |---------|--------|
-//! | `f_spread`, `f_spread_bps` | Requires live bid/ask (books cleared between ticks) |
-//! | `f_fair_value*` | Fair value engine not implemented in hooks |
+//! V5.5.2: Uses unified feature schema from `types::features` to ensure
+//! training-serving consistency. Only market features (42) are extracted;
+//! agent features have been removed as tree agents only use market data.
 //!
 //! ## Warmup Requirements
 //!
@@ -38,9 +22,10 @@
 //! Use `--record-warmup 100` for complete coverage (64 for price + buffer).
 
 use crate::price_history::PriceHistory;
-use quant::AgentRiskSnapshot;
-use simulation::{AgentSummary, EnrichedData, MarketSnapshot};
-use types::Symbol;
+use simulation::{EnrichedData, MarketSnapshot};
+use types::{
+    IndicatorType, LOOKBACKS, N_MARKET_FEATURES, Symbol, bollinger_percent_b, feature_idx as idx,
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Market Features (42 total) - One row per tick per symbol
@@ -59,14 +44,17 @@ pub struct MarketFeatures {
 
 impl MarketFeatures {
     /// Number of market-level features.
-    pub const COUNT: usize = 42;
+    pub const COUNT: usize = N_MARKET_FEATURES;
 
     /// Feature names for market features.
     pub fn feature_names() -> &'static [&'static str] {
-        MARKET_FEATURE_NAMES
+        types::MARKET_FEATURE_NAMES
     }
 
     /// Extract market features for a symbol.
+    ///
+    /// Uses the unified feature schema from `types::features` for index
+    /// positions and computation functions to ensure training-serving parity.
     pub fn extract(
         symbol: &Symbol,
         tick: u64,
@@ -74,77 +62,66 @@ impl MarketFeatures {
         enriched: Option<&EnrichedData>,
         price_history: &PriceHistory,
     ) -> Self {
-        let mut features = Vec::with_capacity(Self::COUNT);
+        let mut features = vec![f64::NAN; Self::COUNT];
 
         // ─────────────────────────────────────────────────────────────────────
-        // Price features (25)
+        // Price features (25) - idx::MID_PRICE through idx::LOG_RETURN_START+11
         // ─────────────────────────────────────────────────────────────────────
 
         let mid_price = market
             .mid_price(symbol)
             .map(|p: types::Price| p.to_float())
             .unwrap_or(f64::NAN);
-        features.push(mid_price);
+        features[idx::MID_PRICE] = mid_price;
 
-        // Price changes at lookback horizons
-        for &period in PRICE_LOOKBACKS {
-            features.push(
-                price_history
-                    .price_change(symbol, period)
-                    .unwrap_or(f64::NAN),
-            );
-        }
+        // Price changes at lookback horizons (declarative iteration)
+        LOOKBACKS.iter().enumerate().for_each(|(i, &period)| {
+            features[idx::PRICE_CHANGE_START + i] = price_history
+                .price_change(symbol, period)
+                .unwrap_or(f64::NAN);
+        });
 
         // Log returns at lookback horizons
-        for &period in PRICE_LOOKBACKS {
-            features.push(price_history.log_return(symbol, period).unwrap_or(f64::NAN));
-        }
+        LOOKBACKS.iter().enumerate().for_each(|(i, &period)| {
+            features[idx::LOG_RETURN_START + i] =
+                price_history.log_return(symbol, period).unwrap_or(f64::NAN);
+        });
 
         // ─────────────────────────────────────────────────────────────────────
-        // Technical indicators (13)
+        // Technical indicators (13) - idx::SMA_8 through idx::ATR_8
         // ─────────────────────────────────────────────────────────────────────
 
         let indicators = enriched.and_then(|e| e.indicators.get(symbol));
 
-        let get_indicator = |name: &str| -> f64 {
+        let get_indicator = |itype: IndicatorType| -> f64 {
             indicators
-                .and_then(|m| m.get(name))
+                .and_then(|m| m.get(&itype))
                 .copied()
                 .unwrap_or(f64::NAN)
         };
 
-        features.push(get_indicator("SMA_8"));
-        features.push(get_indicator("SMA_16"));
-        features.push(get_indicator("EMA_8"));
-        features.push(get_indicator("EMA_16"));
-        features.push(get_indicator("RSI_8"));
-        features.push(get_indicator("MACD_line"));
-        features.push(get_indicator("MACD_signal"));
-        features.push(get_indicator("MACD_histogram"));
+        features[idx::SMA_8] = get_indicator(IndicatorType::Sma(8));
+        features[idx::SMA_16] = get_indicator(IndicatorType::Sma(16));
+        features[idx::EMA_8] = get_indicator(IndicatorType::Ema(8));
+        features[idx::EMA_16] = get_indicator(IndicatorType::Ema(16));
+        features[idx::RSI_8] = get_indicator(IndicatorType::Rsi(8));
+        features[idx::MACD_LINE] = get_indicator(IndicatorType::MACD_LINE_STANDARD);
+        features[idx::MACD_SIGNAL] = get_indicator(IndicatorType::MACD_SIGNAL_STANDARD);
+        features[idx::MACD_HISTOGRAM] = get_indicator(IndicatorType::MACD_HISTOGRAM_STANDARD);
 
-        let bb_upper = get_indicator("BB_upper");
-        let bb_middle = get_indicator("BB_middle");
-        let bb_lower = get_indicator("BB_lower");
-        features.push(bb_upper);
-        features.push(bb_middle);
-        features.push(bb_lower);
+        let bb_upper = get_indicator(IndicatorType::BOLLINGER_UPPER_STANDARD);
+        let bb_middle = get_indicator(IndicatorType::BOLLINGER_MIDDLE_STANDARD);
+        let bb_lower = get_indicator(IndicatorType::BOLLINGER_LOWER_STANDARD);
+        features[idx::BB_UPPER] = bb_upper;
+        features[idx::BB_MIDDLE] = bb_middle;
+        features[idx::BB_LOWER] = bb_lower;
 
-        // Bollinger %B
-        let bb_percent_b = if !bb_upper.is_nan() && !bb_lower.is_nan() && !mid_price.is_nan() {
-            let band_width = bb_upper - bb_lower;
-            if band_width > 0.0 {
-                (mid_price - bb_lower) / band_width
-            } else {
-                f64::NAN
-            }
-        } else {
-            f64::NAN
-        };
-        features.push(bb_percent_b);
-        features.push(get_indicator("ATR_8"));
+        // Bollinger %B using unified computation function
+        features[idx::BB_PERCENT_B] = bollinger_percent_b(mid_price, bb_upper, bb_lower);
+        features[idx::ATR_8] = get_indicator(IndicatorType::Atr(8));
 
         // ─────────────────────────────────────────────────────────────────────
-        // News features (4)
+        // News features (4) - idx::HAS_ACTIVE_NEWS through idx::NEWS_TICKS_REMAINING
         // ─────────────────────────────────────────────────────────────────────
 
         let news_event = enriched.and_then(|e| {
@@ -153,20 +130,19 @@ impl MarketFeatures {
                 .find(|n| n.event.symbol() == Some(symbol))
         });
 
-        let has_active_news = if news_event.is_some() { 1.0 } else { 0.0 };
-        features.push(has_active_news);
+        features[idx::HAS_ACTIVE_NEWS] = if news_event.is_some() { 1.0 } else { 0.0 };
 
-        let (news_sentiment, news_magnitude, news_ticks_remaining) = match news_event {
-            Some(event) => {
+        let (news_sentiment, news_magnitude, news_ticks_remaining) = news_event
+            .map(|event| {
                 let ticks_elapsed = tick.saturating_sub(event.start_tick);
                 let ticks_remaining = event.duration_ticks.saturating_sub(ticks_elapsed);
                 (event.sentiment, event.magnitude, ticks_remaining as f64)
-            }
-            None => (0.0, 0.0, 0.0),
-        };
-        features.push(news_sentiment);
-        features.push(news_magnitude);
-        features.push(news_ticks_remaining);
+            })
+            .unwrap_or((0.0, 0.0, 0.0));
+
+        features[idx::NEWS_SENTIMENT] = news_sentiment;
+        features[idx::NEWS_MAGNITUDE] = news_magnitude;
+        features[idx::NEWS_TICKS_REMAINING] = news_ticks_remaining;
 
         debug_assert_eq!(features.len(), Self::COUNT);
 
@@ -177,180 +153,9 @@ impl MarketFeatures {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Agent Features (10 total) - One row per agent per tick
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Context for agent feature extraction.
-pub struct AgentFeatureContext<'a> {
-    /// The agent summary.
-    pub agent_summary: &'a AgentSummary,
-    /// Risk snapshot for this agent (if available).
-    pub risk_snapshot: Option<&'a AgentRiskSnapshot>,
-    /// Symbol being traded.
-    pub symbol: &'a Symbol,
-    /// Initial cash for normalization.
-    pub initial_cash: f64,
-    /// Position limit for normalization.
-    pub position_limit: i64,
-}
-
-/// Agent-level features (10 total).
-///
-/// Stored once per agent per tick - different for each agent.
-#[derive(Debug, Clone)]
-pub struct AgentFeatures {
-    /// Feature values in order of AGENT_FEATURE_NAMES.
-    pub features: Vec<f64>,
-}
-
-impl AgentFeatures {
-    /// Number of agent-level features.
-    pub const COUNT: usize = 10;
-
-    /// Feature names for agent features.
-    pub fn feature_names() -> &'static [&'static str] {
-        AGENT_FEATURE_NAMES
-    }
-
-    /// Extract agent features.
-    pub fn extract(ctx: &AgentFeatureContext) -> Self {
-        let mut features = Vec::with_capacity(Self::COUNT);
-
-        // ─────────────────────────────────────────────────────────────────────
-        // Agent state features (6)
-        // ─────────────────────────────────────────────────────────────────────
-
-        let position = ctx
-            .agent_summary
-            .positions
-            .get(ctx.symbol)
-            .copied()
-            .unwrap_or(0) as f64;
-        features.push(position);
-
-        let position_normalized = if ctx.position_limit > 0 {
-            position / ctx.position_limit as f64
-        } else {
-            0.0
-        };
-        features.push(position_normalized);
-
-        let cash = ctx.agent_summary.cash.0 as f64 / 100.0;
-        features.push(cash);
-
-        let cash_normalized = if ctx.initial_cash > 0.0 {
-            cash / ctx.initial_cash
-        } else {
-            f64::NAN
-        };
-        features.push(cash_normalized);
-
-        let total_pnl = ctx.agent_summary.total_pnl.0 as f64 / 100.0;
-        features.push(total_pnl);
-
-        let pnl_normalized = if ctx.initial_cash > 0.0 {
-            total_pnl / ctx.initial_cash * 100.0
-        } else {
-            f64::NAN
-        };
-        features.push(pnl_normalized);
-
-        // ─────────────────────────────────────────────────────────────────────
-        // Risk features (4)
-        // ─────────────────────────────────────────────────────────────────────
-
-        let (equity, max_drawdown, sharpe, volatility) = match ctx.risk_snapshot {
-            Some(risk) => (
-                risk.equity,
-                risk.max_drawdown,
-                risk.sharpe.unwrap_or(f64::NAN),
-                risk.volatility.unwrap_or(f64::NAN),
-            ),
-            None => (f64::NAN, f64::NAN, f64::NAN, f64::NAN),
-        };
-        features.push(equity);
-        features.push(max_drawdown);
-        features.push(sharpe);
-        features.push(volatility);
-
-        debug_assert_eq!(features.len(), Self::COUNT);
-
-        Self { features }
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Constants
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Lookback periods for price changes (geometric spread for batch auction).
-const PRICE_LOOKBACKS: &[usize] = &[1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64];
-
-/// Market feature names (42 total).
-const MARKET_FEATURE_NAMES: &[&str] = &[
-    // Price features (25) - geometric lookbacks: 1,2,3,4,6,8,12,16,24,32,48,64
-    "f_mid_price",
-    "f_price_change_1",
-    "f_price_change_2",
-    "f_price_change_3",
-    "f_price_change_4",
-    "f_price_change_6",
-    "f_price_change_8",
-    "f_price_change_12",
-    "f_price_change_16",
-    "f_price_change_24",
-    "f_price_change_32",
-    "f_price_change_48",
-    "f_price_change_64",
-    "f_log_return_1",
-    "f_log_return_2",
-    "f_log_return_3",
-    "f_log_return_4",
-    "f_log_return_6",
-    "f_log_return_8",
-    "f_log_return_12",
-    "f_log_return_16",
-    "f_log_return_24",
-    "f_log_return_32",
-    "f_log_return_48",
-    "f_log_return_64",
-    // Technical indicators (13) - from quant crate, 8/16 spread
-    "f_sma_8",
-    "f_sma_16",
-    "f_ema_8",
-    "f_ema_16",
-    "f_rsi_8",
-    "f_macd_line",
-    "f_macd_signal",
-    "f_macd_histogram",
-    "f_bb_upper",
-    "f_bb_middle",
-    "f_bb_lower",
-    "f_bb_percent_b",
-    "f_atr_8",
-    // News/sentiment features (4)
-    "f_has_active_news",
-    "f_news_sentiment",
-    "f_news_magnitude",
-    "f_news_ticks_remaining",
-];
-
-/// Agent feature names (10 total).
-const AGENT_FEATURE_NAMES: &[&str] = &[
-    // Agent state features (6)
-    "f_position",
-    "f_position_normalized",
-    "f_cash",
-    "f_cash_normalized",
-    "f_total_pnl",
-    "f_pnl_normalized",
-    // Risk features (4)
-    "f_equity",
-    "f_max_drawdown",
-    "f_sharpe",
-    "f_volatility",
-];
+// =============================================================================
+// Tests
+// =============================================================================
 
 #[cfg(test)]
 mod tests {
@@ -358,41 +163,18 @@ mod tests {
 
     #[test]
     fn test_market_feature_count() {
-        assert_eq!(MARKET_FEATURE_NAMES.len(), MarketFeatures::COUNT);
-        assert_eq!(MARKET_FEATURE_NAMES.len(), 42);
-    }
-
-    #[test]
-    fn test_agent_feature_count() {
-        assert_eq!(AGENT_FEATURE_NAMES.len(), AgentFeatures::COUNT);
-        assert_eq!(AGENT_FEATURE_NAMES.len(), 10);
+        assert_eq!(types::MARKET_FEATURE_NAMES.len(), MarketFeatures::COUNT);
+        assert_eq!(MarketFeatures::COUNT, 42);
     }
 
     #[test]
     fn test_feature_name_prefix() {
-        for name in MARKET_FEATURE_NAMES {
+        for name in types::MARKET_FEATURE_NAMES {
             assert!(
                 name.starts_with("f_"),
                 "Market feature name '{}' should start with 'f_'",
                 name
             );
         }
-        for name in AGENT_FEATURE_NAMES {
-            assert!(
-                name.starts_with("f_"),
-                "Agent feature name '{}' should start with 'f_'",
-                name
-            );
-        }
-    }
-
-    #[test]
-    fn test_total_features() {
-        // 42 market + 10 agent = 52 total
-        assert_eq!(
-            MarketFeatures::COUNT + AgentFeatures::COUNT,
-            52,
-            "Total features should be 52"
-        );
     }
 }

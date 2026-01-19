@@ -276,7 +276,8 @@ impl DataServiceHook {
         if let Ok(mut data) = self.sim_data.try_write() {
             data.tick = ctx.tick;
             data.candles = enriched.candles.clone();
-            data.indicators = enriched.indicators.clone();
+            // V5.5: Convert IndicatorType keys to strings at JSON boundary
+            data.indicators = enriched.indicators_as_string_keys();
             data.prices = prices;
             data.fair_values = enriched
                 .fair_values

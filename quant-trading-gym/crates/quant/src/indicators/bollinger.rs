@@ -83,7 +83,8 @@ impl BollingerBands {
 
 impl Indicator for BollingerBands {
     fn indicator_type(&self) -> IndicatorType {
-        IndicatorType::BollingerBands {
+        // Return BollingerMiddle as the primary type (calculate returns middle band)
+        IndicatorType::BollingerMiddle {
             period: self.period,
             std_dev_bp: (self.std_dev_multiplier * 100.0) as u32,
         }
