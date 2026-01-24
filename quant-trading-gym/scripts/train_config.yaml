@@ -14,42 +14,38 @@ data:
 # Label: avg price return rate across horizons
 # buy if > buy_threshold, sell if < sell_threshold, else hold
 labels:
-  horizons: [4, 8, 16, 32]
-  buy_threshold: 0.015
-  sell_threshold: -0.015
+  horizons: [8, 16, 32, 48, 64]
+  # Rolling window size for averaging future prices centered on each horizon
+  # e.g., rolling_window: 3 with horizon 8 averages prices at ticks 7, 8, 9
+  # Set to 1 for single-tick (original behavior)
+  rolling_window: 5
+  buy_threshold: 0.01
+  sell_threshold: -0.01
 
 # Models grouped by type - each list entry becomes {name}_{type}.json
 decision_trees:
-  - name: shallow
-    max_depth: 16
-
   - name: medium
-    max_depth: 24
+    max_depth: 12
 
   - name: deep
-    max_depth: 32
+    max_depth: 16
 
 random_forests:
   - name: small
-    n_estimators: 12
-    max_depth: 16
-    max_features: 0.7
-
-  - name: large
     n_estimators: 24
-    max_depth: 24
-    max_features: 0.8
+    max_depth: 12
+    max_features: 0.9
 
 gradient_boosted:
   - name: fast
     n_estimators: 24
     max_depth: 8
-    learning_rate: 0.2
+    learning_rate: 0.4
 
   - name: slow
-    n_estimators: 48
-    max_depth: 12
-    learning_rate: 0.05
+    n_estimators: 36
+    max_depth: 10
+    learning_rate: 0.25
     subsample: 0.8
 
 shap:

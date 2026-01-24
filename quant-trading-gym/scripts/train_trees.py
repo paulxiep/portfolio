@@ -21,6 +21,7 @@ import pickle
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import polars as pl
 import yaml
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
@@ -37,7 +38,7 @@ def load_config(config_path: Path) -> dict:
         return yaml.safe_load(f)
 
 
-def load_data(base_path: str) -> pl.DataFrame:
+def load_data(base_path: str, label_config: dict) -> pl.DataFrame:
     """Load market data for training.
     
     Loads all numbered parquet files matching {stem}_NNN_market.parquet pattern
@@ -68,79 +69,72 @@ def load_data(base_path: str) -> pl.DataFrame:
                 num = int(match.group(1))
                 numbered_files.append((num, f))
     
-    if numbered_files:
-        # Sort by number and load all
-        numbered_files.sort(key=lambda x: x[0])
-        print(f"Found {len(numbered_files)} recording files:")
-        
-        dfs = []
-        total_rows = 0
-        for num, filepath in numbered_files:
-            df = pl.read_parquet(filepath)
-            # Add run_id column to distinguish runs
-            df = df.with_columns(pl.lit(num).alias("run_id").cast(pl.UInt32))
-            dfs.append(df)
-            total_rows += len(df)
-            print(f"  #{num:03d}: {len(df):,} rows from {filepath.name}")
-        
-        df = pl.concat(dfs)
-        n_features = len([c for c in df.columns if c.startswith('f_')])
-        print(f"Combined: {total_rows:,} total rows, {n_features} features")
-        return df
-    
-    # Fallback: single file formats
-    market_path = parent / f"{stem}_market.parquet"
-    if market_path.exists():
-        df = pl.read_parquet(market_path)
-        n_features = len([c for c in df.columns if c.startswith('f_')])
-        print(f"Loaded {len(df):,} rows, {n_features} features from {market_path.name}")
-        return df
-    
-    legacy_path = base.with_suffix(".parquet")
-    if legacy_path.exists():
-        df = pl.read_parquet(legacy_path)
-        print(f"Loaded {len(df):,} rows from {legacy_path} (legacy format)")
-        return df
-    
-    raise FileNotFoundError(
-        f"No parquet files found. Expected:\n"
-        f"  - {parent / f'{stem}_NNN_market.parquet'} (numbered files)\n"
-        f"  - {market_path} (single file)\n"
-        f"  - {legacy_path} (legacy)"
-    )
-    
-    return df
+    # Sort by number and load all
+    numbered_files.sort(key=lambda x: x[0])
+    print(f"Found {len(numbered_files)} recording files:")
 
+    Xs = []
+    ys = []
+    feature_cols = None
+    total_rows = 0
+    for num, filepath in numbered_files:
+        df = pl.read_parquet(filepath)
+        # Add run_id column to distinguish runs
+        df = df.with_columns(pl.lit(num).alias("run_id").cast(pl.UInt32))
+        X, y, feature_cols = prepare_features(compute_lookahead_labels(df, label_config), label_config)
+        Xs.append(X)
+        ys.append(y)
+        total_rows += len(df)
+        print(f"  #{num:03d}: {len(df):,} rows from {filepath.name}")
+    
+    print(f"Combined: {total_rows:,} total rows, {len(feature_cols)} features")
+    print(np.concatenate(Xs).shape, np.concatenate(ys).shape)
+    return np.concatenate(Xs), np.concatenate(ys), feature_cols
+    
 
 def compute_lookahead_labels(df: pl.DataFrame, label_config: dict) -> pl.DataFrame:
     """Compute lookahead price return rates for labeling.
-    
+
     Args:
         df: DataFrame with tick, symbol, f_mid_price columns
-        label_config: Config dict with horizons, buy_threshold, sell_threshold
-        
+        label_config: Config dict with horizons, rolling_window, buy_threshold, sell_threshold
+
     Returns:
         DataFrame with price_return_rate columns
     """
     price_horizons = label_config.get("horizons", [4, 8, 16, 32])
-    
-    print(f"Computing lookahead labels: price_horizons={price_horizons}")
-    
-    # Compute percentage return normalized by horizon for each
+    rolling_window = label_config.get("rolling_window", 1)
+
+    print(f"Computing lookahead labels: price_horizons={price_horizons}, rolling_window={rolling_window}")
+
+    # Compute percentage return to rolling average of future prices
+    # For horizon n and window w: avg(price[t+n], price[t+n+1], ..., price[t+n+w-1])
     for n in price_horizons:
+        if rolling_window <= 1:
+            # Original single-tick behavior
+            future_price = pl.col("f_mid_price").shift(-n).over("symbol")
+        else:
+            # Rolling window average of future prices centered on horizon
+            half = rolling_window // 2
+            future_prices = [
+                pl.col("f_mid_price").shift(-i).over("symbol")
+                for i in range(n - half, n - half + rolling_window)
+            ]
+            future_price = sum(future_prices) / rolling_window
+
         df = df.with_columns([
-            ((pl.col("f_mid_price").shift(-n).over("symbol") - pl.col("f_mid_price")) 
-             / pl.col("f_mid_price") )#/ n)
+            ((future_price - pl.col("f_mid_price")) / pl.col("f_mid_price"))
             .alias(f"price_return_rate_{n}")
         ])
-    
-    # Discard rows without future data (last max_horizon ticks)
+
+    # Discard rows without future data (last max_horizon + window - 1 ticks)
     max_horizon = max(price_horizons)
+    lookahead_needed = max_horizon + rolling_window - 1
     max_tick = df["tick"].max()
     rows_before = len(df)
-    df = df.filter(pl.col("tick") <= max_tick - max_horizon)
+    df = df.filter(pl.col("tick") <= max_tick - lookahead_needed)
     rows_after = len(df)
-    print(f"Discarded {rows_before - rows_after:,} rows without lookahead data (last {max_horizon} ticks)")
+    print(f"Discarded {rows_before - rows_after:,} rows without lookahead data (last {lookahead_needed} ticks)")
     
     return df
 
@@ -151,8 +145,6 @@ def prepare_features(df: pl.DataFrame, label_config: dict | None = None) -> tupl
     Label = avg price return rate across horizons [4, 8, 16, 32]
     buy if > buy_threshold, sell if < sell_threshold, else hold
     """
-    import numpy as np
-
     feature_cols = [c for c in df.columns if c.startswith("f_")]
     print(f"Using {len(feature_cols)} features")
 
@@ -180,8 +172,8 @@ def prepare_features(df: pl.DataFrame, label_config: dict | None = None) -> tupl
         nan_cols = np.isnan(X).any(axis=0)
         nan_features = [feature_cols[i] for i, has_nan in enumerate(nan_cols) if has_nan]
         print(f"Warning: {nan_count:,} NaN values in {len(nan_features)} features: {nan_features}")
-        print("Imputing NaN with 0 (neutral/no history)...")
-        X = np.nan_to_num(X, nan=0.0)
+        print("Imputing NaN with -1 (no history)...")
+        X = np.nan_to_num(X, nan=-1)
     
     # Handle NaN in labels (from lookahead at boundaries)
     nan_labels = np.isnan(y) if np.issubdtype(y.dtype, np.floating) else np.zeros(len(y), dtype=bool)
@@ -522,14 +514,9 @@ def main():
     if input_base.endswith(".parquet"):
         input_base = input_base[:-8]  # Remove ".parquet"
         
-    df = load_data(input_base)
-    
-    # Compute lookahead labels
     label_config = config.get("labels", {})
-    if label_config.get("horizons"):
-        df = compute_lookahead_labels(df, label_config)
     
-    X, y, feature_names = prepare_features(df, label_config)
+    X, y, feature_names = load_data(input_base, label_config)
 
     test_size = data_config.get("test_size", 0.2)
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42, stratify=y)

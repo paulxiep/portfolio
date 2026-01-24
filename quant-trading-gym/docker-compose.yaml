@@ -13,6 +13,7 @@ services:
       - "8001:8001"  # API/WebSocket server
     volumes:
       - ./data:/data
+      - ./models:/app/models:ro
     environment:
       - SIM_SERVER=true
       - SIM_TICKS=0  # Run indefinitely

@@ -27,6 +27,7 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::collections::HashMap;
 
+use crate::MIN_ORDER_PRICE;
 use news::NewsEvent;
 use types::{AgentId, Order, OrderSide, Price, Sector, Symbol, Tick};
 
@@ -364,7 +365,10 @@ impl BackgroundAgentPool {
             OrderSide::Sell => price_offset.abs(), // Always above or at mid
         };
 
-        let price = Price((mid_price.0 + adjusted_offset).max(1)); // Ensure positive
+        // Apply minimum price floor to prevent negative price spirals
+        // MIN_ORDER_PRICE is $0.01, represented as 100 (i64 in cents * 100)
+        let min_price_i64 = (MIN_ORDER_PRICE * 10_000.0) as i64;
+        let price = Price((mid_price.0 + adjusted_offset).max(min_price_i64));
 
         // Generate order size
         let quantity = self.size_dist.sample(&mut self.rng);

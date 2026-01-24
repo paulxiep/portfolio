@@ -16,7 +16,7 @@
 //! pressure toward intrinsic value.
 
 use crate::state::AgentState;
-use crate::{Agent, AgentAction, StrategyContext};
+use crate::{Agent, AgentAction, StrategyContext, floor_price};
 use types::{AgentId, Cash, Order, OrderId, OrderSide, Price, Quantity, Trade};
 
 /// Configuration for a MarketMaker agent.
@@ -45,6 +45,10 @@ pub struct MarketMakerConfig {
     /// A blend allows MMs to provide liquidity at market prices while having
     /// some pull toward fundamentals. Default 0.3 = 30% fair value, 70% mid.
     pub fair_value_weight: f64,
+    /// Maximum long position (stops buying when reached).
+    pub max_long_position: i64,
+    /// Maximum short position as positive number (stops selling when reached).
+    pub max_short_position: i64,
 }
 
 impl Default for MarketMakerConfig {
@@ -60,6 +64,8 @@ impl Default for MarketMakerConfig {
             inventory_skew: 0.0001, // Adjust price 0.01% per share of inventory
             refresh_interval: 1,    // Quote every tick (required for IOC mode)
             fair_value_weight: 0.3, // 30% fair value, 70% mid price
+            max_long_position: 1000,
+            max_short_position: 0, // MMs shouldn't go short by default
         }
     }
 }
@@ -175,34 +181,45 @@ impl MarketMaker {
     }
 
     /// Generate bid and ask orders around reference price.
+    /// Respects position limits - skips bid if at max long, skips ask if at max short.
     fn generate_quotes(&self, reference_price: Price) -> Vec<Order> {
         let ref_float = reference_price.to_float();
         let half_spread = self.config.half_spread;
         let skew = self.calculate_skew();
 
         // Calculate bid and ask prices with inventory skew
-        let bid_price = Price::from_float(ref_float * (1.0 - half_spread + skew));
-        let ask_price = Price::from_float(ref_float * (1.0 + half_spread + skew));
+        // Apply floor_price to prevent negative price spirals
+        let bid_price = Price::from_float(floor_price(ref_float * (1.0 - half_spread + skew)));
+        let ask_price = Price::from_float(floor_price(ref_float * (1.0 + half_spread + skew)));
 
         let quote_size = Quantity(self.config.quote_size);
+        let position = self.state.position();
 
-        // Market makers always quote both sides (inventory skew handles risk)
-        vec![
-            Order::limit(
+        let mut orders = Vec::with_capacity(2);
+
+        // Only quote bid (buy) if not at max long position
+        if position < self.config.max_long_position - self.config.quote_size as i64 {
+            orders.push(Order::limit(
                 self.id,
                 &self.config.symbol,
                 OrderSide::Buy,
                 bid_price,
                 quote_size,
-            ),
-            Order::limit(
+            ));
+        }
+
+        // Only quote ask (sell) if not at max short position
+        if position > -self.config.max_short_position + self.config.quote_size as i64 {
+            orders.push(Order::limit(
                 self.id,
                 &self.config.symbol,
                 OrderSide::Sell,
                 ask_price,
                 quote_size,
-            ),
-        ]
+            ));
+        }
+
+        orders
     }
 
     /// Check if we should refresh quotes this tick.
@@ -247,10 +264,13 @@ impl Agent for MarketMaker {
     fn on_fill(&mut self, trade: &Trade) {
         self.total_volume += trade.quantity.raw();
 
+        // Use separate if blocks (not else if) to handle self-trades correctly.
+        // When buyer_id == seller_id, both buy and sell must be applied (net zero).
         if trade.buyer_id == self.id {
             self.state
                 .on_buy(&trade.symbol, trade.quantity.raw(), trade.value());
-        } else if trade.seller_id == self.id {
+        }
+        if trade.seller_id == self.id {
             self.state
                 .on_sell(&trade.symbol, trade.quantity.raw(), trade.value());
         }
@@ -335,7 +355,8 @@ mod tests {
     #[test]
     fn test_market_maker_generates_two_sided_quotes() {
         let config = MarketMakerConfig {
-            initial_position: 0, // Start neutral for this test
+            initial_position: 0,     // Start neutral for this test
+            max_short_position: 200, // Allow selling (going short) so ask is quoted
             ..Default::default()
         };
         let mut mm = MarketMaker::new(AgentId(1), config);
@@ -441,14 +462,14 @@ mod tests {
         let mut mm = MarketMaker::with_defaults(AgentId(1));
 
         // Simulate large long position
-        mm.state.set_position("ACME", 500);
+        mm.state.set_position(&"ACME".to_string(), 500);
 
         // Skew should be negative (lower prices to sell)
         let skew = mm.calculate_skew();
         assert!(skew < 0.0);
 
         // Simulate large short position
-        mm.state.set_position("ACME", -500);
+        mm.state.set_position(&"ACME".to_string(), -500);
 
         // Skew should be positive (higher prices to buy)
         let skew = mm.calculate_skew();

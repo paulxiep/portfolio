@@ -117,6 +117,7 @@ export interface AgentData {
   equity: number;
   position_count: number;
   is_market_maker: boolean;
+  is_ml_agent: boolean;
   tier: number;
 }
 

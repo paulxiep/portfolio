@@ -159,7 +159,7 @@ pub struct FactorsResponse {
 
 /// Summary of an agent for list view.
 #[derive(Debug, Clone, Serialize)]
-pub struct AgentSummary {
+pub struct AgentDataSummary {
     pub agent_id: u64,
     pub name: String,
     /// Total P&L (realized + unrealized).
@@ -172,6 +172,8 @@ pub struct AgentSummary {
     pub position_count: usize,
     /// Whether this is a market maker.
     pub is_market_maker: bool,
+    /// Whether this is an ML agent.
+    pub is_ml_agent: bool,
     /// Agent tier (1, 2, or 3).
     pub tier: u8,
 }
@@ -179,7 +181,7 @@ pub struct AgentSummary {
 /// Response for /api/portfolio/agents.
 #[derive(Debug, Serialize)]
 pub struct AgentsResponse {
-    pub agents: Vec<AgentSummary>,
+    pub agents: Vec<AgentDataSummary>,
     pub total_count: usize,
     pub tick: u64,
 }
@@ -517,10 +519,10 @@ pub async fn get_factors(
 pub async fn get_agents(State(state): State<ServerState>) -> AppResult<Json<AgentsResponse>> {
     let sim_data = state.sim_data.read().await;
 
-    let agents: Vec<AgentSummary> = sim_data
+    let agents: Vec<AgentDataSummary> = sim_data
         .agents
         .iter()
-        .map(|a| AgentSummary {
+        .map(|a| AgentDataSummary {
             agent_id: a.id,
             name: a.name.clone(),
             total_pnl: a.total_pnl,
@@ -528,6 +530,7 @@ pub async fn get_agents(State(state): State<ServerState>) -> AppResult<Json<Agen
             equity: a.equity,
             position_count: a.position_count,
             is_market_maker: a.is_market_maker,
+            is_ml_agent: a.is_ml_agent,
             tier: a.tier,
         })
         .collect();
@@ -890,7 +893,7 @@ mod tests {
 
     #[test]
     fn test_agent_summary_serialization() {
-        let summary = AgentSummary {
+        let summary = AgentDataSummary {
             agent_id: 1,
             name: "NoiseTrader-001".to_string(),
             total_pnl: 1234.56,
@@ -898,6 +901,7 @@ mod tests {
             equity: 105000.0,
             position_count: 3,
             is_market_maker: false,
+            is_ml_agent: false,
             tier: 1,
         };
 

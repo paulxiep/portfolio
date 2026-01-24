@@ -37,6 +37,7 @@ services:
       dockerfile: dockerfile/simulation/Dockerfile
     volumes:
       - ./data:/data  # V3.9: Persistent storage
+      - ./models:/app/models:ro
     environment:
       - SIM_HEADLESS=true
       - SIM_TICKS=10000

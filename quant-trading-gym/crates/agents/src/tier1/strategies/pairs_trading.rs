@@ -31,7 +31,7 @@
 use std::collections::HashMap;
 
 use crate::state::AgentState;
-use crate::{Agent, AgentAction, StrategyContext};
+use crate::{Agent, AgentAction, StrategyContext, floor_price};
 use quant::CointegrationTracker;
 use types::{AgentId, Cash, Order, OrderSide, Price, Quantity, Symbol, Trade};
 
@@ -234,20 +234,22 @@ impl PairsTrading {
         let qty_b = ((qty_a as f64) * hedge_ratio).round() as u64;
 
         vec![
-            // Buy A (bid above mid to qualify in batch auction)
+            // Buy A
+            // Apply floor_price to prevent negative price spirals
             Order::limit(
                 self.id,
                 &self.config.symbol_a,
                 OrderSide::Buy,
-                Price::from_float(price_a.to_float() * 1.001),
+                Price::from_float(floor_price(price_a.to_float() * 0.999)),
                 Quantity(qty_a),
             ),
-            // Sell B (ask below mid to qualify in batch auction)
+            // Sell B
+            // Apply floor_price to prevent negative price spirals
             Order::limit(
                 self.id,
                 &self.config.symbol_b,
                 OrderSide::Sell,
-                Price::from_float(price_b.to_float() * 0.999),
+                Price::from_float(floor_price(price_b.to_float() * 1.001)),
                 Quantity(qty_b),
             ),
         ]
@@ -268,20 +270,22 @@ impl PairsTrading {
         let qty_b = ((qty_a as f64) * hedge_ratio).round() as u64;
 
         vec![
-            // Sell A (ask below mid to qualify in batch auction)
+            // Sell A
+            // Apply floor_price to prevent negative price spirals
             Order::limit(
                 self.id,
                 &self.config.symbol_a,
                 OrderSide::Sell,
-                Price::from_float(price_a.to_float() * 0.999),
+                Price::from_float(floor_price(price_a.to_float() * 1.001)),
                 Quantity(qty_a),
             ),
-            // Buy B (bid above mid to qualify in batch auction)
+            // Buy B
+            // Apply floor_price to prevent negative price spirals
             Order::limit(
                 self.id,
                 &self.config.symbol_b,
                 OrderSide::Buy,
-                Price::from_float(price_b.to_float() * 1.001),
+                Price::from_float(floor_price(price_b.to_float() * 0.999)),
                 Quantity(qty_b),
             ),
         ]
@@ -311,11 +315,12 @@ impl PairsTrading {
                     } else {
                         (OrderSide::Buy, 1.001) // Bid above mid to qualify
                     };
+                    // Apply floor_price to prevent negative price spirals
                     Order::limit(
                         self.id,
                         symbol,
                         side,
-                        Price::from_float(price.to_float() * price_mult),
+                        Price::from_float(floor_price(price.to_float() * price_mult)),
                         Quantity(pos.unsigned_abs()),
                     )
                 })
@@ -391,10 +396,12 @@ impl Agent for PairsTrading {
     }
 
     fn on_fill(&mut self, trade: &Trade) {
+        // Use separate if blocks (not else if) to handle self-trades correctly.
         if trade.buyer_id == self.id {
             self.state
                 .on_buy(&trade.symbol, trade.quantity.raw(), trade.value());
-        } else if trade.seller_id == self.id {
+        }
+        if trade.seller_id == self.id {
             self.state
                 .on_sell(&trade.symbol, trade.quantity.raw(), trade.value());
         }

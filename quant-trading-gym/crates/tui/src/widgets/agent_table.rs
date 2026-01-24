@@ -12,7 +12,7 @@ use super::update::AgentInfo;
 
 /// Agent P&L summary table widget.
 ///
-/// Sorts noise traders by equity (descending), market makers at bottom.
+/// Sorts ML agents at top, market makers at bottom, others by P&L (descending).
 pub struct AgentTable {
     /// Agent information to display (sorted).
     agents: Vec<AgentInfo>,
@@ -25,21 +25,26 @@ pub struct AgentTable {
 impl AgentTable {
     /// Create a new agent table widget.
     ///
-    /// Agents are sorted: traders by realized P&L (desc), then market makers at bottom.
+    /// Agents are sorted: ML agents at top, market makers at bottom, others by P&L (desc).
     pub fn new(agents: &[AgentInfo]) -> Self {
         let mut sorted = agents.to_vec();
         sorted.sort_by(|a, b| {
-            // Market makers always go to bottom
-            match (a.is_market_maker, b.is_market_maker) {
-                (true, false) => std::cmp::Ordering::Greater,
-                (false, true) => std::cmp::Ordering::Less,
-                _ => {
-                    // Within same category, sort by total P&L (descending)
-                    b.total_pnl
-                        .partial_cmp(&a.total_pnl)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                }
+            // ML agents always at top
+            match (a.is_ml_agent, b.is_ml_agent) {
+                (true, false) => return std::cmp::Ordering::Less,
+                (false, true) => return std::cmp::Ordering::Greater,
+                _ => {}
             }
+            // Market makers always at bottom
+            match (a.is_market_maker, b.is_market_maker) {
+                (true, false) => return std::cmp::Ordering::Greater,
+                (false, true) => return std::cmp::Ordering::Less,
+                _ => {}
+            }
+            // Within same category, sort by total P&L (descending)
+            b.total_pnl
+                .partial_cmp(&a.total_pnl)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
         Self {
             agents: sorted,
@@ -167,6 +172,7 @@ mod tests {
                 total_pnl: Cash::from_float(125.50),
                 cash: Cash::from_float(10_125.50),
                 is_market_maker: true,
+                is_ml_agent: false,
                 equity: 10_125.50 + 50.0 * 100.0,
             },
             AgentInfo {
@@ -175,6 +181,7 @@ mod tests {
                 total_pnl: Cash::from_float(-45.00),
                 cash: Cash::from_float(9_955.00),
                 is_market_maker: false,
+                is_ml_agent: false,
                 equity: 9_955.00 - 20.0 * 100.0,
             },
         ];

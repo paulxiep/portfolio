@@ -30,6 +30,8 @@ pub struct AgentInfo {
     pub cash: Cash,
     /// Whether this is a market maker (for sorting to bottom).
     pub is_market_maker: bool,
+    /// Whether this is an ML agent (for sorting to top).
+    pub is_ml_agent: bool,
     /// Current equity (cash + position value) for sorting.
     pub equity: f64,
 }

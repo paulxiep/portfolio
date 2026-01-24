@@ -236,7 +236,6 @@ fn build_update(
         .iter()
         .enumerate()
         .map(|(i, summary)| {
-            let is_mm = summary.name.contains("Market");
             // Calculate equity from all positions
             let position_value: f64 = summary
                 .positions
@@ -257,7 +256,8 @@ fn build_update(
                 positions: summary.positions.clone(),
                 total_pnl: summary.total_pnl,
                 cash: summary.cash,
-                is_market_maker: is_mm,
+                is_market_maker: summary.is_market_maker,
+                is_ml_agent: summary.is_ml_agent,
                 equity,
             }
         })
@@ -269,7 +269,6 @@ fn build_update(
         .enumerate()
         .filter_map(|(i, summary)| {
             let agent_id = AgentId((i + 1) as u64);
-            let is_mm = summary.name.contains("Market");
             risk_metrics_map.get(&agent_id).map(|metrics| RiskInfo {
                 name: format!("{:0width$}-{}", i + 1, summary.name, width = width),
                 sharpe: metrics.sharpe,
@@ -277,7 +276,7 @@ fn build_update(
                 total_return: metrics.total_return,
                 var_95: metrics.var_95,
                 equity: metrics.equity,
-                is_market_maker: is_mm,
+                is_market_maker: summary.is_market_maker,
             })
         })
         .collect();
@@ -375,6 +374,8 @@ fn create_agent(
                 max_quantity: config.nt_max_quantity,
                 initial_cash: Cash::from_float(adjusted_cash),
                 initial_position: config.nt_initial_position,
+                max_long_position: config.nt_max_long_position,
+                max_short_position: config.nt_max_short_position,
             };
             Box::new(NoiseTrader::new(id, nt_config))
         }
@@ -712,8 +713,10 @@ fn make_mm_config(spec: &SymbolSpec, config: &SimConfig) -> MarketMakerConfig {
         max_inventory: config.mm_max_inventory,
         inventory_skew: config.mm_inventory_skew,
         initial_cash: config.mm_initial_cash,
-        initial_position: 500,
+        initial_position: config.mm_initial_position,
         fair_value_weight: 0.3,
+        max_long_position: config.mm_max_long_position,
+        max_short_position: config.mm_max_short_position,
     }
 }
 
@@ -901,26 +904,96 @@ fn spawn_random_tier1_agents(
     (agents, next_id)
 }
 
+/// Spawn ML agents from a collection of models, distributing with round-robin.
+fn spawn_ml_agents<M: Clone + agents::MlModel + 'static>(
+    models: &[M],
+    count: usize,
+    start_id: u64,
+    agent_config: TreeAgentConfig,
+    warning_label: &str,
+) -> Vec<Box<dyn Agent>> {
+    if models.is_empty() {
+        if count > 0 {
+            eprintln!("  Warning: No {} models found in models/", warning_label);
+        }
+        return Vec::new();
+    }
+    (0..count)
+        .map(|i| {
+            Box::new(TreeAgent::new(
+                AgentId(start_id + i as u64),
+                models[i % models.len()].clone(),
+                agent_config.clone(),
+            )) as Box<dyn Agent>
+        })
+        .collect()
+}
+
 /// Spawn tree-based ML agents (DecisionTree, RandomForest, GradientBoosted).
 /// Returns (agents, next_id).
 ///
 /// Models are discovered from JSON files in the models/ directory.
 /// The model_type field in each JSON determines which loader to use.
-/// Agents are distributed evenly across available models per type.
 fn spawn_tree_agents(
     config: &SimConfig,
     symbols: &[SymbolSpec],
     start_id: u64,
 ) -> (Vec<Box<dyn Agent>>, u64) {
-    let mut agents: Vec<Box<dyn Agent>> = Vec::new();
-    let mut next_id = start_id;
+    // Try multiple paths: Docker mount (/app/models), relative (./models), env var
+    let candidates = [
+        std::path::PathBuf::from("/app/models"), // Docker container
+        std::path::PathBuf::from("models"),      // Relative (local dev)
+        std::env::var("MODELS_DIR") // Explicit override
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default(),
+    ];
+    let models_dir = match candidates.iter().find(|p| p.exists() && p.is_dir()) {
+        Some(p) => p.clone(),
+        None => {
+            eprintln!(
+                "  Warning: models directory not found (tried: /app/models, ./models, $MODELS_DIR)"
+            );
+            return (Vec::new(), start_id);
+        }
+    };
+    eprintln!("  Loading ML models from: {}", models_dir.display());
 
-    // Get all symbol names for agent config
-    let symbol_names: Vec<String> = symbols.iter().map(|s| s.symbol.clone()).collect();
+    #[derive(Deserialize)]
+    struct ModelHeader {
+        model_type: String,
+    }
 
-    // Helper to create TreeAgentConfig
-    let make_config = |symbols: &[String]| TreeAgentConfig {
-        symbols: symbols.to_vec(),
+    // Load and categorize all model files
+    let (decision_trees, random_forests, gradient_boosteds) = std::fs::read_dir(models_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.path().extension().is_some_and(|e| e == "json"))
+        .fold(
+            (Vec::new(), Vec::new(), Vec::new()),
+            |(mut dt, mut rf, mut gb), entry| {
+                let path = entry.path();
+                if let Some(model_type) = std::fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|c| serde_json::from_str::<ModelHeader>(&c).ok())
+                    .map(|h| h.model_type)
+                {
+                    let load_result = match model_type.as_str() {
+                        "decision_tree" => DecisionTree::from_json(&path).map(|m| dt.push(m)),
+                        "random_forest" => RandomForest::from_json(&path).map(|m| rf.push(m)),
+                        "gradient_boosted" => GradientBoosted::from_json(&path).map(|m| gb.push(m)),
+                        _ => Ok(()),
+                    };
+                    if let Err(e) = load_result {
+                        eprintln!("  Warning: Failed to load {}: {}", path.display(), e);
+                    }
+                }
+                (dt, rf, gb)
+            },
+        );
+
+    let agent_config = TreeAgentConfig {
+        symbols: symbols.iter().map(|s| s.symbol.clone()).collect(),
         buy_threshold: config.tree_agent_buy_threshold,
         sell_threshold: config.tree_agent_sell_threshold,
         order_size: config.tree_agent_order_size,
@@ -929,104 +1002,43 @@ fn spawn_tree_agents(
         initial_cash: config.tree_agent_initial_cash,
         initial_price: symbols
             .first()
-            .and_then(|s| {
-                config
-                    .symbols
-                    .iter()
-                    .find(|spec| &spec.symbol == s)
-                    .map(|spec| spec.initial_price)
-            })
+            .map(|s| s.initial_price)
             .unwrap_or(Price::from_float(100.0)),
     };
 
-    // Discover models from the models/ directory
-    let models_dir = std::path::Path::new("models");
-    if !models_dir.exists() {
-        eprintln!("  Warning: models/ directory not found");
-        return (agents, next_id);
-    }
+    let decision_tree_agents = spawn_ml_agents(
+        &decision_trees,
+        config.num_decision_tree_agents,
+        start_id,
+        agent_config.clone(),
+        "decision tree",
+    );
 
-    // Collect models by type
-    let mut decision_trees: Vec<DecisionTree> = Vec::new();
-    let mut random_forests: Vec<RandomForest> = Vec::new();
-    let mut gradient_boosteds: Vec<GradientBoosted> = Vec::new();
+    let random_forest_agents = spawn_ml_agents(
+        &random_forests,
+        config.num_random_forest_agents,
+        start_id + decision_tree_agents.len() as u64,
+        agent_config.clone(),
+        "random forest",
+    );
 
-    if let Ok(entries) = std::fs::read_dir(models_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().map(|e| e == "json").unwrap_or(false) {
-                // Peek at model_type to determine loader
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    // Quick parse to get model_type
-                    #[derive(Deserialize)]
-                    struct ModelHeader {
-                        model_type: String,
-                    }
-                    if let Ok(header) = serde_json::from_str::<ModelHeader>(&content) {
-                        match header.model_type.as_str() {
-                            "decision_tree" => match DecisionTree::from_json(&path) {
-                                Ok(model) => decision_trees.push(model),
-                                Err(e) => {
-                                    eprintln!("  Warning: Failed to load {}: {}", path.display(), e)
-                                }
-                            },
-                            "random_forest" => match RandomForest::from_json(&path) {
-                                Ok(model) => random_forests.push(model),
-                                Err(e) => {
-                                    eprintln!("  Warning: Failed to load {}: {}", path.display(), e)
-                                }
-                            },
-                            "gradient_boosted" => match GradientBoosted::from_json(&path) {
-                                Ok(model) => gradient_boosteds.push(model),
-                                Err(e) => {
-                                    eprintln!("  Warning: Failed to load {}: {}", path.display(), e)
-                                }
-                            },
-                            _ => {} // Unknown model type, skip
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let gradient_boosted_agents = spawn_ml_agents(
+        &gradient_boosteds,
+        config.num_gradient_boosted_agents,
+        start_id + decision_tree_agents.len() as u64 + random_forest_agents.len() as u64,
+        agent_config,
+        "gradient boosted",
+    );
 
-    // Spawn Decision Tree agents distributed across available models
-    if !decision_trees.is_empty() && config.num_decision_tree_agents > 0 {
-        for i in 0..config.num_decision_tree_agents {
-            let model = &decision_trees[i % decision_trees.len()];
-            let agent = TreeAgent::new(AgentId(next_id), model.clone(), make_config(&symbol_names));
-            agents.push(Box::new(agent));
-            next_id += 1;
-        }
-    } else if config.num_decision_tree_agents > 0 {
-        eprintln!("  Warning: No decision tree models found in models/");
-    }
+    let total =
+        decision_tree_agents.len() + random_forest_agents.len() + gradient_boosted_agents.len();
+    let agents = decision_tree_agents
+        .into_iter()
+        .chain(random_forest_agents)
+        .chain(gradient_boosted_agents)
+        .collect();
 
-    // Spawn Random Forest agents distributed across available models
-    if !random_forests.is_empty() && config.num_random_forest_agents > 0 {
-        for i in 0..config.num_random_forest_agents {
-            let model = &random_forests[i % random_forests.len()];
-            let agent = TreeAgent::new(AgentId(next_id), model.clone(), make_config(&symbol_names));
-            agents.push(Box::new(agent));
-            next_id += 1;
-        }
-    } else if config.num_random_forest_agents > 0 {
-        eprintln!("  Warning: No random forest models found in models/");
-    }
-
-    // Spawn Gradient Boosted agents distributed across available models
-    if !gradient_boosteds.is_empty() && config.num_gradient_boosted_agents > 0 {
-        for i in 0..config.num_gradient_boosted_agents {
-            let model = &gradient_boosteds[i % gradient_boosteds.len()];
-            let agent = TreeAgent::new(AgentId(next_id), model.clone(), make_config(&symbol_names));
-            agents.push(Box::new(agent));
-            next_id += 1;
-        }
-    } else if config.num_gradient_boosted_agents > 0 {
-        eprintln!("  Warning: No gradient boosted models found in models/");
-    }
-
-    (agents, next_id)
+    (agents, start_id + total as u64)
 }
 
 /// Spawn all Tier 1 agents and add them to the simulation.
@@ -1724,7 +1736,7 @@ async fn run_with_server(config: SimConfig, args: Args) {
     spawn_tier2_agents(&mut sim, &mut next_id, &config, &all_symbols, &mut rng);
     spawn_sector_rotators(&mut sim, &mut next_id, &config, &all_symbols);
     setup_background_pool(&mut sim, &config, &all_symbols);
-
+    println!("next_id: {}", next_id);
     // Register hooks
     sim.add_hook(broadcast_hook.clone());
 
@@ -1748,6 +1760,7 @@ async fn run_with_server(config: SimConfig, args: Args) {
 
     // Update metrics with agent count
     let total_agents = config.total_agents();
+    println!("Total agents: {}", total_agents);
     state
         .metrics
         .update_from_tick(0, total_agents as u64, false, false);

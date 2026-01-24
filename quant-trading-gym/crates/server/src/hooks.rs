@@ -301,7 +301,6 @@ impl DataServiceHook {
         prices: &HashMap<Symbol, types::Price>,
     ) -> AgentData {
         // Determine agent tier from name (heuristic)
-        let is_mm = summary.name.contains("Market");
         let tier = if summary.name.contains("Reactive") || summary.name.contains("SectorRotator") {
             2
         } else if summary.name.contains("T3") || summary.name.contains("Pool") {
@@ -346,7 +345,8 @@ impl DataServiceHook {
             realized_pnl: 0.0, // Not available from summary
             positions: agent_positions,
             position_count: summary.positions.len(),
-            is_market_maker: is_mm,
+            is_market_maker: summary.is_market_maker,
+            is_ml_agent: summary.is_ml_agent,
             tier,
         }
     }

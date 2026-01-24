@@ -34,7 +34,7 @@ use std::collections::HashMap;
 
 use crate::state::AgentState;
 use crate::tiers::WakeCondition;
-use crate::{Agent, AgentAction, StrategyContext};
+use crate::{Agent, AgentAction, StrategyContext, floor_price};
 use quant::stats::{NewsEventLike, SectorSentimentAggregator};
 use types::{AgentId, Cash, Order, OrderSide, Price, Quantity, Sector, Symbol, Tick, Trade};
 
@@ -383,16 +383,17 @@ impl SectorRotator {
                         }
 
                         let (side, price_mult, qty) = if delta_shares > 0 {
-                            (OrderSide::Buy, 1.001, delta_shares as u64) // Bid above mid to qualify
+                            (OrderSide::Buy, 0.999, delta_shares as u64) // Bid above mid to qualify
                         } else {
-                            (OrderSide::Sell, 0.999, (-delta_shares) as u64) // Ask below mid to qualify
+                            (OrderSide::Sell, 1.001, (-delta_shares) as u64) // Ask below mid to qualify
                         };
 
+                        // Apply floor_price to prevent negative price spirals
                         Some(Order::limit(
                             self.id,
                             symbol,
                             side,
-                            Price::from_float(price_f64 * price_mult),
+                            Price::from_float(floor_price(price_f64 * price_mult)),
                             Quantity(qty),
                         ))
                     })
@@ -450,10 +451,12 @@ impl Agent for SectorRotator {
     }
 
     fn on_fill(&mut self, trade: &Trade) {
+        // Use separate if blocks (not else if) to handle self-trades correctly.
         if trade.buyer_id == self.id {
             self.state
                 .on_buy(&trade.symbol, trade.quantity.raw(), trade.value());
-        } else if trade.seller_id == self.id {
+        }
+        if trade.seller_id == self.id {
             self.state
                 .on_sell(&trade.symbol, trade.quantity.raw(), trade.value());
         }

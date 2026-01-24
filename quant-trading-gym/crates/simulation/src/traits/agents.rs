@@ -32,6 +32,10 @@ pub struct AgentSummary {
     pub cash: Cash,
     /// Total realized + unrealized P&L.
     pub total_pnl: Cash,
+    /// Whether this is a market maker.
+    pub is_market_maker: bool,
+    /// Whether this is an ML agent.
+    pub is_ml_agent: bool,
 }
 
 /// Coordinates agent execution across tiers.

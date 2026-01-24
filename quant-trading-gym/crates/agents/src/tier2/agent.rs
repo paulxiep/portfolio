@@ -799,17 +799,14 @@ impl Agent for ReactiveAgent {
     }
 
     fn on_fill(&mut self, trade: &Trade) {
-        // Determine which side we were on
-        let (side, quantity) = if trade.buyer_id == self.id {
-            (OrderSide::Buy, trade.quantity)
-        } else if trade.seller_id == self.id {
-            (OrderSide::Sell, trade.quantity)
-        } else {
-            return; // Not our trade
-        };
-
-        // Use tick 0 as placeholder - real tick comes from simulation
-        self.process_fill(side, quantity, trade.price, 0);
+        // Handle self-trades correctly by processing both sides.
+        // Use tick 0 as placeholder - real tick comes from simulation.
+        if trade.buyer_id == self.id {
+            self.process_fill(OrderSide::Buy, trade.quantity, trade.price, 0);
+        }
+        if trade.seller_id == self.id {
+            self.process_fill(OrderSide::Sell, trade.quantity, trade.price, 0);
+        }
     }
 
     fn initial_wake_conditions(&self, current_tick: types::Tick) -> Vec<crate::WakeCondition> {

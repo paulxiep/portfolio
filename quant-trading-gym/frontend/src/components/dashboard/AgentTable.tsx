@@ -181,10 +181,21 @@ export function AgentTable({
   const [page, setPage] = useState(0);
 
   // Sort and paginate agents
+  // Primary sort: ML agents at top, market makers at bottom
+  // Secondary sort: by selected field
   const sortedAgents = useMemo(() => {
     if (!data?.agents) return [];
 
     const sorted = [...data.agents].sort((a, b) => {
+      // ML agents always at top
+      if (a.is_ml_agent && !b.is_ml_agent) return -1;
+      if (!a.is_ml_agent && b.is_ml_agent) return 1;
+
+      // Market makers always at bottom
+      if (a.is_market_maker && !b.is_market_maker) return 1;
+      if (!a.is_market_maker && b.is_market_maker) return -1;
+
+      // Within same category, sort by selected field
       const aVal = a[sortField as keyof AgentData];
       const bVal = b[sortField as keyof AgentData];
 
