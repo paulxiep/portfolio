@@ -18,7 +18,7 @@
 //! The strategy is fully declarative via [`VwapExecutorConfig`].
 
 use crate::state::AgentState;
-use crate::{Agent, AgentAction, StrategyContext};
+use crate::{Agent, AgentAction, StrategyContext, floor_price};
 use types::{AgentId, Cash, Order, OrderSide, Price, Quantity, Trade};
 
 /// Configuration for a VWAP Executor.
@@ -167,9 +167,9 @@ impl VwapExecutor {
     fn is_price_favorable(&self, current_price: f64, vwap: f64) -> bool {
         match self.config.side {
             // For buying: favorable when price is at or below VWAP (+ tolerance)
-            OrderSide::Buy => current_price <= vwap * (1.0 + self.config.price_tolerance),
+            OrderSide::Buy => current_price <= vwap * (1.0 - self.config.price_tolerance),
             // For selling: favorable when price is at or above VWAP (- tolerance)
-            OrderSide::Sell => current_price >= vwap * (1.0 - self.config.price_tolerance),
+            OrderSide::Sell => current_price >= vwap * (1.0 + self.config.price_tolerance),
         }
     }
 
@@ -189,9 +189,10 @@ impl VwapExecutor {
         let quantity = Quantity(self.calculate_slice_size());
 
         // Price adjustment based on side to improve fill probability
+        // Apply floor_price to prevent negative price spirals
         let order_price = match self.config.side {
-            OrderSide::Buy => Price::from_float(price.to_float() * 1.001),
-            OrderSide::Sell => Price::from_float(price.to_float() * 0.999),
+            OrderSide::Buy => Price::from_float(floor_price(price.to_float() * 1.001)),
+            OrderSide::Sell => Price::from_float(floor_price(price.to_float() * 0.999)),
         };
 
         Order::limit(
@@ -255,9 +256,11 @@ impl Agent for VwapExecutor {
         // Update remaining quantity
         self.remaining_quantity = self.remaining_quantity.saturating_sub(filled_qty);
 
+        // Use separate if blocks (not else if) to handle self-trades correctly.
         if trade.buyer_id == self.id {
             self.state.on_buy(&trade.symbol, filled_qty, trade.value());
-        } else if trade.seller_id == self.id {
+        }
+        if trade.seller_id == self.id {
             self.state.on_sell(&trade.symbol, filled_qty, trade.value());
         }
     }

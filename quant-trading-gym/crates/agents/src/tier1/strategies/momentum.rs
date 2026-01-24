@@ -13,7 +13,7 @@
 //! requested through the `StrategyContext` snapshot, not computed internally.
 
 use crate::state::AgentState;
-use crate::{Agent, AgentAction, StrategyContext};
+use crate::{Agent, AgentAction, StrategyContext, floor_price};
 use types::{AgentId, Cash, IndicatorType, Order, OrderSide, Price, Quantity, Trade};
 
 /// Configuration for a Momentum (RSI) trader.
@@ -107,8 +107,8 @@ impl MomentumTrader {
     /// Generate a buy order at the current reference price.
     fn generate_buy_order(&self, ctx: &StrategyContext<'_>) -> Order {
         let price = self.get_reference_price(ctx);
-        // Bid above mid to qualify in batch auction (bid >= ref_price)
-        let order_price = Price::from_float(price.to_float() * 1.001);
+        // Apply floor_price to prevent negative price spirals
+        let order_price = Price::from_float(floor_price(price.to_float() * 0.999));
         Order::limit(
             self.id,
             &self.config.symbol,
@@ -121,8 +121,8 @@ impl MomentumTrader {
     /// Generate a sell order at the current reference price.
     fn generate_sell_order(&self, ctx: &StrategyContext<'_>) -> Order {
         let price = self.get_reference_price(ctx);
-        // Ask below mid to qualify in batch auction (ask <= ref_price)
-        let order_price = Price::from_float(price.to_float() * 0.999);
+        // Apply floor_price to prevent negative price spirals
+        let order_price = Price::from_float(floor_price(price.to_float() * 1.001));
         Order::limit(
             self.id,
             &self.config.symbol,
@@ -166,10 +166,12 @@ impl Agent for MomentumTrader {
     }
 
     fn on_fill(&mut self, trade: &Trade) {
+        // Use separate if blocks (not else if) to handle self-trades correctly.
         if trade.buyer_id == self.id {
             self.state
                 .on_buy(&trade.symbol, trade.quantity.raw(), trade.value());
-        } else if trade.seller_id == self.id {
+        }
+        if trade.seller_id == self.id {
             self.state
                 .on_sell(&trade.symbol, trade.quantity.raw(), trade.value());
         }

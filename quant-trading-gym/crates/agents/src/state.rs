@@ -127,7 +127,7 @@ impl AgentState {
     }
 
     /// Set position for a specific symbol (for initial allocation).
-    pub fn set_position(&mut self, symbol: &str, position: i64) {
+    pub fn set_position(&mut self, symbol: &Symbol, position: i64) {
         self.positions
             .entry(symbol.to_string())
             .or_insert_with(PositionEntry::empty)
@@ -416,8 +416,8 @@ mod tests {
     fn test_equity() {
         let mut state = AgentState::new(Cash::from_float(50_000.0), &["AAPL", "GOOGL"]);
 
-        state.set_position("AAPL", 100);
-        state.set_position("GOOGL", 20);
+        state.set_position(&"AAPL".to_string(), 100);
+        state.set_position(&"GOOGL".to_string(), 20);
 
         let mut prices = HashMap::new();
         prices.insert("AAPL".to_string(), Price::from_float(150.0));
@@ -431,7 +431,7 @@ mod tests {
     #[test]
     fn test_equity_for_single_symbol() {
         let mut state = AgentState::new(Cash::from_float(50_000.0), &["ACME"]);
-        state.set_position("ACME", 100);
+        state.set_position(&"ACME".to_string(), 100);
 
         let equity = state.equity_for("ACME", Price::from_float(150.0));
         // Equity = 50000 + 100*150 = 65000

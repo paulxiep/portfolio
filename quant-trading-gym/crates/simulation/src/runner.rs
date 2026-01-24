@@ -519,53 +519,6 @@ impl Simulation {
             .update_candles(trades, self.tick, self.timestamp, &self.market);
     }
 
-    /// Process a single order through the matching engine (for T3 background pool).
-    ///
-    /// Returns the trades that occurred and optionally the order if it's resting on the book
-    /// (with its assigned OrderId).
-    ///
-    /// **Deprecated in V3.8**: T3 now uses batch auction. This method remains only for tests.
-    #[cfg(test)]
-    fn process_order(&mut self, mut order: Order) -> (Vec<Trade>, Option<Order>) {
-        // Assign order ID and timestamp
-        order.id = self.auction_engine.next_order_id();
-        order.timestamp = self.timestamp;
-
-        self.stats.total_orders += 1;
-
-        // Get the order book for this symbol
-        let Some(book) = self.market.get_book_mut(&order.symbol) else {
-            // Unknown symbol - reject order silently
-            self.stats.rejected_orders += 1;
-            return (Vec::new(), None);
-        };
-
-        // Try to match the order (create engine locally for test-only use)
-        let mut engine = sim_core::MatchingEngine::new();
-        let result = engine.match_order(book, &mut order, self.timestamp, self.tick);
-
-        let mut resting_order = None;
-
-        // If there's remaining quantity for a limit order, add to book temporarily
-        // (will be cleared at end of tick - all orders are IOC within tick)
-        if !result.remaining_quantity.is_zero() && order.limit_price().is_some() {
-            order.remaining_quantity = result.remaining_quantity;
-            let order_clone = order.clone();
-            if let Some(book) = self.market.get_book_mut(&order.symbol)
-                && book.add_order(order).is_ok()
-            {
-                resting_order = Some(order_clone);
-                self.stats.resting_orders += 1;
-            }
-        }
-
-        if result.has_trades() {
-            self.stats.filled_orders += 1;
-        }
-
-        (result.trades, resting_order)
-    }
-
     // =========================================================================
     // V3.5: Parallel Agent Collection (delegated to AgentOrchestrator)
     // =========================================================================
@@ -1197,7 +1150,7 @@ mod tests {
             .with_position_limits(false); // Disable for V0 test
         let mut sim = Simulation::new(config);
 
-        // Pre-populate book with sell orders
+        // Add seller agents (will generate orders that batch auction can match)
         for i in 1..=10 {
             let sell = Order::limit(
                 AgentId(100 + i),
@@ -1206,8 +1159,7 @@ mod tests {
                 Price::from_float(100.0),
                 Quantity(10),
             );
-            // Process directly to set up book
-            sim.process_order(sell);
+            sim.add_agent(Box::new(OneShotAgent::new(AgentId(100 + i), sell)));
         }
 
         // Add buyer agents
@@ -1222,8 +1174,8 @@ mod tests {
             sim.add_agent(Box::new(OneShotAgent::new(AgentId(i), buy)));
         }
 
-        // Run ticks to generate trades
-        sim.run(3);
+        // Run single tick to generate trades (all agents submit orders in same tick)
+        sim.step();
 
         // Should have at most 5 recent trades (configured max)
         assert!(sim.recent_trades_for(&"TEST".to_string()).len() <= 5);

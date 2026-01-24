@@ -180,6 +180,8 @@ pub struct SimConfig {
     // ─────────────────────────────────────────────────────────────────────────
     /// Starting cash for each market maker.
     pub mm_initial_cash: Cash,
+    /// Starting position in shares (the "float" each MM provides).
+    pub mm_initial_position: i64,
     /// Half-spread as a fraction (e.g., 0.0025 = 0.25%).
     pub mm_half_spread: f64,
     /// Number of shares to quote on each side.
@@ -190,6 +192,10 @@ pub struct SimConfig {
     pub mm_max_inventory: i64,
     /// Price adjustment per unit of inventory.
     pub mm_inventory_skew: f64,
+    /// Maximum long position for market makers.
+    pub mm_max_long_position: i64,
+    /// Maximum short position for market makers (as positive number).
+    pub mm_max_short_position: i64,
 
     // ─────────────────────────────────────────────────────────────────────────
     // Noise Trader Parameters
@@ -206,6 +212,10 @@ pub struct SimConfig {
     pub nt_min_quantity: u64,
     /// Maximum order quantity.
     pub nt_max_quantity: u64,
+    /// Maximum long position for noise traders.
+    pub nt_max_long_position: i64,
+    /// Maximum short position for noise traders (as positive number).
+    pub nt_max_short_position: i64,
 
     // ─────────────────────────────────────────────────────────────────────────
     // Quant Strategy Parameters (shared defaults)
@@ -282,6 +292,10 @@ impl Default for SimConfig {
                 SymbolSpec::with_sector("Meilleur Mansion", 100.0, Sector::RealEstate),
                 SymbolSpec::with_sector("Quant Quotation", 100.0, Sector::Finance),
                 SymbolSpec::with_sector("Lumen Ledger", 100.0, Sector::Finance),
+                SymbolSpec::with_sector("Hello Handy", 100.0, Sector::Communications),
+                SymbolSpec::with_sector("Thalas Telecoms", 100.0, Sector::Communications),
+                SymbolSpec::with_sector("Zephyr Zap", 100.0, Sector::Utilities),
+                SymbolSpec::with_sector("Aeon Anthracite", 100.0, Sector::Utilities),
             ],
             total_ticks: 10000,
             tick_delay_ms: 0, // ~100 ticks/sec for watchable visualization
@@ -290,92 +304,97 @@ impl Default for SimConfig {
 
             // V3.5: Doubled agent counts for parallel execution benchmarking
             // Tier 1 Agent Counts (minimums per type)
-            num_market_makers: 300,
-            num_noise_traders: 1500,
-            num_momentum_traders: 400,
-            num_trend_followers: 400,
-            num_macd_traders: 400,
-            num_bollinger_traders: 400,
-            num_vwap_executors: 400,
-            num_pairs_traders: 0,   // V3.3: multi-symbol pairs traders
-            num_sector_rotators: 0, // V3.3: sector rotation agents (special T2)
+            num_market_makers: 800,
+            num_noise_traders: 2400,
+            num_momentum_traders: 800,
+            num_trend_followers: 800,
+            num_macd_traders: 800,
+            num_bollinger_traders: 800,
+            num_vwap_executors: 200,
+            num_pairs_traders: 200,   // V3.3: multi-symbol pairs traders
+            num_sector_rotators: 500, // V3.3: sector rotation agents (special T2)
 
             // V5.5: ML Agent Counts (split equally between sub-models)
-            num_decision_tree_agents: 200,
-            num_random_forest_agents: 0,
-            num_gradient_boosted_agents: 0,
+            num_decision_tree_agents: 197,
+            num_random_forest_agents: 1,
+            num_gradient_boosted_agents: 2,
 
             // Tier Minimums
-            min_tier1_agents: 4000, // Random agents fill the gap
+            min_tier1_agents: 7000, // Random agents fill the gap
 
             // Tier 2 Reactive Agents (V3.2)
-            num_tier2_agents: 6000,
+            num_tier2_agents: 4500,
 
             // Tier 2 Reactive Agent Parameters (V3.2)
             // Equal starting cash to noise traders for fair comparison
             t2_initial_cash: Cash::from_float(100_000.0),
-            t2_max_position: 1000,
-            t2_buy_threshold_min: 30.0, // Buy when price drops to $50-75
+            t2_max_position: 400,
+            t2_buy_threshold_min: 20.0, // Buy when price drops
             t2_buy_threshold_max: 60.0,
             t2_stop_loss_min: 0.25, // StopLoss 25-50% (wider to avoid noise)
             t2_stop_loss_max: 0.5,
             t2_take_profit_min: 0.25, // TakeProfit 25-50% (aggressive targets)
             t2_take_profit_max: 0.5,
-            t2_sell_threshold_min: 75.0, // ThresholdSeller $110-140
+            t2_sell_threshold_min: 75.0, // ThresholdSeller
             t2_sell_threshold_max: 100.0,
             t2_take_profit_prob: 0.5,  // 50% TakeProfit, 50% ThresholdSeller
-            t2_news_reactor_prob: 0.1, // 10% have NewsReactor
-            t2_order_size_min: 0.2,    // Min 30% of max position per order
-            t2_order_size_max: 0.5,    // Max 70% of max position per order
+            t2_news_reactor_prob: 0.3, // 30% have NewsReactor
+            t2_order_size_min: 0.1,    // Min 10% of max position per order
+            t2_order_size_max: 0.2,    // Max 20% of max position per order
 
             // Tier 3 Background Pool (V3.4)
             // V3.5: Doubled pool size for parallel execution benchmarking
             enable_background_pool: true,
-            background_pool_size: 90000,
+            background_pool_size: 88000,
             background_regime: MarketRegime::Normal,
-            t3_mean_order_size: 25.0,
-            t3_max_order_size: 100,
+            t3_mean_order_size: 40.0,
+            t3_max_order_size: 120,
             t3_order_size_stddev: 10.0,
-            t3_base_activity: Some(0.003), // Use regime default
+            t3_base_activity: Some(0.01), // Use regime default
             t3_price_spread_lambda: 10.0,
             t3_max_price_deviation: 0.05, // 5% from mid
 
             // Market Maker Parameters
-            mm_initial_cash: Cash::from_float(1_000_000.0),
-            mm_half_spread: 0.0005, // 0.05% half-spread - tight enough for 0.1% orders to cross
-            mm_quote_size: 100,
+            mm_initial_cash: Cash::from_float(100_000.0),
+            mm_initial_position: 600, // Starting inventory (the "float")
+            mm_half_spread: 0.0005,   // 0.05% half-spread - tight enough for 0.1% orders to cross
+            mm_quote_size: 60,
             mm_refresh_interval: 1, // Quote every tick (required for IOC mode)
-            mm_max_inventory: 200,
-            mm_inventory_skew: 0.001,
+            mm_max_inventory: 1500,
+            mm_inventory_skew: 0.0005,
+            mm_max_long_position: 1500, // Can accumulate up to 1500 shares
+            mm_max_short_position: 0,   // Cannot go short (must keep some float)
 
             // Noise Trader Parameters
             // Noise traders start flat (0 position) to avoid adding to long imbalance
             // from market makers. Cash equals quant_initial_cash for equal net worth.
             nt_initial_cash: Cash::from_float(100_000.0),
             nt_initial_position: 0,
-            nt_order_probability: 0.1, // 10% chance each tick
-            nt_price_deviation: 0.01,  // 1% from mid price
+            nt_order_probability: 0.3, // 30% chance each tick
+            nt_price_deviation: 0.03,  // 3% from mid price
             nt_min_quantity: 15,
             nt_max_quantity: 15,
+            nt_max_long_position: 600, // Limit how much each NT can hoard
+            nt_max_short_position: 0,  // No short selling for noise traders
 
             // Quant Strategy Parameters
             quant_initial_cash: Cash::from_float(100_000.0),
-            quant_order_size: 10,
-            quant_max_long_position: 2000,
+            quant_order_size: 15,
+            quant_max_long_position: 1200,
             quant_max_short_position: 300,
 
             // Tree Agent Parameters (V5.5)
             tree_agent_initial_cash: Cash::from_float(100_000.0),
-            tree_agent_order_size: 15,
-            tree_agent_max_long_position: 2500,
+            tree_agent_order_size: 30,
+            tree_agent_max_long_position: 1200,
             tree_agent_max_short_position: 300,
-            tree_agent_buy_threshold: 0.55,  // 55% confidence
+            tree_agent_buy_threshold: 0.75,  // 75% confidence
             tree_agent_sell_threshold: 0.75, // 75% confidence
 
             // TUI Parameters
             max_price_history: 500,
             tui_frame_rate: 30,   // 30 FPS display - smooth enough for TUI
-            data_update_rate: 30, // 10 Hz data updates - expensive with 25k agents
+            data_update_rate: 30, // Hz data updates
 
             // Event/News Generation Parameters (V2.4)
             // Defaults match crates/news/src/config.rs
@@ -728,7 +747,7 @@ impl SimConfig {
             .macd_traders(10)
             .bollinger_traders(10)
             .vwap_executors(10)
-            .nt_probability(0.05) // Lower than default 0.1
+            .nt_probability(0.02) // Lower than default 0.05
             .min_tier1(200)
     }
 

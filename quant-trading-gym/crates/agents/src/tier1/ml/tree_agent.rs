@@ -34,7 +34,7 @@
 use std::marker::PhantomData;
 
 use crate::state::AgentState;
-use crate::{Agent, AgentAction, StrategyContext};
+use crate::{Agent, AgentAction, StrategyContext, floor_price};
 use types::{
     AgentId, Cash, IndicatorType, LOOKBACKS, N_MARKET_FEATURES, Order, OrderSide, Price, Quantity,
     Symbol, Trade, bollinger_percent_b, feature_idx as idx, log_return_from_candles,
@@ -225,7 +225,7 @@ impl<M: MlModel> TreeAgent<M> {
         // Training script: X = np.nan_to_num(X, nan=0.0)
         features.iter_mut().for_each(|f| {
             if f.is_nan() {
-                *f = 0.0;
+                *f = -1.0;
             }
         });
 
@@ -253,7 +253,8 @@ impl<M: MlModel> TreeAgent<M> {
     fn generate_buy_order(&self, symbol: &Symbol, mid_price: Price) -> Order {
         // Bid ABOVE mid to qualify in batch auction (bid >= ref_price)
         // Batch auction: bid qualifies if limit_price >= reference_price
-        let order_price = Price::from_float(mid_price.to_float() * 1.001);
+        // Apply floor_price to prevent negative price spirals
+        let order_price = Price::from_float(floor_price(mid_price.to_float() * 0.999));
         Order::limit(
             self.id,
             symbol,
@@ -267,7 +268,8 @@ impl<M: MlModel> TreeAgent<M> {
     fn generate_sell_order(&self, symbol: &Symbol, mid_price: Price) -> Order {
         // Ask BELOW mid to qualify in batch auction (ask <= ref_price)
         // Batch auction: ask qualifies if limit_price <= reference_price
-        let order_price = Price::from_float(mid_price.to_float() * 0.999);
+        // Apply floor_price to prevent negative price spirals
+        let order_price = Price::from_float(floor_price(mid_price.to_float() * 1.001));
         Order::limit(
             self.id,
             symbol,
@@ -298,14 +300,17 @@ impl<M: MlModel> Agent for TreeAgent<M> {
             let features = self.extract_features(symbol, ctx);
             let probs: ClassProbabilities = self.model.predict(&features);
 
-            let p_sell = probs[0]; // + rand::random::<f64>() * 0.01;
-            let p_buy = probs[2]; // + rand::random::<f64>() * 0.01;
+            let p_sell = probs[0] + rand::random::<f64>() * 0.005;
+            let p_hold: f64 = probs[1]; // + rand::random::<f64>() * 0.01;
+            let p_buy = probs[2] + rand::random::<f64>() * 0.005;
 
             let mid_price = self.get_reference_price(symbol, ctx);
 
             // Independent decision per symbol: stronger signal wins if above threshold
-            let buy_signal = p_buy > self.config.buy_threshold && self.can_buy(symbol);
-            let sell_signal = p_sell > self.config.sell_threshold && self.can_sell(symbol);
+            let buy_signal =
+                p_buy > self.config.buy_threshold && p_buy >= p_hold && self.can_buy(symbol);
+            let sell_signal =
+                p_sell > self.config.sell_threshold && p_sell >= p_hold && self.can_sell(symbol);
 
             match (sell_signal, buy_signal) {
                 (true, true) if p_buy >= p_sell => {
@@ -340,10 +345,12 @@ impl<M: MlModel> Agent for TreeAgent<M> {
     }
 
     fn on_fill(&mut self, trade: &Trade) {
+        // Use separate if blocks (not else if) to handle self-trades correctly.
         if trade.buyer_id == self.id {
             self.state
                 .on_buy(&trade.symbol, trade.quantity.raw(), trade.value());
-        } else if trade.seller_id == self.id {
+        }
+        if trade.seller_id == self.id {
             self.state
                 .on_sell(&trade.symbol, trade.quantity.raw(), trade.value());
         }
@@ -351,6 +358,10 @@ impl<M: MlModel> Agent for TreeAgent<M> {
 
     fn name(&self) -> &str {
         self.model.name()
+    }
+
+    fn is_ml_agent(&self) -> bool {
+        true
     }
 
     fn state(&self) -> &AgentState {

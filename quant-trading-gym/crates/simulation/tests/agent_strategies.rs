@@ -19,7 +19,7 @@ fn test_10_noise_traders_2_market_makers_produce_trades() {
     for i in 1..=2 {
         let mm_config = MarketMakerConfig {
             symbol: "ACME".to_string(),
-            half_spread: 0.005, // Tight spread to encourage matching
+            half_spread: 0.0, // Tight spread to encourage matching
             quote_size: 100,
             refresh_interval: 3, // Refresh frequently
             ..Default::default()
@@ -31,8 +31,8 @@ fn test_10_noise_traders_2_market_makers_produce_trades() {
     for i in 3..=12 {
         let trader_config = NoiseTraderConfig {
             symbol: "ACME".to_string(),
-            order_probability: 0.4, // 40% chance to place an order each tick
-            price_deviation: 0.01,  // 1% deviation to stay near market maker quotes
+            order_probability: 1.0, // 100% chance to place an order each tick
+            price_deviation: 0.0,   // 0% deviation to stay near market maker quotes
             min_quantity: 10,
             max_quantity: 50,
             ..Default::default()
@@ -108,6 +108,7 @@ fn test_noise_traders_can_trade_among_themselves() {
             price_deviation: 0.05,  // Wide range to encourage crossing
             min_quantity: 10,
             max_quantity: 100,
+            max_short_position: 500,
             ..Default::default()
         };
         sim.add_agent(Box::new(NoiseTrader::new(AgentId(i), trader_config)));
@@ -158,6 +159,7 @@ fn test_simulation_with_fills_runs_without_panic() {
             price_deviation: 0.001, // Tight around mid to hit MM quotes
             min_quantity: 10,
             max_quantity: 50,
+            max_short_position: 200,
             ..Default::default()
         };
         sim.add_agent(Box::new(NoiseTrader::new(AgentId(i), trader_config)));

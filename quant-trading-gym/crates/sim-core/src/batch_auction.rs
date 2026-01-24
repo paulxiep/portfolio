@@ -185,25 +185,28 @@ impl BatchAuction {
         let mut filled_orders = Vec::new();
         let mut partial_fills = Vec::new();
 
-        // Compute bid fills (for tracking, trades created via asks)
-        let mut bid_fills: Vec<(AgentId, OrderId, u64)> = Vec::new();
+        // Compute bid allocations (fill recording deferred until after trade creation)
+        let mut bid_allocations: Vec<(AgentId, OrderId, u64, u64)> = Vec::new(); // (agent, order_id, allocated_qty, order_qty)
         for bid in &qualifying_bids {
             let fill_qty = (bid.remaining_quantity.raw() as f64 * bid_fill_ratio).round() as u64;
             let fill_qty = fill_qty.min(bid.remaining_quantity.raw());
             if fill_qty > 0 {
-                bid_fills.push((bid.agent_id, bid.id, fill_qty));
-                if fill_qty == bid.remaining_quantity.raw() {
-                    filled_orders.push(bid.id);
-                } else {
-                    partial_fills.push((bid.id, Quantity(fill_qty)));
-                }
+                bid_allocations.push((
+                    bid.agent_id,
+                    bid.id,
+                    fill_qty,
+                    bid.remaining_quantity.raw(),
+                ));
             }
         }
 
+        // Track actual bid fills during trade creation
+        let mut actual_bid_fills: Vec<u64> = vec![0; bid_allocations.len()];
+
         // Process asks and create trades by pairing with bids
         let mut bid_idx = 0;
-        let mut bid_remaining = if !bid_fills.is_empty() {
-            bid_fills[0].2
+        let mut bid_remaining = if !bid_allocations.is_empty() {
+            bid_allocations[0].2
         } else {
             0
         };
@@ -217,23 +220,27 @@ impl BatchAuction {
                 continue;
             }
 
-            if ask_fill_qty == ask.remaining_quantity.raw() {
-                filled_orders.push(ask.id);
-            } else {
-                partial_fills.push((ask.id, Quantity(ask_fill_qty)));
-            }
-
-            // Create trades by consuming from bid fills
+            // Create trades by consuming from bid allocations
             let mut remaining_ask = ask_fill_qty;
-            while remaining_ask > 0 && bid_idx < bid_fills.len() {
+            let mut actual_ask_fill = 0u64;
+            while remaining_ask > 0 && bid_idx < bid_allocations.len() {
+                // Self-trade prevention: skip bids from the same agent
+                if bid_allocations[bid_idx].0 == ask.agent_id {
+                    bid_idx += 1;
+                    if bid_idx < bid_allocations.len() {
+                        bid_remaining = bid_allocations[bid_idx].2 - actual_bid_fills[bid_idx];
+                    }
+                    continue;
+                }
+
                 let trade_qty = remaining_ask.min(bid_remaining);
                 if trade_qty > 0 {
                     trades.push(Trade {
                         id: self.next_trade_id(),
                         symbol: symbol.to_string(),
-                        buyer_id: bid_fills[bid_idx].0,
+                        buyer_id: bid_allocations[bid_idx].0,
                         seller_id: ask.agent_id,
-                        buyer_order_id: bid_fills[bid_idx].1,
+                        buyer_order_id: bid_allocations[bid_idx].1,
                         seller_order_id: ask.id,
                         price: trade_price,
                         quantity: Quantity(trade_qty),
@@ -242,13 +249,36 @@ impl BatchAuction {
                     });
                     remaining_ask -= trade_qty;
                     bid_remaining -= trade_qty;
+                    actual_bid_fills[bid_idx] += trade_qty;
+                    actual_ask_fill += trade_qty;
                 }
 
                 if bid_remaining == 0 {
                     bid_idx += 1;
-                    if bid_idx < bid_fills.len() {
-                        bid_remaining = bid_fills[bid_idx].2;
+                    if bid_idx < bid_allocations.len() {
+                        bid_remaining = bid_allocations[bid_idx].2 - actual_bid_fills[bid_idx];
                     }
+                }
+            }
+
+            // Record ask fill based on actual traded quantity
+            if actual_ask_fill > 0 {
+                if actual_ask_fill == ask.remaining_quantity.raw() {
+                    filled_orders.push(ask.id);
+                } else {
+                    partial_fills.push((ask.id, Quantity(actual_ask_fill)));
+                }
+            }
+        }
+
+        // Record bid fills based on actual traded quantities
+        for (idx, &(_, order_id, _, order_qty)) in bid_allocations.iter().enumerate() {
+            let filled = actual_bid_fills[idx];
+            if filled > 0 {
+                if filled == order_qty {
+                    filled_orders.push(order_id);
+                } else {
+                    partial_fills.push((order_id, Quantity(filled)));
                 }
             }
         }
@@ -522,5 +552,39 @@ mod tests {
         assert_eq!(result.trades.len(), 1);
         assert_eq!(result.trades[0].buyer_id, AgentId(10));
         assert_eq!(result.trades[0].seller_id, AgentId(20));
+    }
+
+    #[test]
+    fn test_self_trade_prevention() {
+        let mut auction = BatchAuction::new();
+        // Same agent (1) places both bid and ask - should NOT match with self
+        let orders = vec![
+            make_bid(1, 1, 101.0, 50), // Agent 1 bids
+            make_ask(2, 1, 99.0, 50),  // Agent 1 asks (same agent!)
+        ];
+
+        let result = auction.run("TEST", orders, 0, 0, Some(Price::from_float(100.0)));
+
+        // No trades should occur - self-trade prevented
+        assert!(result.trades.is_empty());
+    }
+
+    #[test]
+    fn test_self_trade_prevention_with_other_counterparty() {
+        let mut auction = BatchAuction::new();
+        // Agent 1 has both bid and ask, but agent 2 also has a bid
+        // Agent 1's ask should match with agent 2's bid, not agent 1's bid
+        let orders = vec![
+            make_bid(1, 1, 101.0, 50), // Agent 1 bids 50
+            make_bid(2, 2, 101.0, 50), // Agent 2 bids 50
+            make_ask(3, 1, 99.0, 50),  // Agent 1 asks 50 (should match with agent 2, not self)
+        ];
+
+        let result = auction.run("TEST", orders, 0, 0, Some(Price::from_float(100.0)));
+
+        // Should have 1 trade: agent 1 sells to agent 2 (not to self)
+        assert_eq!(result.trades.len(), 1);
+        assert_eq!(result.trades[0].seller_id, AgentId(1)); // Agent 1 sells
+        assert_eq!(result.trades[0].buyer_id, AgentId(2)); // Agent 2 buys (not agent 1!)
     }
 }

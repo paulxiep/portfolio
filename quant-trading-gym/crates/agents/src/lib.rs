@@ -8,6 +8,7 @@
 //! - `BorrowLedger` for tracking short-selling borrows (V2.1)
 //! - `PositionValidator` for order validation against position limits (V2.1)
 //! - Concrete strategy implementations (`strategies` module)
+//! - `MIN_ORDER_PRICE` constant and `floor_price()` helper for price floor enforcement
 //!
 //! # Architecture (V2.3)
 //!
@@ -107,3 +108,13 @@ pub use tiers::{
     ConditionUpdate, CrossDirection, OrderedPrice, PriceReference, TickFrequency, WakeCondition,
 };
 pub use traits::{Agent, AgentAction};
+
+/// Minimum price floor for all orders ($0.01)
+pub const MIN_ORDER_PRICE: f64 = 0.01;
+
+/// Ensure price is at least the minimum floor.
+/// This prevents negative price spirals where agents submit increasingly lower prices.
+#[inline]
+pub fn floor_price(price: f64) -> f64 {
+    price.max(MIN_ORDER_PRICE)
+}

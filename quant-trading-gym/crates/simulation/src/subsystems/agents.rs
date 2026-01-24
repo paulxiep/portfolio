@@ -311,6 +311,8 @@ impl AgentExecutionCoordinator for AgentOrchestrator {
                     positions,
                     cash: agent.cash(),
                     total_pnl,
+                    is_market_maker: agent.is_market_maker(),
+                    is_ml_agent: agent.is_ml_agent(),
                 }
             },
             force_sequential,

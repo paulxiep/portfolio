@@ -19,13 +19,13 @@ use crate::state::AgentState;
 use crate::{Agent, AgentAction, StrategyContext};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
-use types::{AgentId, Cash, Order, OrderSide, Price, Quantity, Trade};
+use types::{AgentId, Cash, Order, OrderSide, Price, Quantity, Symbol, Trade};
 
 /// Configuration for a NoiseTrader agent.
 #[derive(Debug, Clone)]
 pub struct NoiseTraderConfig {
     /// Symbol to trade.
-    pub symbol: String,
+    pub symbol: Symbol,
     /// Probability of placing an order each tick (0.0 to 1.0).
     pub order_probability: f64,
     /// Maximum price deviation from mid as a fraction (e.g., 0.02 = 2%).
@@ -40,6 +40,10 @@ pub struct NoiseTraderConfig {
     pub initial_cash: Cash,
     /// Starting position in shares (allows some traders to start as sellers).
     pub initial_position: i64,
+    /// Maximum long position (stops buying when reached).
+    pub max_long_position: i64,
+    /// Maximum short position as positive number (stops selling when reached).
+    pub max_short_position: i64,
 }
 
 impl Default for NoiseTraderConfig {
@@ -53,6 +57,8 @@ impl Default for NoiseTraderConfig {
             initial_price: Price::from_float(100.0),
             initial_cash: Cash::from_float(100_000.0),
             initial_position: 50, // Start with some shares to allow selling
+            max_long_position: 100,
+            max_short_position: 0, // No short selling by default
         }
     }
 }
@@ -147,29 +153,52 @@ impl NoiseTrader {
     }
 
     /// Generate a random order around the reference price.
-    /// Noise traders can only sell shares they own (no short selling).
+    /// Respects position limits - won't buy beyond max_long or sell beyond max_short.
     fn generate_order(&mut self, reference_price: Price) -> Option<Order> {
         // V3.1: Use per-symbol position, not aggregate
         let position = self.state.position_for(&self.config.symbol);
 
-        // Determine side: can only sell if we have shares, then flip coin
-        let side = if position > 0 && self.rng.r#gen_bool(0.5) {
-            OrderSide::Sell
-        } else {
-            OrderSide::Buy
+        // Check what actions are allowed based on position limits
+        let can_buy = position < self.config.max_long_position - self.config.max_quantity as i64;
+        let can_sell = position > -self.config.max_short_position + self.config.max_quantity as i64;
+
+        // Determine side based on what's allowed
+        let side = match (can_buy, can_sell) {
+            (true, true) => {
+                // Both allowed - flip skewed coin (54% sell bias)
+                if self.rng.r#gen_bool(0.54) {
+                    OrderSide::Sell
+                } else {
+                    OrderSide::Buy
+                }
+            }
+            (true, false) => OrderSide::Buy,
+            (false, true) => OrderSide::Sell,
+            (false, false) => return None, // At both limits, can't trade
         };
 
         // Random price within deviation range
         let deviation_range = self.config.price_deviation;
-        let deviation = self.rng.r#gen_range(-deviation_range..deviation_range);
-        let price_float = reference_price.to_float() * (1.0 + deviation);
+        let deviation = self
+            .rng
+            .r#gen_range((-deviation_range / 5.0)..deviation_range);
+        let mut price_float = reference_price.to_float();
+        if side == OrderSide::Buy {
+            price_float *= 1.0 - deviation;
+        } else {
+            price_float *= 1.0 + deviation;
+        }
+
         let price = Price::from_float(price_float.max(0.01)); // Ensure positive
 
-        // Random quantity, but for sells cap at current position
+        // Random quantity, capped by position limits
         let max_qty = if side == OrderSide::Sell {
+            // For sells, cap at current position
             (position as u64).min(self.config.max_quantity)
         } else {
-            self.config.max_quantity
+            // For buys, cap at remaining room before max_long
+            let room = (self.config.max_long_position - position).max(0) as u64;
+            room.min(self.config.max_quantity)
         };
 
         if max_qty < self.config.min_quantity {
@@ -212,10 +241,13 @@ impl Agent for NoiseTrader {
     fn on_fill(&mut self, trade: &Trade) {
         let trade_value = trade.value();
 
+        // Use separate if blocks (not else if) to handle self-trades correctly.
+        // When buyer_id == seller_id, both buy and sell must be applied (net zero).
         if trade.buyer_id == self.id {
             self.state
                 .on_buy(&trade.symbol, trade.quantity.raw(), trade_value);
-        } else if trade.seller_id == self.id {
+        }
+        if trade.seller_id == self.id {
             self.state
                 .on_sell(&trade.symbol, trade.quantity.raw(), trade_value);
         }

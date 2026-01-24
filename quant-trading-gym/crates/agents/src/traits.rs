@@ -157,6 +157,12 @@ pub trait Agent: Send {
         false
     }
 
+    /// Whether this agent is an ML-based agent (tree models, neural nets, etc.).
+    /// Used for leaderboard sorting (ML agents shown at top).
+    fn is_ml_agent(&self) -> bool {
+        false
+    }
+
     /// Get a reference to the agent's state.
     /// Required for all agents - enables automatic position/cash/P&L tracking.
     fn state(&self) -> &AgentState;
