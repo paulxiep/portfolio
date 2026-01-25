@@ -5,8 +5,8 @@
  */
 
 // Charts
-export { PriceChart } from './PriceChart';
-export type { PriceChartProps, ChartType } from './PriceChart';
+export { PriceChart, PriceYAxis } from './PriceChart';
+export type { PriceChartProps, PriceYAxisProps, ChartType } from './PriceChart';
 
 export { IndicatorPanel } from './IndicatorPanel';
 export type { IndicatorPanelProps } from './IndicatorPanel';

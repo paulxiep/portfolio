@@ -97,7 +97,7 @@ export function SimulationPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-950">
+    <div className="min-h-screen bg-gray-950 overflow-x-hidden">
       {/* Header */}
       <header className="bg-gray-900 border-b border-gray-800">
         <div className="max-w-full mx-auto px-6 py-3 flex items-center justify-between">
@@ -168,7 +168,7 @@ function DashboardTab({ dashboard, chartType, onChartTypeChange }: DashboardTabP
   return (
     <div className="grid grid-cols-12 gap-4">
       {/* Main chart area - spans 8 columns */}
-      <div className="col-span-12 lg:col-span-8 space-y-4">
+      <div className="col-span-12 lg:col-span-8 space-y-4 min-w-0 overflow-hidden">
         {/* Price Chart */}
         <PriceChart
           data={dashboard.candles.data}

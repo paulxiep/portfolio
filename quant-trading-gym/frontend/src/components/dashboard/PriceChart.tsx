@@ -9,6 +9,7 @@
  * SoC: Only handles price visualization
  */
 
+import { useRef, useEffect } from 'react';
 import type { CandlesResponse, Candle } from '../../types/api';
 
 // ---------------------------------------------------------------------------
@@ -118,14 +119,15 @@ function CandleBar({ candle, index, priceMin, priceMax, height, candleWidth }: C
   );
 }
 
-interface PriceAxisProps {
+interface PriceGridProps {
   min: number;
   max: number;
   height: number;
   width: number;
 }
 
-function PriceAxis({ min, max, height, width }: PriceAxisProps) {
+/** Renders horizontal grid lines (inside scrollable chart area). */
+function PriceGrid({ min, max, height, width }: PriceGridProps) {
   // Generate ~5 tick marks
   const ticks: number[] = [];
   const step = (max - min) / 5;
@@ -134,27 +136,70 @@ function PriceAxis({ min, max, height, width }: PriceAxisProps) {
   }
 
   return (
-    <g className="text-gray-400 text-xs">
+    <g>
       {ticks.map((price) => {
         const y = scaleY(price, min, max, height);
         return (
-          <g key={price}>
-            <line
-              x1={0}
-              y1={y}
-              x2={width}
-              y2={y}
-              stroke="#374151"
-              strokeWidth={1}
-              strokeDasharray="4,4"
-            />
-            <text x={width + 4} y={y + 4} fill="#9ca3af" fontSize={10}>
-              {formatPrice(price)}
-            </text>
-          </g>
+          <line
+            key={price}
+            x1={0}
+            y1={y}
+            x2={width}
+            y2={y}
+            stroke="#374151"
+            strokeWidth={1}
+            strokeDasharray="4,4"
+          />
         );
       })}
     </g>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Standalone Y-Axis component (exported for use as separate widget)
+// ---------------------------------------------------------------------------
+
+export interface PriceYAxisProps {
+  /** Candle data from API. */
+  data: CandlesResponse | null;
+  /** Chart height in pixels (should match PriceChart height). */
+  height?: number;
+}
+
+/** Standalone Y-axis widget that calculates range from candle data. */
+export function PriceYAxis({ data, height = 300 }: PriceYAxisProps) {
+  if (!data || data.candles.length === 0) {
+    return <div style={{ width: 60, height }} />;
+  }
+
+  const { min, max } = getPriceRange(data.candles);
+
+  // Generate ~5 tick marks
+  const ticks: number[] = [];
+  const step = (max - min) / 5;
+  for (let i = 0; i <= 5; i++) {
+    ticks.push(min + step * i);
+  }
+
+  return (
+    <div
+      className="bg-gray-900 rounded-lg border border-gray-700 p-4"
+      style={{ height: height + 58 }}
+    >
+      {/* Spacer to align with chart header */}
+      <div style={{ height: 28, marginBottom: 12 }} />
+      <svg width={60} height={height} className="block">
+        {ticks.map((price) => {
+          const y = scaleY(price, min, max, height);
+          return (
+            <text key={price} x={4} y={y + 4} fill="#9ca3af" fontSize={10}>
+              {formatPrice(price)}
+            </text>
+          );
+        })}
+      </svg>
+    </div>
   );
 }
 
@@ -326,12 +371,10 @@ export function PriceChart({
   const { min, max } = getPriceRange(candles);
 
   // Calculate dimensions - responsive width with minimum candle size
-  const axisWidth = 60;
   const minCandleWidth = 12; // Minimum pixels per candle for readability
   // Chart width scales with candle count, minimum 100% container width
   const chartWidth = Math.max(800, candles.length * minCandleWidth);
   const candleWidth = chartWidth / Math.max(candles.length, 1);
-  const totalWidth = chartWidth + axisWidth;
 
   // Current price info
   const lastCandle = candles[candles.length - 1];
@@ -343,8 +386,32 @@ export function PriceChart({
     onChartTypeChange?.(type);
   };
 
+  // Ref for scrollable container and auto-scroll to latest
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const wasAtRightRef = useRef(true);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+
+    // Check if user was at rightmost position (within 50px tolerance)
+    const isAtRight = el.scrollLeft + el.clientWidth >= el.scrollWidth - 50;
+
+    // Auto-scroll to right if user was already at the right edge
+    if (wasAtRightRef.current || isAtRight) {
+      el.scrollLeft = el.scrollWidth - el.clientWidth;
+    }
+  }, [candles.length]);
+
+  // Track scroll position to know if user is at rightmost
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    wasAtRightRef.current = el.scrollLeft + el.clientWidth >= el.scrollWidth - 50;
+  };
+
   return (
-    <div className="bg-gray-900 rounded-lg border border-gray-700 p-4">
+    <div className="bg-gray-900 rounded-lg border border-gray-700 p-4 overflow-hidden">
       {/* Header */}
       <div className="flex justify-between items-center mb-3">
         <div className="flex items-center gap-3">
@@ -367,45 +434,85 @@ export function PriceChart({
         </div>
       </div>
 
-      {/* Scrollable chart container - fills width, scrolls when content exceeds */}
-      <div
-        className="overflow-x-auto scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-gray-800"
-        style={{ height: height + 20 }}
-      >
-        <svg
-          width={totalWidth}
-          height={height}
-          viewBox={`0 0 ${totalWidth} ${height}`}
-          className="block"
+      {/* Chart container with Y-axis overlay */}
+      <div style={{ position: 'relative', width: '100%', height: height + 20, overflow: 'hidden' }}>
+        {/* Scrollable chart area - leaves space for Y-axis on right */}
+        <div
+          ref={scrollRef}
+          onScroll={handleScroll}
+          className="scrollbar-thin scrollbar-thumb-gray-600 scrollbar-track-gray-800"
+          style={{
+            height: height + 20,
+            marginRight: 60,
+            overflowX: 'auto',
+            overflowY: 'hidden',
+          }}
         >
-          {/* Grid and axis */}
-          <PriceAxis min={min} max={max} height={height} width={chartWidth} />
+          <svg
+            width={chartWidth}
+            height={height}
+            viewBox={`0 0 ${chartWidth} ${height}`}
+            style={{ display: 'block' }}
+          >
+            {/* Grid lines */}
+            <PriceGrid min={min} max={max} height={height} width={chartWidth} />
 
-          {/* Render based on chart type */}
-          {chartType === 'line' ? (
-            <LineChart
-              candles={candles}
-              priceMin={min}
-              priceMax={max}
-              height={height}
-              candleWidth={candleWidth}
-            />
-          ) : (
-            <g>
-              {candles.map((candle, i) => (
-                <CandleBar
-                  key={candle.tick}
-                  candle={candle}
-                  index={i}
-                  priceMin={min}
-                  priceMax={max}
-                  height={height}
-                  candleWidth={candleWidth}
-                />
-              ))}
-            </g>
-          )}
-        </svg>
+            {/* Render based on chart type */}
+            {chartType === 'line' ? (
+              <LineChart
+                candles={candles}
+                priceMin={min}
+                priceMax={max}
+                height={height}
+                candleWidth={candleWidth}
+              />
+            ) : (
+              <g>
+                {candles.map((candle, i) => (
+                  <CandleBar
+                    key={candle.tick}
+                    candle={candle}
+                    index={i}
+                    priceMin={min}
+                    priceMax={max}
+                    height={height}
+                    candleWidth={candleWidth}
+                  />
+                ))}
+              </g>
+            )}
+          </svg>
+        </div>
+
+        {/* Fixed Y-axis - positioned absolutely at right edge */}
+        <div
+          style={{
+            position: 'absolute',
+            top: 0,
+            right: 0,
+            width: 60,
+            height,
+            backgroundColor: '#111827',
+          }}
+        >
+          <svg width={60} height={height} style={{ display: 'block' }}>
+            {(() => {
+              const ticks: number[] = [];
+              const step = (max - min) / 5;
+              for (let i = 0; i <= 5; i++) {
+                ticks.push(min + step * i);
+              }
+              return ticks.map((price) => {
+                const y = scaleY(price, min, max, height);
+                return (
+                  <text key={price} x={4} y={y + 4} fill="#9ca3af" fontSize={10}>
+                    {formatPrice(price)}
+                  </text>
+                );
+              });
+            })()}
+          </svg>
+        </div>
       </div>
     </div>
   );

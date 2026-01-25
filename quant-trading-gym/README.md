@@ -48,7 +48,7 @@ The project is built vertically in iterative stages, ensuring a runnable simulat
 | **V2** (completed) | **Market Realism & Events** | Implement multi-symbol and random events. |
 | **V3** (completed) | **Persistence & Agent Scaling** | SQLite for trade history and tiered architecture for 100k+ agent scale. |
 | **V4** (completed) | **Web frontend** | Axum and React TS Frontend with Dashboard |
-| **V5** (completed) | **Machine Learning** | Training for traditional ML, feature engineering. |
+| **V5** (completed) | **Machine Learning** | Training for traditional ML. |
 | **V6** | **Feature Engineering** |  PyO3 bindings, feature engineering. |
 | **V7** | **Reinforcement Learning** |  Gym env, RL training. |
 | **V8** | **Portfolio manager game** | Services, API for portfolio manager game. |
