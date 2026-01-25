@@ -1,0 +1,5 @@
+# for self note
+docker compose -f docker-compose.frontend.yaml run --rm typecheck
+docker compose -f docker-compose.frontend.yaml run --rm format
+docker compose build frontend --no-cache
+cargo run --release -- --headless-record --ticks 5000 --record-warmup 1000

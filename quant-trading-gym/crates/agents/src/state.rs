@@ -182,6 +182,7 @@ impl AgentState {
 
     /// Update state after a buy fill.
     /// Uses weighted average cost basis calculation.
+    /// Handles covering short positions with proper P&L calculation.
     pub fn on_buy(&mut self, symbol: &str, quantity: u64, value: Cash) {
         let entry = self
             .positions
@@ -189,21 +190,48 @@ impl AgentState {
             .or_insert_with(PositionEntry::empty);
 
         let buy_price = value.to_float() / quantity as f64;
-        let old_qty = entry.quantity.max(0) as f64;
-        let new_qty = old_qty + quantity as f64;
+        let mut remaining_qty = quantity as i64;
 
-        // Update weighted average cost (only for long positions)
-        if new_qty > 0.0 {
-            entry.avg_cost = (old_qty * entry.avg_cost + quantity as f64 * buy_price) / new_qty;
+        // If we have a short position, buying covers it first
+        if entry.quantity < 0 {
+            let short_qty = -entry.quantity;
+            let qty_to_cover = remaining_qty.min(short_qty);
+
+            // Realized P&L for covering short = (short_sale_price - buy_price) * qty
+            // Profit if price dropped since we shorted
+            if entry.avg_cost > 0.0 {
+                let pnl = (entry.avg_cost - buy_price) * qty_to_cover as f64;
+                self.realized_pnl += Cash::from_float(pnl);
+            }
+
+            remaining_qty -= qty_to_cover;
+            entry.quantity += qty_to_cover;
+
+            // If fully covered, reset cost basis
+            if entry.quantity == 0 {
+                entry.avg_cost = 0.0;
+            }
         }
 
-        entry.quantity += quantity as i64;
+        // Any remaining quantity opens/adds to long position
+        if remaining_qty > 0 {
+            let old_long_qty = entry.quantity.max(0) as f64;
+            let new_long_qty = old_long_qty + remaining_qty as f64;
+
+            // Update weighted average cost for long position
+            entry.avg_cost =
+                (old_long_qty * entry.avg_cost + remaining_qty as f64 * buy_price) / new_long_qty;
+
+            entry.quantity += remaining_qty;
+        }
+
         self.cash -= value;
         self.fills_received += 1;
     }
 
     /// Update state after a sell fill.
     /// Computes realized P&L as (sell_price - avg_cost) * quantity.
+    /// Handles opening short positions with proper cost basis tracking.
     pub fn on_sell(&mut self, symbol: &str, quantity: u64, value: Cash) {
         let entry = self
             .positions
@@ -211,15 +239,40 @@ impl AgentState {
             .or_insert_with(PositionEntry::empty);
 
         let sell_price = value.to_float() / quantity as f64;
+        let mut remaining_qty = quantity as i64;
 
-        // Only compute realized P&L if we had a long position with cost basis
-        if entry.quantity > 0 && entry.avg_cost > 0.0 {
-            let qty_to_close = (quantity as i64).min(entry.quantity) as f64;
-            let pnl = (sell_price - entry.avg_cost) * qty_to_close;
-            self.realized_pnl += Cash::from_float(pnl);
+        // If we have a long position, selling closes it first
+        if entry.quantity > 0 {
+            let long_qty = entry.quantity;
+            let qty_to_close = remaining_qty.min(long_qty);
+
+            // Realized P&L for closing long = (sell_price - avg_cost) * qty
+            if entry.avg_cost > 0.0 {
+                let pnl = (sell_price - entry.avg_cost) * qty_to_close as f64;
+                self.realized_pnl += Cash::from_float(pnl);
+            }
+
+            remaining_qty -= qty_to_close;
+            entry.quantity -= qty_to_close;
+
+            // If fully closed, reset cost basis
+            if entry.quantity == 0 {
+                entry.avg_cost = 0.0;
+            }
         }
 
-        entry.quantity -= quantity as i64;
+        // Any remaining quantity opens/adds to short position
+        if remaining_qty > 0 {
+            let old_short_qty = (-entry.quantity).max(0) as f64;
+            let new_short_qty = old_short_qty + remaining_qty as f64;
+
+            // Update weighted average cost for short position (the price we sold at)
+            entry.avg_cost = (old_short_qty * entry.avg_cost + remaining_qty as f64 * sell_price)
+                / new_short_qty;
+
+            entry.quantity -= remaining_qty;
+        }
+
         self.cash += value;
         self.fills_received += 1;
     }
@@ -436,5 +489,143 @@ mod tests {
         let equity = state.equity_for("ACME", Price::from_float(150.0));
         // Equity = 50000 + 100*150 = 65000
         assert!((equity.to_float() - 65_000.0).abs() < 0.01);
+    }
+
+    // ==================== Short Position Tests ====================
+
+    #[test]
+    fn test_short_position_open_and_cover_profit() {
+        let mut state = AgentState::new(Cash::from_float(100_000.0), &["ACME"]);
+
+        // Short 100 shares at $50 (selling without owning)
+        state.on_sell("ACME", 100, Cash::from_float(5_000.0));
+        assert_eq!(state.position_for("ACME"), -100);
+        assert_eq!(state.cash(), Cash::from_float(105_000.0)); // Received $5000
+        assert!((state.avg_cost_for("ACME") - 50.0).abs() < 0.001); // Cost basis = $50
+
+        // Cover at $40 (buy back) - profit of $10/share
+        state.on_buy("ACME", 100, Cash::from_float(4_000.0));
+        assert_eq!(state.position_for("ACME"), 0);
+        assert_eq!(state.cash(), Cash::from_float(101_000.0)); // 105000 - 4000
+
+        // Realized P&L = (50 - 40) * 100 = $1000 profit
+        let pnl = state.realized_pnl().to_float();
+        assert!((pnl - 1000.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_short_position_open_and_cover_loss() {
+        let mut state = AgentState::new(Cash::from_float(100_000.0), &["ACME"]);
+
+        // Short 100 shares at $50
+        state.on_sell("ACME", 100, Cash::from_float(5_000.0));
+        assert_eq!(state.position_for("ACME"), -100);
+
+        // Cover at $60 (price went up) - loss of $10/share
+        state.on_buy("ACME", 100, Cash::from_float(6_000.0));
+        assert_eq!(state.position_for("ACME"), 0);
+
+        // Realized P&L = (50 - 60) * 100 = -$1000 loss
+        let pnl = state.realized_pnl().to_float();
+        assert!((pnl - (-1000.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_short_position_partial_cover() {
+        let mut state = AgentState::new(Cash::from_float(100_000.0), &["ACME"]);
+
+        // Short 100 shares at $50
+        state.on_sell("ACME", 100, Cash::from_float(5_000.0));
+
+        // Cover 40 shares at $45
+        state.on_buy("ACME", 40, Cash::from_float(1_800.0));
+        assert_eq!(state.position_for("ACME"), -60);
+
+        // Realized P&L = (50 - 45) * 40 = $200
+        let pnl = state.realized_pnl().to_float();
+        assert!((pnl - 200.0).abs() < 0.01);
+
+        // avg_cost should remain $50 for remaining short
+        assert!((state.avg_cost_for("ACME") - 50.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_short_position_add_to_short() {
+        let mut state = AgentState::new(Cash::from_float(100_000.0), &["ACME"]);
+
+        // Short 100 shares at $50
+        state.on_sell("ACME", 100, Cash::from_float(5_000.0));
+        assert!((state.avg_cost_for("ACME") - 50.0).abs() < 0.001);
+
+        // Short 100 more shares at $60
+        state.on_sell("ACME", 100, Cash::from_float(6_000.0));
+        assert_eq!(state.position_for("ACME"), -200);
+
+        // Weighted avg cost = (100 * 50 + 100 * 60) / 200 = 11000 / 200 = $55
+        assert!((state.avg_cost_for("ACME") - 55.0).abs() < 0.001);
+
+        // No realized P&L yet
+        assert_eq!(state.realized_pnl().to_float(), 0.0);
+    }
+
+    #[test]
+    fn test_short_unrealized_pnl() {
+        let mut state = AgentState::new(Cash::from_float(100_000.0), &["ACME"]);
+
+        // Short 100 shares at $50
+        state.on_sell("ACME", 100, Cash::from_float(5_000.0));
+
+        let mut prices = HashMap::new();
+        prices.insert("ACME".to_string(), Price::from_float(40.0));
+
+        // Unrealized P&L = (current - avg_cost) * qty = (40 - 50) * (-100) = $1000 profit
+        let total_pnl = state.total_pnl(&prices).to_float();
+        assert!((total_pnl - 1000.0).abs() < 0.01);
+
+        // Price goes up (loss for short)
+        prices.insert("ACME".to_string(), Price::from_float(60.0));
+        // Unrealized P&L = (60 - 50) * (-100) = -$1000 loss
+        let total_pnl = state.total_pnl(&prices).to_float();
+        assert!((total_pnl - (-1000.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_long_to_short_transition() {
+        let mut state = AgentState::new(Cash::from_float(100_000.0), &["ACME"]);
+
+        // Buy 50 shares at $100
+        state.on_buy("ACME", 50, Cash::from_float(5_000.0));
+        assert_eq!(state.position_for("ACME"), 50);
+
+        // Sell 80 shares at $120 (close 50 long + open 30 short)
+        state.on_sell("ACME", 80, Cash::from_float(9_600.0));
+        assert_eq!(state.position_for("ACME"), -30);
+
+        // Realized P&L from closing long = (120 - 100) * 50 = $1000
+        let pnl = state.realized_pnl().to_float();
+        assert!((pnl - 1000.0).abs() < 0.01);
+
+        // avg_cost should now be $120 (the short sale price)
+        assert!((state.avg_cost_for("ACME") - 120.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_short_to_long_transition() {
+        let mut state = AgentState::new(Cash::from_float(100_000.0), &["ACME"]);
+
+        // Short 50 shares at $100
+        state.on_sell("ACME", 50, Cash::from_float(5_000.0));
+        assert_eq!(state.position_for("ACME"), -50);
+
+        // Buy 80 shares at $90 (cover 50 short + open 30 long)
+        state.on_buy("ACME", 80, Cash::from_float(7_200.0));
+        assert_eq!(state.position_for("ACME"), 30);
+
+        // Realized P&L from covering short = (100 - 90) * 50 = $500
+        let pnl = state.realized_pnl().to_float();
+        assert!((pnl - 500.0).abs() < 0.01);
+
+        // avg_cost should now be $90 (the buy price for new long)
+        assert!((state.avg_cost_for("ACME") - 90.0).abs() < 0.001);
     }
 }

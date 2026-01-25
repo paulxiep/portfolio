@@ -304,14 +304,14 @@ impl Default for SimConfig {
 
             // V3.5: Doubled agent counts for parallel execution benchmarking
             // Tier 1 Agent Counts (minimums per type)
-            num_market_makers: 800,
+            num_market_makers: 600,
             num_noise_traders: 2400,
             num_momentum_traders: 800,
             num_trend_followers: 800,
             num_macd_traders: 800,
             num_bollinger_traders: 800,
             num_vwap_executors: 200,
-            num_pairs_traders: 200,   // V3.3: multi-symbol pairs traders
+            num_pairs_traders: 400,   // V3.3: multi-symbol pairs traders
             num_sector_rotators: 500, // V3.3: sector rotation agents (special T2)
 
             // V5.5: ML Agent Counts (split equally between sub-models)
@@ -356,12 +356,12 @@ impl Default for SimConfig {
 
             // Market Maker Parameters
             mm_initial_cash: Cash::from_float(100_000.0),
-            mm_initial_position: 600, // Starting inventory (the "float")
+            mm_initial_position: 800, // Starting inventory (the "float")
             mm_half_spread: 0.0005,   // 0.05% half-spread - tight enough for 0.1% orders to cross
             mm_quote_size: 60,
             mm_refresh_interval: 1, // Quote every tick (required for IOC mode)
             mm_max_inventory: 1500,
-            mm_inventory_skew: 0.0005,
+            mm_inventory_skew: 0.0001,
             mm_max_long_position: 1500, // Can accumulate up to 1500 shares
             mm_max_short_position: 0,   // Cannot go short (must keep some float)
 
@@ -388,7 +388,7 @@ impl Default for SimConfig {
             tree_agent_order_size: 30,
             tree_agent_max_long_position: 1200,
             tree_agent_max_short_position: 300,
-            tree_agent_buy_threshold: 0.75,  // 75% confidence
+            tree_agent_buy_threshold: 0.60,  // 60% confidence
             tree_agent_sell_threshold: 0.75, // 75% confidence
 
             // TUI Parameters
