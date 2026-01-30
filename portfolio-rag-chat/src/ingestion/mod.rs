@@ -126,18 +126,21 @@ fn process_code_file(
         }
     };
 
-    let path_str = entry.path().to_string_lossy().to_string();
-    let project_name = extract_project_name(entry.path(), repo_root);
+    let mut chunks = analyzer.analyze_content(&content, lang);
 
-    analyzer
-        .analyze_content(&content, lang)
-        .into_iter()
-        .map(|mut chunk| {
-            chunk.file_path = path_str.clone();
-            chunk.project_name = project_name.clone();
-            chunk
-        })
-        .collect()
+    // Set file metadata once, then clone to each chunk
+    // This is clearer than cloning in an iterator and allows future optimization with Rc<str>
+    if !chunks.is_empty() {
+        let path_str = entry.path().to_string_lossy().to_string();
+        let project_name = extract_project_name(entry.path(), repo_root);
+
+        for chunk in &mut chunks {
+            chunk.file_path.clone_from(&path_str);
+            chunk.project_name.clone_from(&project_name);
+        }
+    }
+
+    chunks
 }
 
 /// Directories to skip during ingestion

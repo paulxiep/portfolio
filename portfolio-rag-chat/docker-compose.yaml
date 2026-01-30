@@ -1,21 +1,28 @@
+# Main application compose file
+# Prerequisites: Run ingestion first with docker-compose-ingest.yaml
+# Usage: docker-compose up --build
+
 services:
   portfolio-rag-chat:
     build:
       context: ..  # Build from parent directory to access all portfolio projects
       dockerfile: ./portfolio-rag-chat/dockerfile/Dockerfile
-      args:
-        # Pass build-time API key if needed for ingestion
-        - GEMINI_API_KEY=${GEMINI_API_KEY}
     container_name: portfolio-rag-chat
     ports:
       - "3000:3000"
+    volumes:
+      - ./data:/app/data      # Lance DB
+      - ./cache:/tmp/.cache   # Embedding model cache
     environment:
-      # Runtime environment variables
       - RUST_LOG=info
       - HOST=0.0.0.0
       - PORT=3000
+      - DB_PATH=/app/data/portfolio.lance
     env_file:
       - .env
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "/app/portfolio-rag-chat", "--health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

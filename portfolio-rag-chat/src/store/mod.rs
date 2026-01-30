@@ -9,6 +9,9 @@ use crate::models::{CodeChunk, CrateChunk, ModuleDocChunk, ReadmeChunk};
 use embedder::{format_code_for_embedding, format_readme_for_embedding};
 use thiserror::Error;
 
+/// Batch size for embedding processing to reduce peak memory usage
+const EMBEDDING_BATCH_SIZE: usize = 50;
+
 #[derive(Error, Debug)]
 pub enum PipelineError {
     #[error("embedding error: {0}")]
@@ -33,13 +36,26 @@ pub async fn ingest_repository(
     store: &VectorStore,
     embedder: &mut Embedder,
 ) -> Result<IngestionStats, PipelineError> {
-    let parsed = run_ingestion(repo_path);
+    // Destructure to allow early drop of each chunk type after processing
+    let crate::ingestion::IngestionResult {
+        code_chunks,
+        readme_chunks,
+        crate_chunks,
+        module_doc_chunks,
+    } = run_ingestion(repo_path);
 
-    let code_count = embed_and_store_code(&parsed.code_chunks, store, embedder).await?;
-    let readme_count = embed_and_store_readme(&parsed.readme_chunks, store, embedder).await?;
-    let crate_count = embed_and_store_crates(&parsed.crate_chunks, store, embedder).await?;
-    let module_doc_count =
-        embed_and_store_module_docs(&parsed.module_doc_chunks, store, embedder).await?;
+    // Process code chunks (largest memory consumer), then drop
+    let code_count = embed_and_store_code(&code_chunks, store, embedder).await?;
+    drop(code_chunks);
+
+    let readme_count = embed_and_store_readme(&readme_chunks, store, embedder).await?;
+    drop(readme_chunks);
+
+    let crate_count = embed_and_store_crates(&crate_chunks, store, embedder).await?;
+    drop(crate_chunks);
+
+    let module_doc_count = embed_and_store_module_docs(&module_doc_chunks, store, embedder).await?;
+    drop(module_doc_chunks);
 
     Ok(IngestionStats {
         code_chunks: code_count,
@@ -58,24 +74,28 @@ async fn embed_and_store_code(
         return Ok(0);
     }
 
-    // Format chunks for embedding
-    let texts: Vec<String> = chunks
-        .iter()
-        .map(|c| {
-            format_code_for_embedding(
-                &c.identifier,
-                &c.language,
-                c.docstring.as_deref(),
-                &c.code_content,
-            )
-        })
-        .collect();
+    let mut total = 0;
+    for batch in chunks.chunks(EMBEDDING_BATCH_SIZE) {
+        // Format chunks for embedding
+        let texts: Vec<String> = batch
+            .iter()
+            .map(|c| {
+                format_code_for_embedding(
+                    &c.identifier,
+                    &c.language,
+                    c.docstring.as_deref(),
+                    &c.code_content,
+                )
+            })
+            .collect();
 
-    let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-    let embeddings = embedder.embed_batch(&text_refs)?;
+        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        let embeddings = embedder.embed_batch(&text_refs)?;
 
-    let count = store.upsert_code_chunks(chunks, embeddings).await?;
-    Ok(count)
+        total += store.upsert_code_chunks(batch, embeddings).await?;
+        // texts & embeddings dropped here, freeing memory before next batch
+    }
+    Ok(total)
 }
 
 async fn embed_and_store_readme(
@@ -87,16 +107,19 @@ async fn embed_and_store_readme(
         return Ok(0);
     }
 
-    let texts: Vec<String> = chunks
-        .iter()
-        .map(|c| format_readme_for_embedding(&c.project_name, &c.content))
-        .collect();
+    let mut total = 0;
+    for batch in chunks.chunks(EMBEDDING_BATCH_SIZE) {
+        let texts: Vec<String> = batch
+            .iter()
+            .map(|c| format_readme_for_embedding(&c.project_name, &c.content))
+            .collect();
 
-    let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-    let embeddings = embedder.embed_batch(&text_refs)?;
+        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        let embeddings = embedder.embed_batch(&text_refs)?;
 
-    let count = store.upsert_readme_chunks(chunks, embeddings).await?;
-    Ok(count)
+        total += store.upsert_readme_chunks(batch, embeddings).await?;
+    }
+    Ok(total)
 }
 /// Format a crate chunk for embedding
 fn format_crate_for_embedding(chunk: &CrateChunk) -> String {
@@ -126,12 +149,15 @@ async fn embed_and_store_crates(
         return Ok(0);
     }
 
-    let texts: Vec<String> = chunks.iter().map(format_crate_for_embedding).collect();
-    let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-    let embeddings = embedder.embed_batch(&text_refs)?;
+    let mut total = 0;
+    for batch in chunks.chunks(EMBEDDING_BATCH_SIZE) {
+        let texts: Vec<String> = batch.iter().map(format_crate_for_embedding).collect();
+        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        let embeddings = embedder.embed_batch(&text_refs)?;
 
-    let count = store.upsert_crate_chunks(chunks, embeddings).await?;
-    Ok(count)
+        total += store.upsert_crate_chunks(batch, embeddings).await?;
+    }
+    Ok(total)
 }
 
 /// Format a module doc chunk for embedding
@@ -155,10 +181,13 @@ async fn embed_and_store_module_docs(
         return Ok(0);
     }
 
-    let texts: Vec<String> = chunks.iter().map(format_module_doc_for_embedding).collect();
-    let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-    let embeddings = embedder.embed_batch(&text_refs)?;
+    let mut total = 0;
+    for batch in chunks.chunks(EMBEDDING_BATCH_SIZE) {
+        let texts: Vec<String> = batch.iter().map(format_module_doc_for_embedding).collect();
+        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        let embeddings = embedder.embed_batch(&text_refs)?;
 
-    let count = store.upsert_module_doc_chunks(chunks, embeddings).await?;
-    Ok(count)
+        total += store.upsert_module_doc_chunks(batch, embeddings).await?;
+    }
+    Ok(total)
 }

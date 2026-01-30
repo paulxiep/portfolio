@@ -1,0 +1,18 @@
+# One-time ingestion compose file
+# Usage: docker-compose -f docker-compose-ingest.yaml up --build
+# This will ingest the portfolio and create the Lance DB in ./data/
+
+services:
+  ingest:
+    build:
+      context: ..  # Build from parent directory to access all portfolio projects
+      dockerfile: ./portfolio-rag-chat/dockerfile/Dockerfile
+    container_name: portfolio-rag-chat-ingest
+    volumes:
+      - ./data:/app/data              # Persist Lance DB
+      - ./cache:/tmp/.cache           # Embedding model cache
+      - ..:/portfolio:ro              # Mount portfolio repo read-only
+    environment:
+      - RUST_LOG=info
+      - DB_PATH=/app/data/portfolio.lance
+    command: ["/app/portfolio-rag-chat", "--ingest", "/portfolio"]

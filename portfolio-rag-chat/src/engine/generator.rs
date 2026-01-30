@@ -40,7 +40,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires GEMINI_API_KEY"]
     async fn test_generate_basic() {
-        let client = LlmClient::from_env("gemini-2.5-flash").unwrap();
+        let client = LlmClient::from_env("gemini-3-flash-preview").unwrap();
         let response = generate("Say 'hello' and nothing else.", &client)
             .await
             .unwrap();
