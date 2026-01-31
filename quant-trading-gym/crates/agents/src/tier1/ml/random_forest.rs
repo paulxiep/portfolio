@@ -73,6 +73,9 @@ pub struct RandomForest {
 impl RandomForest {
     /// Load a random forest from a JSON file.
     ///
+    /// The model name is derived from the filename by stripping the `_random_forest` suffix,
+    /// formatted as `RandomForest_{name}`.
+    ///
     /// # Arguments
     /// * `path` - Path to the JSON file exported from sklearn
     ///
@@ -83,11 +86,21 @@ impl RandomForest {
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
 
-        Self::from_json_str(&content)
+        // Derive model name from filename (e.g., "small_random_forest.json" -> "RandomForest_small")
+        let file_stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+        let model_name = file_stem
+            .strip_suffix("_random_forest")
+            .unwrap_or(file_stem);
+        let name = format!("RandomForest_{}", model_name);
+
+        Self::from_json_str_with_name(&content, name)
     }
 
-    /// Load a random forest from a JSON string.
-    pub fn from_json_str(json: &str) -> Result<Self, String> {
+    /// Load a random forest from a JSON string with a custom name.
+    fn from_json_str_with_name(json: &str, name: String) -> Result<Self, String> {
         let model: RandomForestJson =
             serde_json::from_str(json).map_err(|e| format!("JSON parse error: {}", e))?;
 
@@ -126,11 +139,20 @@ impl RandomForest {
         let trees: Vec<Vec<TreeNode>> = model.trees.into_iter().map(|t| t.nodes).collect();
 
         Ok(Self {
-            name: format!("RandomForest_{}", model.model_name),
+            name,
             n_features: model.n_features,
             n_classes: model.n_classes,
             trees,
         })
+    }
+
+    /// Load a random forest from a JSON string (uses model_name from JSON).
+    pub fn from_json_str(json: &str) -> Result<Self, String> {
+        // Parse just to get the model_name for backwards compatibility
+        let model: RandomForestJson =
+            serde_json::from_str(json).map_err(|e| format!("JSON parse error: {}", e))?;
+        let name = format!("RandomForest_{}", model.model_name);
+        Self::from_json_str_with_name(json, name)
     }
 
     /// Traverse a single tree and return leaf probabilities.

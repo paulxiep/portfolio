@@ -35,11 +35,7 @@ use std::marker::PhantomData;
 
 use crate::state::AgentState;
 use crate::{Agent, AgentAction, StrategyContext, floor_price};
-use types::{
-    AgentId, Cash, IndicatorType, LOOKBACKS, N_MARKET_FEATURES, Order, OrderSide, Price, Quantity,
-    Symbol, Trade, bollinger_percent_b, feature_idx as idx, log_return_from_candles,
-    price_change_from_candles,
-};
+use types::{AgentId, Cash, Order, OrderSide, Price, Quantity, Symbol, Trade};
 
 use super::{ClassProbabilities, MlModel};
 
@@ -114,124 +110,6 @@ impl<M: MlModel> TreeAgent<M> {
         self.model.name()
     }
 
-    /// Extract market features for a symbol from the strategy context.
-    ///
-    /// Uses unified feature schema from `types::features` for type-safe indices
-    /// and computation functions to ensure training-serving parity.
-    fn extract_features(
-        &self,
-        symbol: &Symbol,
-        ctx: &StrategyContext<'_>,
-    ) -> [f64; N_MARKET_FEATURES] {
-        let mut features = [f64::NAN; N_MARKET_FEATURES];
-
-        // Mid price
-        let mid_price = ctx
-            .mid_price(symbol)
-            .map(|p| p.to_float())
-            .unwrap_or(f64::NAN);
-        features[idx::MID_PRICE] = mid_price;
-
-        // Get candles for price history calculations
-        let candles = ctx.candles(symbol);
-
-        // Price changes at lookback horizons (using unified computation)
-        LOOKBACKS.iter().enumerate().for_each(|(i, &lookback)| {
-            features[idx::PRICE_CHANGE_START + i] = price_change_from_candles(candles, lookback);
-        });
-
-        // Log returns at lookback horizons
-        LOOKBACKS.iter().enumerate().for_each(|(i, &lookback)| {
-            features[idx::LOG_RETURN_START + i] = log_return_from_candles(candles, lookback);
-        });
-
-        // Technical indicators from pre-computed IndicatorSnapshot
-        features[idx::SMA_8] = ctx
-            .get_indicator(symbol, IndicatorType::Sma(8))
-            .unwrap_or(f64::NAN);
-        features[idx::SMA_16] = ctx
-            .get_indicator(symbol, IndicatorType::Sma(16))
-            .unwrap_or(f64::NAN);
-        features[idx::EMA_8] = ctx
-            .get_indicator(symbol, IndicatorType::Ema(8))
-            .unwrap_or(f64::NAN);
-        features[idx::EMA_16] = ctx
-            .get_indicator(symbol, IndicatorType::Ema(16))
-            .unwrap_or(f64::NAN);
-        features[idx::RSI_8] = ctx
-            .get_indicator(symbol, IndicatorType::Rsi(8))
-            .unwrap_or(f64::NAN);
-
-        // MACD components (8/16/4 standard parameters)
-        features[idx::MACD_LINE] = ctx
-            .get_indicator(symbol, IndicatorType::MACD_LINE_STANDARD)
-            .unwrap_or(f64::NAN);
-        features[idx::MACD_SIGNAL] = ctx
-            .get_indicator(symbol, IndicatorType::MACD_SIGNAL_STANDARD)
-            .unwrap_or(f64::NAN);
-        features[idx::MACD_HISTOGRAM] = ctx
-            .get_indicator(symbol, IndicatorType::MACD_HISTOGRAM_STANDARD)
-            .unwrap_or(f64::NAN);
-
-        // Bollinger Bands components (12 period, 2.0 std dev)
-        let bb_upper = ctx
-            .get_indicator(symbol, IndicatorType::BOLLINGER_UPPER_STANDARD)
-            .unwrap_or(f64::NAN);
-        let bb_middle = ctx
-            .get_indicator(symbol, IndicatorType::BOLLINGER_MIDDLE_STANDARD)
-            .unwrap_or(f64::NAN);
-        let bb_lower = ctx
-            .get_indicator(symbol, IndicatorType::BOLLINGER_LOWER_STANDARD)
-            .unwrap_or(f64::NAN);
-        features[idx::BB_UPPER] = bb_upper;
-        features[idx::BB_MIDDLE] = bb_middle;
-        features[idx::BB_LOWER] = bb_lower;
-
-        // Bollinger %B using unified computation function
-        features[idx::BB_PERCENT_B] = bollinger_percent_b(mid_price, bb_upper, bb_lower);
-
-        features[idx::ATR_8] = ctx
-            .get_indicator(symbol, IndicatorType::Atr(8))
-            .unwrap_or(f64::NAN);
-
-        // News features
-        let events = ctx.events_for_symbol(symbol);
-
-        features[idx::HAS_ACTIVE_NEWS] = if events.is_empty() { 0.0 } else { 1.0 };
-
-        // News sentiment, magnitude, ticks remaining
-        let (sentiment, magnitude, ticks_remaining) = events
-            .first()
-            .map(|event| {
-                let end_tick = event.start_tick + event.duration_ticks;
-                let remaining = if ctx.tick < end_tick {
-                    (end_tick - ctx.tick) as f64
-                } else {
-                    0.0
-                };
-                (
-                    event.effective_sentiment(ctx.tick),
-                    event.magnitude,
-                    remaining,
-                )
-            })
-            .unwrap_or((0.0, 0.0, 0.0));
-
-        features[idx::NEWS_SENTIMENT] = sentiment;
-        features[idx::NEWS_MAGNITUDE] = magnitude;
-        features[idx::NEWS_TICKS_REMAINING] = ticks_remaining;
-
-        // Impute NaN with 0.0 to match training behavior
-        // Training script: X = np.nan_to_num(X, nan=0.0)
-        features.iter_mut().for_each(|f| {
-            if f.is_nan() {
-                *f = -1.0;
-            }
-        });
-
-        features
-    }
-
     /// Get reference price for a symbol.
     fn get_reference_price(&self, symbol: &Symbol, ctx: &StrategyContext<'_>) -> Price {
         ctx.mid_price(symbol)
@@ -286,19 +164,17 @@ impl<M: MlModel> Agent for TreeAgent<M> {
     }
 
     fn on_tick(&mut self, ctx: &StrategyContext<'_>) -> AgentAction {
-        // Skip during warmup - features have NaN values until sufficient price history
-        // Longest lookback is 64 ticks; ATR needs 8 periods of candle data
-        if ctx.tick < 1000 {
-            return AgentAction::none();
-        }
-
         let mut orders: Vec<Order> = Vec::new();
+        let model_name = self.model.name();
 
         // Evaluate each symbol independently - can place up to 1 order per symbol
         for symbol in &self.config.symbols {
-            // Extract features and get prediction
-            let features = self.extract_features(symbol, ctx);
-            let probs: ClassProbabilities = self.model.predict(&features);
+            // V5.6: Use centralized cached prediction (computed in Phase 3 of tick loop)
+            // If cache unavailable, hold - no fallback to avoid redundant computation
+            let probs: ClassProbabilities = match ctx.get_ml_prediction(model_name, symbol) {
+                Some(p) => p,
+                None => continue, // Skip this symbol if no prediction cached
+            };
 
             let p_sell = probs[0] + rand::random::<f64>() * 0.005;
             let p_hold: f64 = probs[1]; // + rand::random::<f64>() * 0.01;
@@ -401,36 +277,6 @@ mod tests {
 
         assert_eq!(agent.id(), AgentId(1));
         assert_eq!(agent.model_name(), "DecisionTree_test");
-    }
-
-    #[test]
-    fn test_extract_features_returns_42() {
-        let model = DecisionTree::from_json_str(sample_tree_json()).unwrap();
-        let config = TreeAgentConfig::default();
-        let agent = TreeAgent::new(AgentId(1), model, config);
-
-        // Create minimal context
-        let book = sim_core::OrderBook::new("ACME");
-        let market = sim_core::SingleSymbolMarket::new(&book);
-        let candles = std::collections::HashMap::new();
-        let indicators = quant::IndicatorSnapshot::new(100);
-        let recent_trades = std::collections::HashMap::new();
-        let events = vec![];
-        let fundamentals = news::SymbolFundamentals::default();
-
-        let ctx = StrategyContext::new(
-            100,
-            1000,
-            &market,
-            &candles,
-            &indicators,
-            &recent_trades,
-            &events,
-            &fundamentals,
-        );
-
-        let features = agent.extract_features(&"ACME".to_string(), &ctx);
-        assert_eq!(features.len(), 42);
     }
 
     #[test]

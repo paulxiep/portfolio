@@ -934,7 +934,11 @@ fn spawn_ml_agents<M: Clone + agents::MlModel + 'static>(
 ///
 /// Models are discovered from JSON files in the models/ directory.
 /// The model_type field in each JSON determines which loader to use.
+///
+/// V5.6: Also registers unique models with the simulation for centralized
+/// prediction caching (O(M × S) instead of O(N) predictions per tick).
 fn spawn_tree_agents(
+    sim: &mut Simulation,
     config: &SimConfig,
     symbols: &[SymbolSpec],
     start_id: u64,
@@ -991,6 +995,24 @@ fn spawn_tree_agents(
                 (dt, rf, gb)
             },
         );
+
+    // V5.6: Register unique models with simulation for centralized prediction caching
+    // This enables O(M × S) predictions instead of O(N) per-agent computations
+    for model in &decision_trees {
+        sim.register_ml_model(model.clone());
+    }
+    for model in &random_forests {
+        sim.register_ml_model(model.clone());
+    }
+    for model in &gradient_boosteds {
+        sim.register_ml_model(model.clone());
+    }
+    if sim.has_ml_models() {
+        eprintln!(
+            "  Registered {} unique ML models for centralized caching",
+            sim.ml_model_count()
+        );
+    }
 
     let agent_config = TreeAgentConfig {
         symbols: symbols.iter().map(|s| s.symbol.clone()).collect(),
@@ -1063,7 +1085,7 @@ fn spawn_all_tier1_agents(
     let (pairs_agents, id) = spawn_pairs_traders(config, symbols, next_id);
     next_id = id;
 
-    let (tree_agents, id) = spawn_tree_agents(config, symbols, next_id);
+    let (tree_agents, id) = spawn_tree_agents(sim, config, symbols, next_id);
     next_id = id;
 
     let (random_agents, id) = spawn_random_tier1_agents(config, symbols, next_id, rng);

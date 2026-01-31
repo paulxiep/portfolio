@@ -315,12 +315,12 @@ impl Default for SimConfig {
             num_sector_rotators: 500, // V3.3: sector rotation agents (special T2)
 
             // V5.5: ML Agent Counts (split equally between sub-models)
-            num_decision_tree_agents: 197,
-            num_random_forest_agents: 1,
-            num_gradient_boosted_agents: 2,
+            num_decision_tree_agents: 400,
+            num_random_forest_agents: 100,
+            num_gradient_boosted_agents: 200,
 
             // Tier Minimums
-            min_tier1_agents: 7000, // Random agents fill the gap
+            min_tier1_agents: 7500, // Random agents fill the gap
 
             // Tier 2 Reactive Agents (V3.2)
             num_tier2_agents: 4500,
@@ -345,7 +345,7 @@ impl Default for SimConfig {
             // Tier 3 Background Pool (V3.4)
             // V3.5: Doubled pool size for parallel execution benchmarking
             enable_background_pool: true,
-            background_pool_size: 88000,
+            background_pool_size: 87500,
             background_regime: MarketRegime::Normal,
             t3_mean_order_size: 40.0,
             t3_max_order_size: 120,

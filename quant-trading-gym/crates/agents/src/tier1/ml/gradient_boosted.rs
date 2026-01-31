@@ -103,6 +103,9 @@ pub struct GradientBoosted {
 impl GradientBoosted {
     /// Load a gradient boosted model from a JSON file.
     ///
+    /// The model name is derived from the filename by stripping the `_gradient_boosted` suffix,
+    /// formatted as `GradientBoosted_{name}`.
+    ///
     /// # Arguments
     /// * `path` - Path to the JSON file exported from sklearn
     ///
@@ -113,11 +116,21 @@ impl GradientBoosted {
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
 
-        Self::from_json_str(&content)
+        // Derive model name from filename (e.g., "fast_gradient_boosted.json" -> "GradientBoosted_fast")
+        let file_stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+        let model_name = file_stem
+            .strip_suffix("_gradient_boosted")
+            .unwrap_or(file_stem);
+        let name = format!("GradientBoosted_{}", model_name);
+
+        Self::from_json_str_with_name(&content, name)
     }
 
-    /// Load a gradient boosted model from a JSON string.
-    pub fn from_json_str(json: &str) -> Result<Self, String> {
+    /// Load a gradient boosted model from a JSON string with a custom name.
+    fn from_json_str_with_name(json: &str, name: String) -> Result<Self, String> {
         let model: GradientBoostedJson =
             serde_json::from_str(json).map_err(|e| format!("JSON parse error: {}", e))?;
 
@@ -185,13 +198,22 @@ impl GradientBoosted {
             .collect();
 
         Ok(Self {
-            name: format!("GradientBoosted_{}", model.model_name),
+            name,
             n_features: model.n_features,
             n_classes: model.n_classes,
             learning_rate: model.learning_rate,
             init_value: model.init_value,
             stages,
         })
+    }
+
+    /// Load a gradient boosted model from a JSON string (uses model_name from JSON).
+    pub fn from_json_str(json: &str) -> Result<Self, String> {
+        // Parse just to get the model_name for backwards compatibility
+        let model: GradientBoostedJson =
+            serde_json::from_str(json).map_err(|e| format!("JSON parse error: {}", e))?;
+        let name = format!("GradientBoosted_{}", model.model_name);
+        Self::from_json_str_with_name(json, name)
     }
 
     /// Traverse a regression tree and return the leaf value.

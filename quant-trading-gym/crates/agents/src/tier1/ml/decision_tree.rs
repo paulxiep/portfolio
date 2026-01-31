@@ -90,6 +90,9 @@ pub struct DecisionTree {
 impl DecisionTree {
     /// Load a decision tree from a JSON file.
     ///
+    /// The model name is derived from the filename by stripping the `_decision_tree` suffix,
+    /// formatted as `DecisionTree_{name}`.
+    ///
     /// # Arguments
     /// * `path` - Path to the JSON file exported from sklearn
     ///
@@ -100,11 +103,21 @@ impl DecisionTree {
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
 
-        Self::from_json_str(&content)
+        // Derive model name from filename (e.g., "deep_decision_tree.json" -> "DecisionTree_deep")
+        let file_stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+        let model_name = file_stem
+            .strip_suffix("_decision_tree")
+            .unwrap_or(file_stem);
+        let name = format!("DecisionTree_{}", model_name);
+
+        Self::from_json_str_with_name(&content, name)
     }
 
-    /// Load a decision tree from a JSON string.
-    pub fn from_json_str(json: &str) -> Result<Self, String> {
+    /// Load a decision tree from a JSON string with a custom name.
+    fn from_json_str_with_name(json: &str, name: String) -> Result<Self, String> {
         let model: DecisionTreeJson =
             serde_json::from_str(json).map_err(|e| format!("JSON parse error: {}", e))?;
 
@@ -162,11 +175,20 @@ impl DecisionTree {
         }
 
         Ok(Self {
-            name: format!("DecisionTree_{}", model.model_name),
+            name,
             n_features: model.n_features,
             n_classes: model.n_classes,
             nodes: model.tree.nodes,
         })
+    }
+
+    /// Load a decision tree from a JSON string (uses model_name from JSON).
+    pub fn from_json_str(json: &str) -> Result<Self, String> {
+        // Parse just to get the model_name for backwards compatibility
+        let model: DecisionTreeJson =
+            serde_json::from_str(json).map_err(|e| format!("JSON parse error: {}", e))?;
+        let name = format!("DecisionTree_{}", model.model_name);
+        Self::from_json_str_with_name(json, name)
     }
 
     /// Traverse the tree for given features and return leaf node index.

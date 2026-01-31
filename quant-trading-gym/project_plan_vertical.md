@@ -724,6 +724,17 @@ V5.5: Rust Tree Inference (~2 days)
     └─► Add to simulation as Tier 1 agent
     └─► Benchmark: target <20µs per RF prediction
     └─► **Milestone** ML agent running in simulation!
+
+V5.6: Centralized ML Inference (~2 days)
+    └─► Problem: N agents × feature extraction + prediction per tick (redundant)
+    └─► `MlPredictionCache`: stores features per symbol, predictions per (model, symbol)
+    └─► Shared `extract_features(symbol, ctx)` function (moved from TreeAgent)
+    └─► `ModelRegistry`: holds unique models, computes O(M × S) predictions per tick
+    └─► Extend `StrategyContext` with optional `&MlPredictionCache`
+    └─► TreeAgent checks cache first, falls back to local computation
+    └─► Integration: Phase 3 of tick loop builds cache before agent collection
+    └─► **Performance**: N extractions/predictions → S extractions + (M × S) predictions
+    └─► See: 5.6_centralised_ML_inference.md for full details
 ```
 
 **V5 File Structure**
@@ -744,11 +755,16 @@ crates/simulation/src/
 │   ├── risk.rs
 │   └── news.rs
 
-crates/agents/src/tier1/ml/   # V5.3-V5.5: ML infrastructure
+crates/agents/src/tier1/ml/   # V5.3-V5.6: ML infrastructure
 ├── mod.rs              # MlModel trait, FeatureExtractor trait, pub use
 ├── features.rs         # MinimalFeatures struct (~10 features)
 ├── decision_tree.rs    # DecisionTree struct, JSON loader
-└── tree_agent.rs       # TreeAgent<F, M> generic agent
+├── tree_agent.rs       # TreeAgent<F, M> generic agent
+├── feature_extractor.rs # V5.6: Shared extract_features() function
+└── model_registry.rs   # V5.6: ModelRegistry for centralized prediction
+
+crates/agents/src/
+├── ml_cache.rs         # V5.6: MlPredictionCache struct
 ```
 
 **V5 Deliverable** Working ML agent trained on simulation data, running as Tier 1.
@@ -759,7 +775,7 @@ crates/agents/src/tier1/ml/   # V5.3-V5.5: ML infrastructure
 |----------|---------|-----------|----------------|
 | **ML agent count** | 100 / 1,000 / 10,000 | 100 agents: ~0.3ms/tick; 1,000: ~3ms/tick; 10,000: ~30ms/tick | V5.5 benchmarking |
 
-**Total V5** ~2 weeks (V5.1: 2d, V5.2: 3-4d, V5.3: 2d, V5.4: 3d, V5.5: 2d)
+**Total V5** ~2.5 weeks (V5.1: 2d, V5.2: 3-4d, V5.3: 2d, V5.4: 3d, V5.5: 2d, V5.6: 2d)
 
 ## V6: Feature Engineering
 

@@ -49,6 +49,9 @@ use quant::IndicatorSnapshot;
 use sim_core::MarketView;
 use types::{BookSnapshot, Candle, IndicatorType, Price, Quantity, Symbol, Tick, Timestamp, Trade};
 
+use crate::ml_cache::MlPredictionCache;
+use crate::tier1::ml::ClassProbabilities;
+
 // =============================================================================
 // StrategyContext
 // =============================================================================
@@ -113,6 +116,10 @@ pub struct StrategyContext<'a> {
 
     /// Symbol fundamentals for fair value lookups (V2.4).
     fundamentals: &'a news::SymbolFundamentals,
+
+    /// Centralized ML prediction cache (V5.6).
+    /// When present, agents can retrieve cached predictions instead of computing locally.
+    ml_cache: Option<&'a MlPredictionCache>,
 }
 
 impl<'a> StrategyContext<'a> {
@@ -139,6 +146,36 @@ impl<'a> StrategyContext<'a> {
             recent_trades,
             events,
             fundamentals,
+            ml_cache: None,
+        }
+    }
+
+    /// Create a new strategy context with ML prediction cache (V5.6).
+    ///
+    /// This constructor enables centralized ML prediction caching, allowing
+    /// agents to retrieve pre-computed predictions instead of computing locally.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_ml_cache(
+        tick: Tick,
+        timestamp: Timestamp,
+        market: &'a dyn MarketView,
+        candles: &'a HashMap<Symbol, Vec<Candle>>,
+        indicators: &'a IndicatorSnapshot,
+        recent_trades: &'a HashMap<Symbol, Vec<Trade>>,
+        events: &'a [news::NewsEvent],
+        fundamentals: &'a news::SymbolFundamentals,
+        ml_cache: &'a MlPredictionCache,
+    ) -> Self {
+        Self {
+            tick,
+            timestamp,
+            market,
+            candles,
+            indicators,
+            recent_trades,
+            events,
+            fundamentals,
+            ml_cache: Some(ml_cache),
         }
     }
 
@@ -248,6 +285,47 @@ impl<'a> StrategyContext<'a> {
     /// Check if indicator data is available.
     pub fn has_indicators(&self) -> bool {
         self.indicators.tick > 0
+    }
+
+    // =========================================================================
+    // ML Cache Access (V5.6)
+    // =========================================================================
+
+    /// Get the ML prediction cache if available.
+    ///
+    /// Returns `Some` if the simulation has a model registry and computed
+    /// predictions for this tick. Returns `None` for backward compatibility
+    /// when no registry is configured.
+    pub fn ml_cache(&self) -> Option<&MlPredictionCache> {
+        self.ml_cache
+    }
+
+    /// Get a cached ML prediction for a model-symbol pair.
+    ///
+    /// This is a convenience method that combines cache lookup.
+    /// Returns `None` if either the cache is not available or the
+    /// prediction is not cached for this model-symbol pair.
+    ///
+    /// # Arguments
+    ///
+    /// * `model_name` - Name of the ML model
+    /// * `symbol` - Symbol to get prediction for
+    ///
+    /// # Returns
+    ///
+    /// `Some([p_sell, p_hold, p_buy])` if cached, `None` otherwise.
+    pub fn get_ml_prediction(
+        &self,
+        model_name: &str,
+        symbol: &Symbol,
+    ) -> Option<ClassProbabilities> {
+        self.ml_cache
+            .and_then(|cache| cache.get_prediction(model_name, symbol))
+    }
+
+    /// Check if ML prediction cache is available.
+    pub fn has_ml_cache(&self) -> bool {
+        self.ml_cache.is_some()
     }
 
     // =========================================================================

@@ -68,6 +68,7 @@
 
 mod borrow_ledger;
 mod context;
+pub mod ml_cache;
 mod position_limits;
 mod state;
 pub mod tiers;
@@ -80,6 +81,7 @@ pub mod tier3;
 
 pub use borrow_ledger::{BorrowLedger, BorrowPosition};
 pub use context::StrategyContext;
+pub use ml_cache::MlPredictionCache;
 pub use position_limits::PositionValidator;
 pub use state::{AgentState, PositionEntry};
 // Re-export strategies from tier1 for backward compatibility
@@ -92,7 +94,8 @@ pub use tier1::{
 // Re-export ML model types (V5.5)
 pub use tier1::{
     ClassProbabilities, DecisionTree, DecisionTreeAgent, GradientBoosted, GradientBoostedAgent,
-    MlModel, RandomForest, RandomForestAgent, TreeAgent, TreeAgentConfig,
+    MlModel, ModelRegistry, RandomForest, RandomForestAgent, TreeAgent, TreeAgentConfig,
+    extract_features,
 };
 // Re-export Tier 2 types for V3.2
 pub use tier2::{

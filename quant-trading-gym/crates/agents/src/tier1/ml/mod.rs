@@ -42,12 +42,16 @@
 //! ```
 
 mod decision_tree;
+mod feature_extractor;
 mod gradient_boosted;
+mod model_registry;
 mod random_forest;
 mod tree_agent;
 
 pub use decision_tree::DecisionTree;
+pub use feature_extractor::extract_features;
 pub use gradient_boosted::GradientBoosted;
+pub use model_registry::ModelRegistry;
 pub use random_forest::RandomForest;
 pub use tree_agent::{TreeAgent, TreeAgentConfig};
 

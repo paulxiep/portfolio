@@ -1,5 +1,114 @@
 # Development Log
 
+## 2026-01-31: V5.6 Centralized ML Inference
+
+### Summary
+Implemented centralized ML prediction caching to optimize per-tick overhead. Feature extraction and model predictions now happen **once per symbol/model pair** instead of **once per agent**, reducing computation from O(N) to O(M × S) where N=agents, M=models, S=symbols.
+
+### Problem Statement
+Each `TreeAgent` independently extracted 42 features and called `model.predict()` per tick, even when multiple agents shared the same model and traded the same symbols.
+
+With 100 agents, 3 models, 10 symbols:
+- **Before**: 100 feature extractions, 100 predictions per tick
+- **After**: 10 feature extractions, 30 predictions per tick (~3x improvement)
+
+### Architecture
+
+```
+Phase 3 (Tick Loop - StrategyContext Builder)
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────┐
+│            ModelRegistry (new)                               │
+│   - Holds all unique ML models                               │
+│   - compute_all_predictions() runs in parallel               │
+└─────────────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────┐
+│            MlPredictionCache (new)                           │
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │ features: HashMap<Symbol, [f64; 42]>                     ││
+│  │   - Extracted ONCE per symbol per tick                   ││
+│  └─────────────────────────────────────────────────────────┘│
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │ predictions: HashMap<(ModelName, Symbol), [f64; 3]>      ││
+│  │   - Predicted ONCE per (model, symbol) per tick          ││
+│  └─────────────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────────┘
+    │
+    ▼
+StrategyContext (extended with Option<&MlPredictionCache>)
+    │
+    ▼
+TreeAgent::on_tick() - retrieves cached predictions, skips if unavailable
+```
+
+### New Files
+
+| File | Purpose |
+|------|---------|
+| `crates/agents/src/ml_cache.rs` | `MlPredictionCache` struct for storing features/predictions |
+| `crates/agents/src/tier1/ml/feature_extractor.rs` | Standalone `extract_features()` function |
+| `crates/agents/src/tier1/ml/model_registry.rs` | `ModelRegistry` for centralized model management |
+
+### Modified Files
+
+| File | Changes |
+|------|---------|
+| `crates/agents/src/context.rs` | Added `ml_cache` field, `get_ml_prediction()` method, `with_ml_cache()` constructor |
+| `crates/agents/src/tier1/ml/tree_agent.rs` | Uses cached predictions via `ctx.get_ml_prediction()`, removed local `extract_features()` method |
+| `crates/agents/src/tier1/ml/mod.rs` | Export `ModelRegistry`, `extract_features` |
+| `crates/agents/src/tier1/mod.rs` | Re-export new types |
+| `crates/agents/src/lib.rs` | Export `MlPredictionCache`, `ModelRegistry`, `extract_features` |
+| `crates/agents/Cargo.toml` | Added `parallel` crate dependency |
+| `crates/simulation/src/runner.rs` | Added `model_registry` field, builds ML cache in Phase 3 |
+| `src/main.rs` | Registers unique models with simulation at startup |
+
+### API Usage
+
+**Registering Models** (main.rs):
+```rust
+// Models are registered during spawn_tree_agents()
+for model in &decision_trees {
+    sim.register_ml_model(model.clone());
+}
+```
+
+**Retrieving Predictions** (tree_agent.rs):
+```rust
+// V5.6: Use cached prediction, skip symbol if unavailable
+let probs: ClassProbabilities = match ctx.get_ml_prediction(model_name, symbol) {
+    Some(p) => p,
+    None => continue, // No prediction cached for this symbol
+};
+```
+
+**Parallel Execution** (model_registry.rs):
+```rust
+// Feature extraction - O(S), parallelized
+let features_vec = parallel::map_slice(symbols, |symbol| {
+    (symbol.clone(), extract_features(symbol, ctx))
+}, false);
+
+// Predictions - O(M × S), parallelized  
+let predictions = parallel::filter_map_slice(&work_items, |(model_name, model, symbol)| {
+    cache.get_features(symbol).map(|features| {
+        (model_name.clone(), symbol.clone(), model.predict(features))
+    })
+}, false);
+```
+
+### Key Design Decisions
+
+1. **No fallback computation**: If cache is unavailable, agent skips the symbol (returns hold). This ensures all ML computation is centralized.
+
+2. **Uses `parallel` crate**: Consistent with project conventions, uses the project's `parallel` crate instead of raw rayon for runtime configurability.
+
+3. **Cache passed by reference**: `StrategyContext` holds `Option<&MlPredictionCache>` - zero-copy access for all agents.
+
+4. **Model registration at startup**: Models are registered once during `spawn_tree_agents()`, avoiding per-tick registry overhead.
+
 ## 2026-01-17: V5.5 Tree-Based ML Agents + Indicator Unification
 
 ### Summary

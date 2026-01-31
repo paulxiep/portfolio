@@ -42,7 +42,10 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
-use agents::{Agent, AgentAction, BackgroundAgentPool, PoolContext, StrategyContext};
+use agents::{
+    Agent, AgentAction, BackgroundAgentPool, MlPredictionCache, ModelRegistry, PoolContext,
+    StrategyContext,
+};
 use quant::{AgentRiskSnapshot, IndicatorCache, IndicatorEngine, IndicatorSnapshot};
 use sim_core::{Market, MarketView, OrderBook, run_parallel_auctions};
 use types::{AgentId, Candle, Order, Price, Quantity, Symbol, Tick, Timestamp, Trade};
@@ -155,6 +158,10 @@ pub struct Simulation {
 
     /// News engine subsystem (fundamentals, events, sectors).
     news_engine: NewsEngine,
+
+    /// ML model registry for centralized prediction caching (V5.6).
+    /// When populated, enables O(M × S) predictions instead of O(N).
+    model_registry: Option<ModelRegistry>,
 }
 
 impl Simulation {
@@ -260,6 +267,8 @@ impl Simulation {
             auction_engine,
             risk_manager,
             news_engine,
+            // V5.6: ML prediction caching
+            model_registry: None,
         }
     }
 
@@ -295,6 +304,38 @@ impl Simulation {
     /// Get the number of registered hooks.
     pub fn hook_count(&self) -> usize {
         self.hooks.len()
+    }
+
+    // =========================================================================
+    // ML Model Registry (V5.6)
+    // =========================================================================
+
+    /// Register an ML model for centralized prediction caching.
+    ///
+    /// When models are registered, the simulation will compute predictions
+    /// once per (model, symbol) pair in Phase 3, enabling O(M × S) predictions
+    /// instead of O(N) per-agent computations.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let model = DecisionTree::from_json("model.json")?;
+    /// sim.register_ml_model(model);
+    /// ```
+    pub fn register_ml_model<M: agents::MlModel + 'static>(&mut self, model: M) {
+        self.model_registry
+            .get_or_insert_with(ModelRegistry::new)
+            .register(model);
+    }
+
+    /// Check if the model registry has any registered models.
+    pub fn has_ml_models(&self) -> bool {
+        self.model_registry.as_ref().is_some_and(|r| !r.is_empty())
+    }
+
+    /// Get the number of registered ML models.
+    pub fn ml_model_count(&self) -> usize {
+        self.model_registry.as_ref().map(|r| r.len()).unwrap_or(0)
     }
 
     /// Build hook context with current market state.
@@ -832,16 +873,55 @@ impl Simulation {
         let candles_map = self.build_candles_map();
         let trades_map = self.build_trades_map();
         let indicators = self.build_indicator_snapshot();
-        let ctx = StrategyContext::new(
-            self.tick,
-            self.timestamp,
-            &self.market,
-            &candles_map,
-            &indicators,
-            &trades_map,
-            self.news_engine.active_events(),
-            self.news_engine.fundamentals(),
-        );
+
+        // V5.6: Build ML prediction cache if registry exists
+        // This computes predictions once per (model, symbol) pair: O(M × S)
+        // Skip during warmup - indicators have NaN values until sufficient price history
+        let ml_cache = self.model_registry.as_ref().and_then(|registry| {
+            if self.tick < self.config.ml_warmup_ticks {
+                return None;
+            }
+            let symbols = self.config.symbols();
+            // Build temporary context for feature extraction
+            let temp_ctx = StrategyContext::new(
+                self.tick,
+                self.timestamp,
+                &self.market,
+                &candles_map,
+                &indicators,
+                &trades_map,
+                self.news_engine.active_events(),
+                self.news_engine.fundamentals(),
+            );
+            let mut cache = MlPredictionCache::new(self.tick);
+            registry.compute_all_predictions(&temp_ctx, &symbols, &mut cache);
+            Some(cache)
+        });
+
+        // Build strategy context with or without ML cache
+        let ctx = match &ml_cache {
+            Some(cache) => StrategyContext::with_ml_cache(
+                self.tick,
+                self.timestamp,
+                &self.market,
+                &candles_map,
+                &indicators,
+                &trades_map,
+                self.news_engine.active_events(),
+                self.news_engine.fundamentals(),
+                cache,
+            ),
+            None => StrategyContext::new(
+                self.tick,
+                self.timestamp,
+                &self.market,
+                &candles_map,
+                &indicators,
+                &trades_map,
+                self.news_engine.active_events(),
+                self.news_engine.fundamentals(),
+            ),
+        };
 
         // Phase 4: Collect agent actions
         let actions_with_state = self.collect_agent_actions(&indices_to_call, &ctx);

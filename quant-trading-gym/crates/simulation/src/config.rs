@@ -106,6 +106,10 @@ pub struct SimulationConfig {
 
     /// Parallelization configuration (V3.7).
     pub parallelization: ParallelizationConfig,
+
+    /// Number of ticks to wait before ML models make predictions (V5.6).
+    /// During warmup, indicators have insufficient data and produce NaN values.
+    pub ml_warmup_ticks: u64,
 }
 
 impl Default for SimulationConfig {
@@ -123,6 +127,7 @@ impl Default for SimulationConfig {
             fair_value_drift: news::FairValueDriftConfig::default(),
             seed: rand::random(),
             parallelization: ParallelizationConfig::default(),
+            ml_warmup_ticks: 1000,
         }
     }
 }
