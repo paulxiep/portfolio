@@ -17,7 +17,7 @@
 
 This is my first LLM-era portfolio project. The AI coding assistant has changed the portfolio game.
 
-This project was (with planned Shuttle deployment removed) completed within 1 day. I'm starting to question what kind of problems I should solve to both be useful, add new skills and have some level of challenge.
+This project's functional core engine was completed within 1 day. The expansion plan in underway on code embeddings side, called `code-raptor`.
 
 **There'll be updates to improve ingestion** but the core engine are now functional.
 
@@ -25,6 +25,7 @@ This project was (with planned Shuttle deployment removed) completed within 1 da
 
 - <2025-12-23>: Core engine functional.
 - <2026-01-01>: Docker deployment added.
+- <2026-01-31>: Split out `code-raptor` crate.
 
 ## Usage
 
@@ -53,12 +54,6 @@ To clean, run `sh clean_docker.sh`.
 ---
 
 ## Architecture Notes
-
-For future improvements, summarised by Opus 4.5 thinking after I noted potential improvements.
-
-In addition, the **code-topology-construction** mentioned in main readme will be used to enrich this chatbot's functionalities if successful.
-
----
 
 ### Current Implementation
 
@@ -98,21 +93,4 @@ In addition, the **code-topology-construction** mentioned in main readme will be
 
 ### Potential Improvements
 
-#### Hierarchical Embedding
-- Store multiple granularities: file → function → block
-- Link via `parent_id`
-- Query at appropriate level based on user intent
-
-#### Call Graph Extraction
-- Use tree-sitter to extract function calls
-- Store as edges: `{ caller, callee, file }`
-- Enables relationship queries and flow traversal
-- Alternative: bake call context into embedding text ("Called by: X, Y")
-
-#### Docstring Generation Module
-- Decouple from ingestion pipeline
-- LLM-generate on demand (Haiku recommended for cost/speed)
-- Selective targeting: all, missing-only, single file, single function
-- Change detection via code content hashing
-- Persist separately so docstrings survive re-ingestion
-- Re-embed after generation to update vector
+This project is being expanded in code embedding and ingestion under `code-raptor` crate. [The vision is here.](project-vision.md)

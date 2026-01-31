@@ -23,22 +23,6 @@ pub struct SourceInfo {
     pub line: usize,
 }
 
-/// POST /ingest request
-#[derive(Debug, Deserialize)]
-pub struct IngestRequest {
-    pub repo_path: String,
-}
-
-/// POST /ingest response
-#[derive(Debug, Serialize)]
-pub struct IngestResponse {
-    pub code_chunks: usize,
-    pub readme_chunks: usize,
-    pub crate_chunks: usize,
-    pub module_doc_chunks: usize,
-    pub message: String,
-}
-
 /// GET /health response
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {

@@ -15,7 +15,7 @@ More project info can be found on the projects' own readme.
 ## 2025 onwards (AI-assisted projects)
 
 1. [quant-trading-gym](quant-trading-gym) (Rust + Python + TS + Dockerfile): a quantitative trading simulation in Rust with RL training in Python, modular quant strategies, risk management, microservices architecture, and web interface for portfolio manager game.
-2. [portfolio-rag-chat](portfolio-rag-chat) (Rust + Dockerfile): Chatbot and RAG implemented in Rust. Uses chatbot to answer questions about this portfolio.
+2. [portfolio-rag-chat](portfolio-rag-chat) (Rust + Dockerfile): Chatbot and RAG implemented in Rust. Uses chatbot to answer questions about this portfolio. Now being expanded with code-raptor to both hierarchically embed code and recursively cluster functions into emergent architectural understanding, somewhat like RAPTOR for code repositories.
 
 ## 2023-2024 (100% hand-written)
 
@@ -49,9 +49,3 @@ the rest are 1-day projects.
 - **Game AI & Simulation:** `Game Engine Development` · `Hexagonal Grid Geometry` · `Pathfinding Algorithms` · `Heuristic Functions` · `Rule-Based AI` · `Monte Carlo Methods`
 - **Testing & Quality:** `Locust Load Testing` · `Model Evaluation (F1, Confusion Matrix)` · `Cross-Validation` · `Early Stopping`
 - **Other Tools:** `Tkinter GUI` · `Selenium Web Scraping` · `Multi-Threading` · `Generators` · `Lazy Evaluation`
-
----
-
-## 1 planned projects, for the future
-
-1. **code-topology-construction**: for any generic repository code (as expansion to my latest venture into RAG and Vector databases). The topology constructor will recursively cluster functions into emergent architectural understanding, somewhat like RAPTOR for code repositories. This is more research-focused and will require me to study related technologies and researches first.

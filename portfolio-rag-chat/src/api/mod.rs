@@ -23,7 +23,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/projects-list", get(web::projects_list_html))
         // JSON API routes
         .route("/chat", post(handlers::chat))
-        .route("/ingest", post(handlers::ingest))
         .route("/projects", get(handlers::list_projects))
         .route("/health", get(handlers::health))
         // Static files

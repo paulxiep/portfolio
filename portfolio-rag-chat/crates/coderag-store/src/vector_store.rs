@@ -7,7 +7,7 @@ use lancedb::{
 use std::sync::Arc;
 use thiserror::Error;
 
-use crate::models::{CodeChunk, CrateChunk, ModuleDocChunk, ReadmeChunk};
+use coderag_types::{CodeChunk, CrateChunk, ModuleDocChunk, ReadmeChunk};
 
 #[derive(Error, Debug)]
 pub enum StoreError {
@@ -38,12 +38,24 @@ pub struct VectorStore {
 impl VectorStore {
     /// Connect to LanceDB at the given path (creates if not exists).
     pub async fn new(db_path: &str, embedding_dimension: usize) -> Result<Self, StoreError> {
+        // Ensure parent directory exists (important for Docker bind mounts)
+        if let Some(parent) = std::path::Path::new(db_path).parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
         let conn = connect(db_path).execute().await?;
         Ok(Self {
             conn,
             dimension: embedding_dimension,
         })
     }
+
+    pub fn dimension(&self) -> usize {
+        self.dimension
+    }
+
+    // ========================================================================
+    // Write operations (used by code-raptor)
+    // ========================================================================
 
     /// Insert code chunks with their embeddings. Creates table if needed.
     pub async fn upsert_code_chunks(
@@ -112,6 +124,10 @@ impl VectorStore {
         self.upsert_batch(MODULE_DOC_TABLE, batch).await?;
         Ok(count)
     }
+
+    // ========================================================================
+    // Read operations (used by portfolio-rag-chat)
+    // ========================================================================
 
     /// Search crate chunks by vector similarity.
     pub async fn search_crates(
@@ -249,6 +265,10 @@ impl VectorStore {
 
         Ok(projects)
     }
+
+    // ========================================================================
+    // Internal helpers
+    // ========================================================================
 
     async fn upsert_batch(&self, table_name: &str, batch: RecordBatch) -> Result<(), StoreError> {
         let schema = batch.schema();
@@ -420,7 +440,7 @@ fn crate_chunks_to_batch(
     // Store dependencies as comma-separated string
     let dependencies: StringArray = chunks
         .iter()
-        .map(|c| Some(c.dependencies.join(",")).filter(|s| !s.is_empty()))
+        .map(|c| Some(c.dependencies.join(",")).filter(|s: &String| !s.is_empty()))
         .collect();
     let project_names: StringArray = chunks.iter().map(|c| c.project_name.as_deref()).collect();
 

@@ -1,4 +1,4 @@
-use crate::models::CodeChunk;
+use coderag_types::CodeChunk;
 use tracing::warn;
 use tree_sitter::{Parser, Query, StreamingIterator};
 
@@ -168,6 +168,12 @@ impl CodeAnalyzer {
             .collect();
 
         (!doc_lines.is_empty()).then(|| doc_lines.join("\n"))
+    }
+}
+
+impl Default for CodeAnalyzer {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

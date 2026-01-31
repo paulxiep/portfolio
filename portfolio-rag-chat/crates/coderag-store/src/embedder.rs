@@ -88,6 +88,30 @@ pub fn format_readme_for_embedding(project_name: &str, content: &str) -> String 
     format!("Project: {}\n{}", project_name, content)
 }
 
+/// Formats a crate chunk for embedding.
+pub fn format_crate_for_embedding(
+    crate_name: &str,
+    description: Option<&str>,
+    deps: &[String],
+) -> String {
+    let mut parts = vec![format!("Crate: {}", crate_name)];
+
+    if let Some(desc) = description {
+        parts.push(desc.to_string());
+    }
+
+    if !deps.is_empty() {
+        parts.push(format!("Dependencies: {}", deps.join(", ")));
+    }
+
+    parts.join("\n")
+}
+
+/// Formats a module doc chunk for embedding.
+pub fn format_module_doc_for_embedding(module_name: &str, doc_content: &str) -> String {
+    format!("Module: {}\n{}", module_name, doc_content)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
