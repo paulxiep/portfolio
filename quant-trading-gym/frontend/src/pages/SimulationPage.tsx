@@ -147,7 +147,9 @@ export function SimulationPage() {
             onChartTypeChange={setChartType}
           />
         )}
-        {activeTab === 'agents' && <AgentsTab agents={dashboard.agents} />}
+        {activeTab === 'agents' && (
+          <AgentsTab agents={dashboard.agents} selectedSymbol={selectedSymbol} />
+        )}
         {activeTab === 'orders' && <OrderFlowTab orderDistribution={dashboard.orderDistribution} />}
       </main>
     </div>
@@ -230,12 +232,19 @@ function DashboardTab({ dashboard, chartType, onChartTypeChange }: DashboardTabP
 
 interface AgentsTabProps {
   agents: ReturnType<typeof useDashboardData>['agents'];
+  selectedSymbol: string;
 }
 
-function AgentsTab({ agents }: AgentsTabProps) {
+function AgentsTab({ agents, selectedSymbol }: AgentsTabProps) {
   return (
     <div>
-      <AgentTable data={agents.data} loading={agents.loading} error={agents.error} pageSize={25} />
+      <AgentTable
+        data={agents.data}
+        loading={agents.loading}
+        error={agents.error}
+        pageSize={25}
+        selectedSymbol={selectedSymbol}
+      />
     </div>
   );
 }

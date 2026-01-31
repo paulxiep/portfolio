@@ -115,7 +115,8 @@ export interface AgentData {
   total_pnl: number;
   cash: number;
   equity: number;
-  position_count: number;
+  /** Per-symbol positions (only non-zero). */
+  positions: Record<string, number>;
   is_market_maker: boolean;
   is_ml_agent: boolean;
   tier: number;

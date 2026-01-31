@@ -388,7 +388,7 @@ impl Default for SimConfig {
             tree_agent_order_size: 30,
             tree_agent_max_long_position: 1200,
             tree_agent_max_short_position: 300,
-            tree_agent_buy_threshold: 0.60,  // 60% confidence
+            tree_agent_buy_threshold: 0.65,  // 65% confidence
             tree_agent_sell_threshold: 0.75, // 75% confidence
 
             // TUI Parameters

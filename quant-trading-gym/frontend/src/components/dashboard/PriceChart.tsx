@@ -111,7 +111,7 @@ function CandleBar({ candle, index, priceMin, priceMax, height, candleWidth }: C
         y={bodyTop}
         width={candleWidth * 0.7}
         height={bodyHeight}
-        fill={isGreen ? color : color}
+        fill={color}
         stroke={color}
         strokeWidth={1}
       />

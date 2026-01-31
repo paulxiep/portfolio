@@ -45,7 +45,6 @@ pub struct AgentData {
     pub total_pnl: f64,
     pub realized_pnl: f64,
     pub positions: HashMap<Symbol, AgentPosition>,
-    pub position_count: usize,
     pub is_market_maker: bool,
     pub is_ml_agent: bool,
     pub tier: u8,

@@ -168,8 +168,8 @@ pub struct AgentDataSummary {
     pub cash: f64,
     /// Total equity (cash + positions).
     pub equity: f64,
-    /// Position count.
-    pub position_count: usize,
+    /// Per-symbol positions (only non-zero).
+    pub positions: std::collections::HashMap<String, i64>,
     /// Whether this is a market maker.
     pub is_market_maker: bool,
     /// Whether this is an ML agent.
@@ -528,7 +528,11 @@ pub async fn get_agents(State(state): State<ServerState>) -> AppResult<Json<Agen
             total_pnl: a.total_pnl,
             cash: a.cash,
             equity: a.equity,
-            position_count: a.position_count,
+            positions: a
+                .positions
+                .iter()
+                .map(|(sym, p)| (sym.clone(), p.quantity))
+                .collect(),
             is_market_maker: a.is_market_maker,
             is_ml_agent: a.is_ml_agent,
             tier: a.tier,
@@ -899,7 +903,10 @@ mod tests {
             total_pnl: 1234.56,
             cash: 95000.0,
             equity: 105000.0,
-            position_count: 3,
+            positions: std::collections::HashMap::from([
+                ("AAPL".to_string(), 100),
+                ("GOOGL".to_string(), -50),
+            ]),
             is_market_maker: false,
             is_ml_agent: false,
             tier: 1,
@@ -908,5 +915,7 @@ mod tests {
         let json = serde_json::to_string(&summary).unwrap();
         assert!(json.contains("\"agent_id\":1"));
         assert!(json.contains("\"tier\":1"));
+        assert!(json.contains("\"positions\":{"));
+        assert!(json.contains("\"AAPL\":100") || json.contains("\"GOOGL\":-50"));
     }
 }

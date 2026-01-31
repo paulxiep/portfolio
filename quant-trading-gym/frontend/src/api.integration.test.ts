@@ -246,8 +246,8 @@ describe('Portfolio API', () => {
         expect(typeof agent.cash).toBe('number');
         expect(agent).toHaveProperty('equity');
         expect(typeof agent.equity).toBe('number');
-        expect(agent).toHaveProperty('position_count');
-        expect(typeof agent.position_count).toBe('number');
+        expect(agent).toHaveProperty('positions');
+        expect(typeof agent.positions).toBe('object');
         expect(agent).toHaveProperty('is_market_maker');
         expect(typeof agent.is_market_maker).toBe('boolean');
         expect(agent).toHaveProperty('tier');

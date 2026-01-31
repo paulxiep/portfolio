@@ -25,9 +25,11 @@ export interface AgentTableProps {
   error?: Error | null;
   /** Maximum agents to display per page. */
   pageSize?: number;
+  /** Selected symbol to show position for. */
+  selectedSymbol?: string;
 }
 
-type SortField = 'agent_id' | 'name' | 'cash' | 'equity' | 'total_pnl' | 'position_count' | 'tier';
+type SortField = 'agent_id' | 'name' | 'cash' | 'equity' | 'total_pnl' | 'tier';
 type SortDirection = 'asc' | 'desc';
 
 // ---------------------------------------------------------------------------
@@ -60,6 +62,13 @@ function getPnLBg(pnl: number | null | undefined): string {
   if (pnl > 0) return 'bg-green-500/10';
   if (pnl < 0) return 'bg-red-500/10';
   return '';
+}
+
+/** Get position color (like TUI). */
+function getPositionColor(position: number): string {
+  if (position > 0) return 'text-green-400';
+  if (position < 0) return 'text-red-400';
+  return 'text-gray-400';
 }
 
 /** Get tier badge color. */
@@ -107,10 +116,14 @@ function SortHeader({ label, field, currentSort, direction, onSort }: SortHeader
 interface AgentRowProps {
   agent: AgentData;
   rank: number;
+  selectedSymbol?: string;
 }
 
-function AgentRow({ agent, rank }: AgentRowProps) {
+function AgentRow({ agent, rank, selectedSymbol }: AgentRowProps) {
   const tierBadge = getTierBadge(agent.tier);
+
+  // Get position for selected symbol only
+  const position = selectedSymbol ? (agent.positions?.[selectedSymbol] ?? null) : null;
 
   return (
     <tr className={`border-b border-gray-800 hover:bg-gray-800/50 ${getPnLBg(agent.total_pnl)}`}>
@@ -151,9 +164,16 @@ function AgentRow({ agent, rank }: AgentRowProps) {
         ${formatCurrency(agent.equity)}
       </td>
 
-      {/* Positions */}
-      <td className="px-3 py-2 font-mono text-sm text-gray-400 text-center">
-        {agent.position_count}
+      {/* Positions - show qty for selected symbol */}
+      <td className="px-3 py-2 font-mono text-sm text-center">
+        {position !== null ? (
+          <span className={getPositionColor(position)}>
+            {position > 0 ? '+' : ''}
+            {position}
+          </span>
+        ) : (
+          <span className="text-gray-600">—</span>
+        )}
       </td>
 
       {/* Total PnL */}
@@ -175,6 +195,7 @@ export function AgentTable({
   loading = false,
   error = null,
   pageSize = 20,
+  selectedSymbol,
 }: AgentTableProps) {
   const [sortField, setSortField] = useState<SortField>('total_pnl');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
@@ -341,13 +362,9 @@ export function AgentTable({
                 direction={sortDirection}
                 onSort={handleSort}
               />
-              <SortHeader
-                label="Positions"
-                field="position_count"
-                currentSort={sortField}
-                direction={sortDirection}
-                onSort={handleSort}
-              />
+              <th className="px-3 py-2 text-center text-xs font-medium text-gray-400 uppercase tracking-wider">
+                Position
+              </th>
               <SortHeader
                 label="Total PnL"
                 field="total_pnl"
@@ -359,7 +376,12 @@ export function AgentTable({
           </thead>
           <tbody>
             {paginatedAgents.map((agent, idx) => (
-              <AgentRow key={agent.agent_id} agent={agent} rank={page * pageSize + idx + 1} />
+              <AgentRow
+                key={agent.agent_id}
+                agent={agent}
+                rank={page * pageSize + idx + 1}
+                selectedSymbol={selectedSymbol}
+              />
             ))}
           </tbody>
         </table>

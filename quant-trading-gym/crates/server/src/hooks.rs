@@ -344,7 +344,6 @@ impl DataServiceHook {
             total_pnl: summary.total_pnl.to_float(),
             realized_pnl: 0.0, // Not available from summary
             positions: agent_positions,
-            position_count: summary.positions.len(),
             is_market_maker: summary.is_market_maker,
             is_ml_agent: summary.is_ml_agent,
             tier,
