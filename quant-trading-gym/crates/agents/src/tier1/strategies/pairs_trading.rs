@@ -33,6 +33,8 @@ use std::collections::HashMap;
 use crate::state::AgentState;
 use crate::{Agent, AgentAction, StrategyContext, floor_price};
 use quant::CointegrationTracker;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use types::{AgentId, Cash, Order, OrderSide, Price, Quantity, Symbol, Trade};
 
 // =============================================================================
@@ -183,6 +185,8 @@ pub struct PairsTrading {
     last_hedge_ratio: Option<f64>,
     /// Symbols as vec for `watched_symbols()` return.
     watched: Vec<Symbol>,
+    /// Random number generator for order price variation.
+    rng: StdRng,
 }
 
 impl PairsTrading {
@@ -200,6 +204,7 @@ impl PairsTrading {
             position: SpreadPosition::Flat,
             last_hedge_ratio: None,
             watched,
+            rng: StdRng::from_entropy(),
         }
     }
 
@@ -219,7 +224,7 @@ impl PairsTrading {
     }
 
     /// Generate entry orders for long spread (buy A, sell B).
-    fn enter_long_spread(&self, ctx: &StrategyContext<'_>, hedge_ratio: f64) -> Vec<Order> {
+    fn enter_long_spread(&mut self, ctx: &StrategyContext<'_>, hedge_ratio: f64) -> Vec<Order> {
         let price_a = match ctx.mid_price(&self.config.symbol_a) {
             Some(p) => p,
             None => return vec![],
@@ -233,30 +238,32 @@ impl PairsTrading {
         let qty_a = self.config.max_position_per_leg as u64;
         let qty_b = ((qty_a as f64) * hedge_ratio).round() as u64;
 
+        // Random multipliers for price variation
+        let mult_a = self.rng.r#gen_range(0.99..1.01);
+        let mult_b = self.rng.r#gen_range(0.99..1.01);
+
         vec![
             // Buy A
-            // Apply floor_price to prevent negative price spirals
             Order::limit(
                 self.id,
                 &self.config.symbol_a,
                 OrderSide::Buy,
-                Price::from_float(floor_price(price_a.to_float() * 0.999)),
+                Price::from_float(floor_price(price_a.to_float() * mult_a)),
                 Quantity(qty_a),
             ),
             // Sell B
-            // Apply floor_price to prevent negative price spirals
             Order::limit(
                 self.id,
                 &self.config.symbol_b,
                 OrderSide::Sell,
-                Price::from_float(floor_price(price_b.to_float() * 1.001)),
+                Price::from_float(floor_price(price_b.to_float() * mult_b)),
                 Quantity(qty_b),
             ),
         ]
     }
 
     /// Generate entry orders for short spread (sell A, buy B).
-    fn enter_short_spread(&self, ctx: &StrategyContext<'_>, hedge_ratio: f64) -> Vec<Order> {
+    fn enter_short_spread(&mut self, ctx: &StrategyContext<'_>, hedge_ratio: f64) -> Vec<Order> {
         let price_a = match ctx.mid_price(&self.config.symbol_a) {
             Some(p) => p,
             None => return vec![],
@@ -269,30 +276,32 @@ impl PairsTrading {
         let qty_a = self.config.max_position_per_leg as u64;
         let qty_b = ((qty_a as f64) * hedge_ratio).round() as u64;
 
+        // Random multipliers for price variation
+        let mult_a = self.rng.r#gen_range(0.99..1.01);
+        let mult_b = self.rng.r#gen_range(0.99..1.01);
+
         vec![
             // Sell A
-            // Apply floor_price to prevent negative price spirals
             Order::limit(
                 self.id,
                 &self.config.symbol_a,
                 OrderSide::Sell,
-                Price::from_float(floor_price(price_a.to_float() * 1.001)),
+                Price::from_float(floor_price(price_a.to_float() * mult_a)),
                 Quantity(qty_a),
             ),
             // Buy B
-            // Apply floor_price to prevent negative price spirals
             Order::limit(
                 self.id,
                 &self.config.symbol_b,
                 OrderSide::Buy,
-                Price::from_float(floor_price(price_b.to_float() * 0.999)),
+                Price::from_float(floor_price(price_b.to_float() * mult_b)),
                 Quantity(qty_b),
             ),
         ]
     }
 
     /// Generate exit orders to close both legs.
-    fn exit_spread(&self, ctx: &StrategyContext<'_>) -> Vec<Order> {
+    fn exit_spread(&mut self, ctx: &StrategyContext<'_>) -> Vec<Order> {
         // Define legs to close: (symbol, position)
         let legs = [
             (
@@ -306,26 +315,29 @@ impl PairsTrading {
         ];
 
         // Generate exit orders for non-zero positions with available prices
-        legs.into_iter()
-            .filter(|(_, pos)| *pos != 0)
-            .filter_map(|(symbol, pos)| {
-                ctx.mid_price(symbol).map(|price| {
-                    let (side, price_mult) = if pos > 0 {
-                        (OrderSide::Sell, 0.999) // Ask below mid to qualify
-                    } else {
-                        (OrderSide::Buy, 1.001) // Bid above mid to qualify
-                    };
-                    // Apply floor_price to prevent negative price spirals
-                    Order::limit(
-                        self.id,
-                        symbol,
-                        side,
-                        Price::from_float(floor_price(price.to_float() * price_mult)),
-                        Quantity(pos.unsigned_abs()),
-                    )
-                })
-            })
-            .collect()
+        let mut orders = Vec::new();
+        for (symbol, pos) in legs.into_iter() {
+            if pos == 0 {
+                continue;
+            }
+            if let Some(price) = ctx.mid_price(symbol) {
+                let side = if pos > 0 {
+                    OrderSide::Sell
+                } else {
+                    OrderSide::Buy
+                };
+                // Random multiplier for price variation
+                let mult = self.rng.r#gen_range(0.99..1.01);
+                orders.push(Order::limit(
+                    self.id,
+                    symbol,
+                    side,
+                    Price::from_float(floor_price(price.to_float() * mult)),
+                    Quantity(pos.unsigned_abs()),
+                ));
+            }
+        }
+        orders
     }
 }
 

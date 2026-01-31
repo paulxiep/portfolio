@@ -376,10 +376,11 @@ export function PriceChart({
   const chartWidth = Math.max(800, candles.length * minCandleWidth);
   const candleWidth = chartWidth / Math.max(candles.length, 1);
 
-  // Current price info
+  // Current price info - compare to previous candle's close
   const lastCandle = candles[candles.length - 1];
-  const priceChange = lastCandle.close - lastCandle.open;
-  const priceChangePercent = (priceChange / lastCandle.open) * 100;
+  const prevCandle = candles.length > 1 ? candles[candles.length - 2] : lastCandle;
+  const priceChange = lastCandle.close - prevCandle.close;
+  const priceChangePercent = prevCandle.close !== 0 ? (priceChange / prevCandle.close) * 100 : 0;
 
   // Handle chart type toggle
   const handleChartTypeChange = (type: ChartType) => {

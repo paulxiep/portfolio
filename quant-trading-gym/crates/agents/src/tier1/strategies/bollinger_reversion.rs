@@ -16,6 +16,8 @@
 use crate::state::AgentState;
 use crate::{Agent, AgentAction, StrategyContext, floor_price};
 use quant::BollingerBands;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use types::{AgentId, Cash, IndicatorType, Order, OrderSide, Price, Quantity, Trade};
 
 /// Configuration for a Bollinger Bands Reversion trader.
@@ -71,6 +73,8 @@ pub struct BollingerReversion {
     state: AgentState,
     /// Bollinger Bands calculator.
     bollinger: BollingerBands,
+    /// Random number generator for order price variation.
+    rng: StdRng,
 }
 
 impl BollingerReversion {
@@ -83,6 +87,7 @@ impl BollingerReversion {
             config: config.clone(),
             state: AgentState::new(initial_cash, &[&config.symbol]),
             bollinger,
+            rng: StdRng::from_entropy(),
         }
     }
 
@@ -117,11 +122,11 @@ impl BollingerReversion {
     }
 
     /// Generate a buy order.
-    fn generate_buy_order(&self, ctx: &StrategyContext<'_>) -> Order {
+    fn generate_buy_order(&mut self, ctx: &StrategyContext<'_>) -> Order {
         let price = self.get_reference_price(ctx);
-        // For mean reversion, we want to buy at or below the lower band
-        // Apply floor_price to prevent negative price spirals
-        let order_price = Price::from_float(floor_price(price.to_float() * 0.999));
+        // Random multiplier: sometimes below market, sometimes at/above
+        let mult = self.rng.r#gen_range(0.99..1.01);
+        let order_price = Price::from_float(floor_price(price.to_float() * mult));
         Order::limit(
             self.id,
             &self.config.symbol,
@@ -132,11 +137,11 @@ impl BollingerReversion {
     }
 
     /// Generate a sell order.
-    fn generate_sell_order(&self, ctx: &StrategyContext<'_>) -> Order {
+    fn generate_sell_order(&mut self, ctx: &StrategyContext<'_>) -> Order {
         let price = self.get_reference_price(ctx);
-        // For mean reversion, we want to sell at or above the upper band
-        // Apply floor_price to prevent negative price spirals
-        let order_price = Price::from_float(floor_price(price.to_float() * 1.001));
+        // Random multiplier: sometimes above market, sometimes at/below
+        let mult = self.rng.r#gen_range(0.99..1.01);
+        let order_price = Price::from_float(floor_price(price.to_float() * mult));
         Order::limit(
             self.id,
             &self.config.symbol,

@@ -144,7 +144,20 @@ impl AuctionEngine {
             &symbols,
             |symbol| {
                 let price = Self::compute_order_derived_anchor(orders_by_symbol.get(*symbol))
-                    .or_else(|| market.get_book(symbol).and_then(|book| book.last_price()))
+                    .or_else(|| {
+                        // Blend mid_price (70%) with last_price (30%) for more permissive matching
+                        market.get_book(symbol).and_then(|book| {
+                            match (book.mid_price(), book.last_price()) {
+                                (Some(mid), Some(last)) => {
+                                    let blended = mid.to_float() * 0.7 + last.to_float() * 0.3;
+                                    Some(Price::from_float(blended))
+                                }
+                                (Some(mid), None) => Some(mid),
+                                (None, Some(last)) => Some(last),
+                                (None, None) => None,
+                            }
+                        })
+                    })
                     .or_else(|| {
                         symbol_configs
                             .iter()
@@ -164,23 +177,52 @@ impl AuctionEngine {
             return None;
         }
 
-        let (bid_wap, bid_vol) = Self::compute_side_wap(orders, OrderSide::Buy);
-        let (ask_wap, ask_vol) = Self::compute_side_wap(orders, OrderSide::Sell);
+        let (bid_wgm, bid_vol) = Self::compute_side_wgm(orders, OrderSide::Buy);
+        let (ask_wgm, ask_vol) = Self::compute_side_wgm(orders, OrderSide::Sell);
 
-        match (bid_wap, ask_wap) {
-            (Some(b_wap), Some(a_wap)) => {
-                let b_val = b_wap.to_float() * ask_vol as f64;
-                let a_val = a_wap.to_float() * bid_vol as f64;
-                let total_vol = bid_vol + ask_vol;
-                Some(Price::from_float((b_val + a_val) / total_vol as f64))
+        match (bid_wgm, ask_wgm) {
+            (Some(b_wgm), Some(a_wgm)) => {
+                if b_wgm > a_wgm {
+                    // Crossed market: use midpoint to ensure both sides qualify
+                    Some(Price::from_float(
+                        (b_wgm.to_float() + a_wgm.to_float()) / 2.0,
+                    ))
+                } else {
+                    // Normal market: use volume-weighted blend
+                    let b_val = b_wgm.to_float() * ask_vol as f64;
+                    let a_val = a_wgm.to_float() * bid_vol as f64;
+                    let total_vol = bid_vol + ask_vol;
+                    Some(Price::from_float((b_val + a_val) / total_vol as f64))
+                }
             }
-            (Some(b_wap), None) => Some(b_wap),
-            (None, Some(a_wap)) => Some(a_wap),
+            (Some(b_wgm), None) => Some(b_wgm),
+            (None, Some(a_wgm)) => Some(a_wgm),
             (None, None) => None,
         }
     }
 
+    fn compute_side_wgm(orders: &[Order], side: OrderSide) -> (Option<Price>, u64) {
+        let (log_price_x_qty_sum, qty_sum) = orders
+            .iter()
+            .filter(|o| o.side == side)
+            .filter_map(|o| o.limit_price().map(|p| (p, o.quantity.raw())))
+            .fold((0.0, 0u64), |(lpq_sum, q_sum), (price, qty)| {
+                // GM Logic: Sum(Weight * ln(Value))
+                let log_price = price.to_float().ln();
+                (lpq_sum + log_price * qty as f64, q_sum + qty)
+            });
+
+        if qty_sum == 0 {
+            (None, 0)
+        } else {
+            // Finalize: exp(Sum / TotalWeight)
+            let geometric_mean = (log_price_x_qty_sum / qty_sum as f64).exp();
+            (Some(Price::from_float(geometric_mean)), qty_sum)
+        }
+    }
+
     /// Compute weighted average price and total volume for one side.
+    #[allow(dead_code)]
     fn compute_side_wap(orders: &[Order], side: OrderSide) -> (Option<Price>, u64) {
         let (price_x_qty_sum, qty_sum) = orders
             .iter()

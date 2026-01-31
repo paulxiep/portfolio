@@ -14,6 +14,8 @@
 use crate::state::AgentState;
 use crate::{Agent, AgentAction, StrategyContext, floor_price};
 use quant::Macd;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use types::{AgentId, Cash, IndicatorType, Order, OrderSide, Price, Quantity, Trade};
 
 /// Configuration for a MACD Crossover trader.
@@ -82,6 +84,8 @@ pub struct MacdCrossover {
     prev_state: MacdState,
     /// MACD calculator for full output access.
     macd: Macd,
+    /// Random number generator for order price variation.
+    rng: StdRng,
 }
 
 impl MacdCrossover {
@@ -95,6 +99,7 @@ impl MacdCrossover {
             state: AgentState::new(initial_cash, &[&config.symbol]),
             prev_state: MacdState::Unknown,
             macd,
+            rng: StdRng::from_entropy(),
         }
     }
 
@@ -130,10 +135,11 @@ impl MacdCrossover {
     }
 
     /// Generate a buy order.
-    fn generate_buy_order(&self, ctx: &StrategyContext<'_>) -> Order {
+    fn generate_buy_order(&mut self, ctx: &StrategyContext<'_>) -> Order {
         let price = self.get_reference_price(ctx);
-        // Apply floor_price to prevent negative price spirals
-        let order_price = Price::from_float(floor_price(price.to_float() * 0.999));
+        // Random multiplier: sometimes below market, sometimes at/above
+        let mult = self.rng.r#gen_range(0.99..1.01);
+        let order_price = Price::from_float(floor_price(price.to_float() * mult));
         Order::limit(
             self.id,
             &self.config.symbol,
@@ -144,10 +150,11 @@ impl MacdCrossover {
     }
 
     /// Generate a sell order.
-    fn generate_sell_order(&self, ctx: &StrategyContext<'_>) -> Order {
+    fn generate_sell_order(&mut self, ctx: &StrategyContext<'_>) -> Order {
         let price = self.get_reference_price(ctx);
-        // Apply floor_price to prevent negative price spirals
-        let order_price = Price::from_float(floor_price(price.to_float() * 1.001));
+        // Random multiplier: sometimes above market, sometimes at/below
+        let mult = self.rng.r#gen_range(0.99..1.01);
+        let order_price = Price::from_float(floor_price(price.to_float() * mult));
         Order::limit(
             self.id,
             &self.config.symbol,

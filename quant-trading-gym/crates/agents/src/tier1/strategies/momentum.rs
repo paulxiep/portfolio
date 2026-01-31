@@ -14,6 +14,8 @@
 
 use crate::state::AgentState;
 use crate::{Agent, AgentAction, StrategyContext, floor_price};
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use types::{AgentId, Cash, IndicatorType, Order, OrderSide, Price, Quantity, Trade};
 
 /// Configuration for a Momentum (RSI) trader.
@@ -64,6 +66,8 @@ pub struct MomentumTrader {
     config: MomentumConfig,
     /// Common agent state (position, cash, metrics).
     state: AgentState,
+    /// Random number generator for order price variation.
+    rng: StdRng,
 }
 
 impl MomentumTrader {
@@ -74,6 +78,7 @@ impl MomentumTrader {
             id,
             config: config.clone(),
             state: AgentState::new(initial_cash, &[&config.symbol]),
+            rng: StdRng::from_entropy(),
         }
     }
 
@@ -105,10 +110,11 @@ impl MomentumTrader {
     }
 
     /// Generate a buy order at the current reference price.
-    fn generate_buy_order(&self, ctx: &StrategyContext<'_>) -> Order {
+    fn generate_buy_order(&mut self, ctx: &StrategyContext<'_>) -> Order {
         let price = self.get_reference_price(ctx);
-        // Apply floor_price to prevent negative price spirals
-        let order_price = Price::from_float(floor_price(price.to_float() * 0.999));
+        // Random multiplier: sometimes below market, sometimes at/above
+        let mult = self.rng.r#gen_range(0.99..1.01);
+        let order_price = Price::from_float(floor_price(price.to_float() * mult));
         Order::limit(
             self.id,
             &self.config.symbol,
@@ -119,10 +125,11 @@ impl MomentumTrader {
     }
 
     /// Generate a sell order at the current reference price.
-    fn generate_sell_order(&self, ctx: &StrategyContext<'_>) -> Order {
+    fn generate_sell_order(&mut self, ctx: &StrategyContext<'_>) -> Order {
         let price = self.get_reference_price(ctx);
-        // Apply floor_price to prevent negative price spirals
-        let order_price = Price::from_float(floor_price(price.to_float() * 1.001));
+        // Random multiplier: sometimes above market, sometimes at/below
+        let mult = self.rng.r#gen_range(0.99..1.01);
+        let order_price = Price::from_float(floor_price(price.to_float() * mult));
         Order::limit(
             self.id,
             &self.config.symbol,
