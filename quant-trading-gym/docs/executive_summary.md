@@ -2,7 +2,7 @@
 
 ## What It Is
 
-A high-performance trading simulation that models realistic market microstructure with 1,000 autonomous agents trading across 4 symbols. Built in Rust for speed and reliability.
+A high-performance trading simulation that models realistic market microstructure with 100,000 agents trading across 10 symbols. Built in Rust for speed and reliability.
 
 ## Why It Matters
 
@@ -12,7 +12,7 @@ A high-performance trading simulation that models realistic market microstructur
 
 ## Key Features
 
-- **Multi-Symbol Trading**: 4 symbols across different sectors (Consumer, Energy, Real Estate, Finance)
+- **Multi-Symbol Trading**: currently 10 symbols across 5 different sectors
 - **12 Agent Strategies**: Market makers, momentum, MACD, Bollinger, VWAP, pairs trading, sector rotation, ML tree agents
 - **ML Agents (V5.5)**: DecisionTree, RandomForest, GradientBoosted agents using trained sklearn models
 - **Tiered Architecture**: T1 (full logic), T2 (reactive), T3 (45k+ background agents)
@@ -23,11 +23,11 @@ A high-performance trading simulation that models realistic market microstructur
 
 ## Quick Start
 
-**Option A: Terminal UI** (requires Rust)
+**Option A: Web Dashboard** (full visualization)
 ```bash
-cargo build --release
-cargo run --release          # Press Space to start simulation
+docker compose up
 ```
+Open http://localhost:80 — real-time charts, agent explorer, risk metrics.
 
 **Option B: Terminal UI via Docker** (no Rust needed)
 ```bash
@@ -35,11 +35,11 @@ docker compose -f docker-compose.tui.yaml up
 ```
 Open http://localhost:7681 for web-based terminal.
 
-**Option C: Web Dashboard** (full visualization)
+**Option C: Terminal UI** (requires Rust)
 ```bash
-docker compose up
+cargo build --release
+cargo run --release          # Press Space to start simulation
 ```
-Open http://localhost:80 — real-time charts, agent explorer, risk metrics.
 
 ## Current State
 

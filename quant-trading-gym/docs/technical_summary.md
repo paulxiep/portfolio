@@ -55,20 +55,6 @@ for tick in 0..max_ticks:
       9. Invoke SimulationHooks (storage, metrics, TUI)
 ```
 
-## Fair Value Model
-
-Prices anchor to intrinsic value via Gordon Growth Model:
-
-```
-fair_value = D1 / (r - g)
-
-D1 = EPS × payout × (1 + g)     # Next dividend
-r  = risk_free + equity_premium  # Required return (9%)
-g  = growth_estimate             # Growth rate (≤7%)
-```
-
-With defaults: $5 EPS, 40% payout, 5% growth → **$52.50 fair value**
-
 ## Agent Strategies
 
 | Strategy | Tier | Signal | Behavior |
@@ -98,11 +84,10 @@ With defaults: $5 EPS, 40% payout, 5% growth → **$52.50 fair value**
 
 ## Build & Run
 
-### Terminal UI (requires Rust)
+### Web Dashboard (full visualization)
 ```bash
-cargo build --release
-cargo run --release                              # TUI (Space to start)
-cargo run --release -- --headless --ticks 10000  # Headless benchmark
+docker compose up                         # Production (localhost:80)
+docker compose -f docker-compose.dev.yaml up  # Development with hot reload (localhost:5173)
 ```
 
 ### Terminal UI via Docker (no Rust needed)
@@ -111,10 +96,11 @@ docker compose -f docker-compose.tui.yaml up
 ```
 Open http://localhost:7681 for web-based terminal.
 
-### Web Dashboard (full visualization)
+### Terminal UI (requires Rust)
 ```bash
-docker compose up                         # Production (localhost:80)
-docker compose -f docker-compose.dev.yaml up  # Development with hot reload (localhost:5173)
+cargo build --release
+cargo run --release                              # TUI (Space to start)
+cargo run --release -- --headless --ticks 10000  # Headless benchmark
 ```
 
 ### Development Commands

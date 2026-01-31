@@ -7,7 +7,8 @@ services:
     build:
       context: ..  # Build from parent directory to access all portfolio projects
       dockerfile: ./portfolio-rag-chat/dockerfile/Dockerfile
-    container_name: portfolio-rag-chat-ingest
+      target: raptor
+    container_name: code-raptor-ingest
     volumes:
       - ./data:/app/data              # Persist Lance DB
       - ./cache:/tmp/.cache           # Embedding model cache
@@ -15,4 +16,4 @@ services:
     environment:
       - RUST_LOG=info
       - DB_PATH=/app/data/portfolio.lance
-    command: ["/app/portfolio-rag-chat", "--ingest", "/portfolio"]
+    command: ["/app/code-raptor", "ingest", "/portfolio", "--db-path", "/app/data/portfolio.lance"]

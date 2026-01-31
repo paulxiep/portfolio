@@ -1,6 +1,5 @@
 mod api;
 mod engine;
-mod ingestion;
 mod models;
 mod store;
 
@@ -36,27 +35,6 @@ async fn main() -> anyhow::Result<()> {
 
     // Configuration
     let db_path = std::env::var("DB_PATH").unwrap_or_else(|_| "./data/portfolio.lance".into());
-
-    // Ingest mode - run ingestion and exit
-    let args: Vec<String> = std::env::args().collect();
-    if let Some(pos) = args.iter().position(|a| a == "--ingest") {
-        let repo_path = args.get(pos + 1).expect("--ingest requires a path argument");
-        tracing::info!(repo_path, db_path, "Starting ingestion");
-
-        let mut embedder = store::Embedder::new()?;
-        let vector_store = store::VectorStore::new(&db_path, embedder.dimension()).await?;
-
-        let stats = store::ingest_repository(repo_path, &vector_store, &mut embedder).await?;
-        tracing::info!(
-            code = stats.code_chunks,
-            readme = stats.readme_chunks,
-            crates = stats.crate_chunks,
-            module_docs = stats.module_doc_chunks,
-            "Ingestion complete"
-        );
-        return Ok(());
-    }
-
     let model = std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.5-flash".into());
     let host = std::env::var("HOST").unwrap_or_else(|_| "127.0.0.1".into());
     let port: u16 = std::env::var("PORT")

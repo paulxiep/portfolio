@@ -1,7 +1,7 @@
 pub mod parser;
 
 use self::parser::{CodeAnalyzer, SupportedLanguage, parse_cargo_toml};
-use crate::models::{CodeChunk, CrateChunk, ModuleDocChunk, ReadmeChunk};
+use coderag_types::{CodeChunk, CrateChunk, ModuleDocChunk, ReadmeChunk};
 use std::path::{Path, PathBuf};
 use tracing::warn;
 use walkdir::{DirEntry, WalkDir};

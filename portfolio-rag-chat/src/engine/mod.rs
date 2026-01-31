@@ -11,10 +11,10 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum EngineError {
     #[error("embedding failed: {0}")]
-    Embedding(#[from] crate::store::embedder::EmbedError),
+    Embedding(#[from] coderag_store::EmbedError),
 
     #[error("store error: {0}")]
-    Store(#[from] crate::store::vector_store::StoreError),
+    Store(#[from] coderag_store::StoreError),
 
     #[error("generation failed: {0}")]
     Generation(String),

@@ -85,10 +85,16 @@ The project follows a strict separation of concerns where crates communicate thr
 
 | Crate | Single Responsibility |
 |-------|----------------------|
-| `types` | Shared data structures (Order, Trade, Price) — no logic |
+| `types` | Shared data structures (Order, Trade, Price, Config) — no logic |
 | `sim-core` | Order book and matching engine — market mechanics only |
-| `agents` | Agent trait and market data — behavior interface only |
+| `agents` | Agent trait and strategies — behavior interface only |
+| `news` | Event generation and fundamentals — market events only |
+| `quant` | Indicators and risk metrics — quantitative analysis only |
 | `simulation` | Tick loop orchestration — coordination only |
+| `parallel` | Parallel/sequential execution — Rayon abstraction only |
+| `storage` | SQLite persistence and Parquet export — data recording only |
+| `tui` | Terminal UI visualization — presentation only |
+| `server` | REST/WebSocket API — async web interface only |
 
 ## Tech Stack
 

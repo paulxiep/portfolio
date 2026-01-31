@@ -50,7 +50,9 @@ impl From<crate::engine::EngineError> for ApiError {
             EngineError::Store(e) => {
                 // Table not found usually means no data ingested
                 if e.to_string().contains("not found") {
-                    ApiError::Unavailable("No data ingested yet. POST to /ingest first.".into())
+                    ApiError::Unavailable(
+                        "No data ingested yet. Run code-raptor to ingest first.".into(),
+                    )
                 } else {
                     ApiError::Internal(e.to_string())
                 }
@@ -61,25 +63,18 @@ impl From<crate::engine::EngineError> for ApiError {
     }
 }
 
-// Convert store pipeline errors
-impl From<crate::store::PipelineError> for ApiError {
-    fn from(err: crate::store::PipelineError) -> Self {
-        ApiError::Internal(err.to_string())
-    }
-}
-
 // Convert embed errors
-impl From<crate::store::embedder::EmbedError> for ApiError {
-    fn from(err: crate::store::embedder::EmbedError) -> Self {
+impl From<coderag_store::EmbedError> for ApiError {
+    fn from(err: coderag_store::EmbedError) -> Self {
         ApiError::Internal(format!("Embedding error: {}", err))
     }
 }
 
 // Convert store errors
-impl From<crate::store::vector_store::StoreError> for ApiError {
-    fn from(err: crate::store::vector_store::StoreError) -> Self {
+impl From<crate::store::StoreError> for ApiError {
+    fn from(err: crate::store::StoreError) -> Self {
         if err.to_string().contains("not found") {
-            ApiError::Unavailable("No data ingested yet. POST to /ingest first.".into())
+            ApiError::Unavailable("No data ingested yet. Run code-raptor to ingest first.".into())
         } else {
             ApiError::Internal(err.to_string())
         }

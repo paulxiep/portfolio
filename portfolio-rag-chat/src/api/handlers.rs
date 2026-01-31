@@ -5,7 +5,6 @@ use super::dto::*;
 use super::error::ApiError;
 use super::state::AppState;
 use crate::engine::{context, generator, retriever};
-use crate::store::ingest_repository;
 
 /// POST /chat - Ask a question about the portfolio
 pub async fn chat(
@@ -43,36 +42,6 @@ pub async fn chat(
         .collect();
 
     Ok(Json(ChatResponse { answer, sources }))
-}
-
-/// POST /ingest - Ingest a repository
-pub async fn ingest(
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<IngestRequest>,
-) -> Result<Json<IngestResponse>, ApiError> {
-    // Validate path exists
-    let path = req.repo_path.trim();
-    if !std::path::Path::new(path).exists() {
-        return Err(ApiError::BadRequest(format!(
-            "Path does not exist: {}",
-            path
-        )));
-    }
-
-    // Run ingestion pipeline
-    let mut embedder = state.embedder.lock().await;
-    let result = ingest_repository(path, &state.store, &mut embedder).await?;
-
-    Ok(Json(IngestResponse {
-        code_chunks: result.code_chunks,
-        readme_chunks: result.readme_chunks,
-        crate_chunks: result.crate_chunks,
-        module_doc_chunks: result.module_doc_chunks,
-        message: format!(
-            "Successfully ingested {} code, {} readme, {} crate, {} module doc chunks",
-            result.code_chunks, result.readme_chunks, result.crate_chunks, result.module_doc_chunks
-        ),
-    }))
 }
 
 pub async fn list_projects(
