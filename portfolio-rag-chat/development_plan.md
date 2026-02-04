@@ -2,7 +2,7 @@
 
 Ideated with LLM assistance, structured for agile-friendly milestones.
 
-Refer to [project vision](project-vision.md) for full improvement ideas.
+Refer to [project vision](project-vision.md) for full improvement ideas and [architecture](architecture.md) for technical design.
 
 ---
 
@@ -12,9 +12,9 @@ Refer to [project vision](project-vision.md) for full improvement ideas.
 
 Each iteration delivers a thin slice through both crates (code-raptor + portfolio-rag-chat). Every version produces something *runnable* and *demonstrable*.
 
-**Value proposition: Make cheap models work well.**
+**Value proposition: Decouple knowledge from reasoning.**
 
-Commercial tools (Cursor/Copilot) can afford GPT-4/Claude Opus for code understanding. This tool's differentiator is making low-end models (Gemini Flash, Haiku) answer well through rich, structured context. Compete on retrieval quality, not model quality.
+Rich, structured retrieval amplifies *any* model—cheap or frontier. By offloading "what context is relevant" to the retrieval layer, the model's complexity budget can be spent on reasoning, multi-step workflows, or tool orchestration. This scales independently of model choice: better retrieval benefits Haiku and Opus alike.
 
 ---
 
@@ -164,47 +164,91 @@ For portfolio demonstrations, hirers ask architecture questions first:
 
 ## V1: Indexing Foundation
 
-**Goal:** Enable fast iteration and fix docstring extraction. All code-raptor work.
+**Goal:** Enable fast iteration, clean language abstraction, and fix docstring extraction. All code-raptor + coderag-store work.
 
-**Estimated effort:** ~1.5-2 weeks total
+**Estimated effort:** ~2-2.5 weeks total
 
 | Item | Effort | Notes |
 |------|--------|-------|
-| V1.1 Incremental Ingestion | 3-5 days | Content hashing, chunk diffing, deletion logic |
-| V1.2 TypeScript Support | 2-3 days | New language: tree-sitter grammar, file detection, node types |
-| V1.3 Docstring Extraction | 2-3 days | Fix for Rust/Python, add for TypeScript |
+| V1.1 Schema Foundation | 2-3 days | UUID, content_hash, delete API, List deps, model version |
+| V1.2 LanguageHandler Trait | 1-2 days | Extract abstraction before adding TypeScript |
+| V1.3 Incremental Ingestion | 2-3 days | Uses V1.1 schema for change detection |
+| V1.4 TypeScript Support | 2-3 days | Uses V1.2 trait for clean addition |
+| V1.5 Docstring Extraction | 2-3 days | Implemented on V1.2 trait per language |
 
-### V1.1: Incremental Ingestion (FIRST)
-- Content-hash each chunk
-- Skip unchanged files/functions on re-ingest
-- Delete removed chunks
-- Store `embedding_model_version` in chunk metadata (enables clean re-embedding on model change)
+### V1.1: Schema Foundation (FIRST)
+
+**Why:** Current schema lacks fields needed for incremental operations and has design debt that compounds in later phases.
+
+**Changes to coderag-types:**
+- Add `chunk_id: String` (UUID) - stable foreign key for Track C call graph edges
+- Add `content_hash: String` - SHA256 of code_content for change detection
+- Add `embedding_model_version: String` - prevents silent embedding inconsistency
+
+**Changes to coderag-store:**
+- Add delete API: `delete_chunks_by_file()`, `delete_chunks_by_project()`
+- Change `crate_chunks.dependencies` from CSV string to `List<Utf8>` - enables "what depends on X?" queries
+- Update Arrow schemas for all 4 tables
+
+**Crates:** coderag-types, coderag-store
+
+### V1.2: LanguageHandler Trait
+
+**Why:** Current `SupportedLanguage` enum requires touching 4+ match statements per new language. Extract trait before adding TypeScript.
+
+**Trait definition:**
+```rust
+pub trait LanguageHandler {
+    fn from_extension(ext: &str) -> Option<Self> where Self: Sized;
+    fn get_grammar(&self) -> tree_sitter::Language;
+    fn query_string(&self) -> &'static str;
+    fn extract_docstring(&self, source: &str, node: &Node, source_bytes: &[u8]) -> Option<String>;
+}
+```
+
+**Implementations:**
+- `RustHandler` - existing Rust logic
+- `PythonHandler` - existing Python logic
+- (V1.4) `TypeScriptHandler` - new
+
+**Crate:** code-raptor
+
+### V1.3: Incremental Ingestion
+
+**Prerequisite:** V1.1 schema (UUID, content_hash, delete API)
+
+- Content-hash each chunk using SHA256 of `code_content`
+- Query existing chunks by `(file_path, identifier, start_line)`
+- Compare `content_hash`: skip if unchanged, delete+insert if changed
+- Delete orphaned chunks when files/functions removed
+- Store `embedding_model_version` on every chunk
 - **Essential:** Enables fast iteration for all subsequent work
 - **Crate:** code-raptor
 
-### V1.2: TypeScript Support
-- Add TypeScript/JavaScript as supported language
+### V1.4: TypeScript Support
+
+**Prerequisite:** V1.2 LanguageHandler trait
+
+- Implement `TypeScriptHandler`
 - Tree-sitter grammar integration (`tree-sitter-typescript`)
 - File detection: `.ts`, `.tsx`, `.js`, `.jsx`
-- Function node extraction (functions, arrow functions, methods)
+- Query patterns for: `function_declaration`, `arrow_function`, `method_definition`, `class_declaration`
 - **Crate:** code-raptor
 
-### V1.3: Docstring Extraction
+### V1.5: Docstring Extraction
+
+**Prerequisite:** V1.2 LanguageHandler trait (docstring extraction is a trait method)
+
 - **Problem:** `docstring` field hardcoded to `None` in `parser.rs:125`
-- **Current state:**
-  - Module-level `//!` extraction exists (`extract_module_docs`) but unused
-  - Function-level `///` extraction: NOT implemented
-- **Implementation:**
-  - Extract doc comments preceding each function node via tree-sitter
-  - Wire extraction into CodeChunk creation
-  - Handle multi-line aggregation
-- **Languages:**
-  - Rust: `///` and `//!`
-  - Python: `"""..."""` docstrings
-  - TypeScript/JavaScript: `/** */` JSDoc comments
+- **Solution:** Implement `extract_docstring()` per LanguageHandler:
+  - `RustHandler`: `///` and `//!` preceding comments
+  - `PythonHandler`: `"""..."""` docstrings after def/class
+  - `TypeScriptHandler`: `/** */` JSDoc comments
+- Wire extraction into CodeChunk creation
+- Handle multi-line aggregation
 - **Crate:** code-raptor
 
-**Deliverable:** Fast re-ingestion. TypeScript support. Docstrings appear in search results.
+**Deliverable:** Fast re-ingestion. Clean language abstraction. TypeScript support. Docstrings appear in search results.
 
 ### V1 Hero Queries (Testing Checkpoint)
 - "What is code-raptor?" → Explains ingestion pipeline with docstrings visible

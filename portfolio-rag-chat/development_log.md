@@ -1,5 +1,74 @@
 # Development Log
 
+## 2026-02-04: V1.1 Schema Foundation
+
+### Summary
+Added foundational schema fields and APIs required for incremental ingestion (V1.3) and call graph (Track C). All 4 chunk types now have `chunk_id`, `content_hash`, and `embedding_model_version` fields. Delete API added to VectorStore.
+
+### Changes by Crate
+
+| Crate | Changes |
+|-------|---------|
+| coderag-types | Added 3 fields to all chunk types + `content_hash()` and `new_chunk_id()` helpers |
+| coderag-store | Updated Arrow schemas, batch conversions, changed deps to `List<Utf8>`, added delete API |
+| code-raptor | Updated ingestion to populate new fields |
+| portfolio-rag-chat | Updated test fixtures |
+
+### New Fields (all chunk types)
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `chunk_id` | String (UUID v4) | Stable foreign key for Track C call graph edges |
+| `content_hash` | String (SHA256) | Change detection for incremental ingestion |
+| `embedding_model_version` | String | Prevents silent embedding inconsistency |
+
+### New Dependencies
+
+```toml
+# coderag-types
+sha2 = "0.10"
+uuid = { version = "1.20", features = ["v4"] }
+
+# coderag-store
+arrow-buffer = "56.2"
+```
+
+### Delete API (VectorStore)
+
+| Method | Purpose |
+|--------|---------|
+| `delete_chunks_by_file(table, path)` | For incremental file updates |
+| `delete_chunks_by_project(table, project)` | For project removal |
+| `delete_chunk_by_id(table, chunk_id)` | For individual chunk deletion |
+| `get_chunks_by_file(table, path)` | Returns `(chunk_id, content_hash)` pairs for comparison |
+
+### Schema Change: Dependencies
+
+`crate_chunks.dependencies` changed from CSV string to `List<Utf8>` Arrow type. Enables future "what depends on X?" queries.
+
+### Test Results
+
+All 34 tests pass:
+- coderag-types: 5 tests (hash/UUID helpers)
+- coderag-store: 6 tests (batch conversion)
+- code-raptor: 15 tests (parsing/ingestion)
+- portfolio-rag-chat: 8 tests (context building)
+
+### Migration
+
+Existing databases incompatible. Requires full re-ingestion:
+```bash
+rm -rf data/portfolio.lance
+cargo run --bin code-raptor -- ingest /path/to/projects --db-path data/portfolio.lance
+```
+
+### Unblocks
+
+- V1.3: Incremental Ingestion (uses `content_hash` for change detection)
+- Track C: Call Graph (uses `chunk_id` for foreign key references)
+
+---
+
 ## 2026-01-31: V0.3 Workspace Restructuring
 
 ### Summary

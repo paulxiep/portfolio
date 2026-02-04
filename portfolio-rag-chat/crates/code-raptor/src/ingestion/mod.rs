@@ -1,10 +1,15 @@
 pub mod parser;
 
 use self::parser::{CodeAnalyzer, SupportedLanguage, parse_cargo_toml};
-use coderag_types::{CodeChunk, CrateChunk, ModuleDocChunk, ReadmeChunk};
+use coderag_types::{
+    CodeChunk, CrateChunk, ModuleDocChunk, ReadmeChunk, content_hash, new_chunk_id,
+};
 use std::path::{Path, PathBuf};
 use tracing::warn;
 use walkdir::{DirEntry, WalkDir};
+
+/// Default embedding model version (matches embedder.rs)
+const DEFAULT_EMBEDDING_MODEL: &str = "BGESmallENV15_384";
 
 /// Extract project name from file path based on directory structure
 /// Returns the top-level directory name relative to the repo root
@@ -58,6 +63,9 @@ fn process_readme(entry: &DirEntry, repo_root: &Path) -> Option<ReadmeChunk> {
     Some(ReadmeChunk {
         file_path: entry.path().to_string_lossy().to_string(),
         project_name,
+        chunk_id: new_chunk_id(),
+        content_hash: content_hash(&content),
+        embedding_model_version: DEFAULT_EMBEDDING_MODEL.to_string(),
         content,
     })
 }
@@ -70,12 +78,18 @@ fn process_cargo_toml(entry: &DirEntry, repo_root: &Path) -> Option<CrateChunk> 
     let crate_path = entry.path().parent()?.to_string_lossy().to_string();
     let project_name = extract_project_name(entry.path(), repo_root);
 
+    // Hash the serialized metadata for change detection
+    let hash_content = format!("{}:{}", crate_name, dependencies.join(","));
+
     Some(CrateChunk {
         crate_name,
         crate_path,
         description,
         dependencies,
         project_name,
+        chunk_id: new_chunk_id(),
+        content_hash: content_hash(&hash_content),
+        embedding_model_version: DEFAULT_EMBEDDING_MODEL.to_string(),
     })
 }
 
@@ -102,6 +116,9 @@ fn process_module_docs(
     Some(ModuleDocChunk {
         file_path: entry.path().to_string_lossy().to_string(),
         module_name,
+        chunk_id: new_chunk_id(),
+        content_hash: content_hash(&doc_content),
+        embedding_model_version: DEFAULT_EMBEDDING_MODEL.to_string(),
         doc_content,
         project_name,
     })

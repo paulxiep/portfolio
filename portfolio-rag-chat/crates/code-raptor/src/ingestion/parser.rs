@@ -1,6 +1,9 @@
-use coderag_types::CodeChunk;
+use coderag_types::{CodeChunk, content_hash, new_chunk_id};
 use tracing::warn;
 use tree_sitter::{Parser, Query, StreamingIterator};
+
+/// Default embedding model version (matches embedder.rs)
+const DEFAULT_EMBEDDING_MODEL: &str = "BGESmallENV15_384";
 
 #[derive(Debug, Clone, Copy)]
 pub enum SupportedLanguage {
@@ -113,18 +116,22 @@ impl CodeAnalyzer {
         // Transform to CodeChunks using functional style
         let mut chunks: Vec<CodeChunk> = raw_matches
             .into_iter()
-            .map(
-                |(node_type, identifier, code_content, start_line)| CodeChunk {
+            .map(|(node_type, identifier, code_content, start_line)| {
+                let hash = content_hash(&code_content);
+                CodeChunk {
                     file_path: "<set_by_caller>".to_string(),
                     language: lang.name().to_string(),
                     identifier,
                     node_type,
-                    code_content,
                     start_line,
                     project_name: None,
                     docstring: None,
-                },
-            )
+                    chunk_id: new_chunk_id(),
+                    content_hash: hash,
+                    embedding_model_version: DEFAULT_EMBEDDING_MODEL.to_string(),
+                    code_content,
+                }
+            })
             .collect();
 
         // Deduplicate by (identifier, start_line) since impl blocks may capture methods multiple times

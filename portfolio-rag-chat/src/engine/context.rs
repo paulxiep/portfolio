@@ -154,6 +154,9 @@ mod tests {
             start_line: 42,
             project_name: Some("my_project".into()),
             docstring: None,
+            chunk_id: "test-uuid-1".into(),
+            content_hash: "test-hash-1".into(),
+            embedding_model_version: "BGESmallENV15_384".into(),
         }
     }
 
@@ -162,6 +165,9 @@ mod tests {
             file_path: "my_project/README.md".into(),
             project_name: "my_project".into(),
             content: "# My Project\n\nA data processing library.".into(),
+            chunk_id: "test-uuid-2".into(),
+            content_hash: "test-hash-2".into(),
+            embedding_model_version: "BGESmallENV15_384".into(),
         }
     }
 
@@ -172,6 +178,9 @@ mod tests {
             description: Some("A utility crate".into()),
             dependencies: vec!["types".into(), "utils".into()],
             project_name: Some("my_project".into()),
+            chunk_id: "test-uuid-3".into(),
+            content_hash: "test-hash-3".into(),
+            embedding_model_version: "BGESmallENV15_384".into(),
         }
     }
 
@@ -181,6 +190,9 @@ mod tests {
             module_name: "my_module".into(),
             doc_content: "This module provides core functionality.".into(),
             project_name: Some("my_project".into()),
+            chunk_id: "test-uuid-4".into(),
+            content_hash: "test-hash-4".into(),
+            embedding_model_version: "BGESmallENV15_384".into(),
         }
     }
 
