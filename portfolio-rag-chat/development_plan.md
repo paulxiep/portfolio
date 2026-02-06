@@ -81,7 +81,11 @@ Folder/File-level embeddings
 
 Function signature extraction ─── independent (Track B)
 Large function chunking ───────── independent (Track B)
-Incremental ingestion ─────────── V1.1 (FIRST - enables fast iteration)
+Incremental ingestion ─────────── V1.3 (uses V1.1 schema)
+
+LanguageHandler refactor ─────── V1.2 (pure refactor, unblocks V1.4 + V1.5)
+    ├──► Docstring extraction (V1.4)
+    └──► TypeScript support (V1.5, benefits from V1.4 pattern)
 
 RAPTOR clustering ─────────────── needs A2 enrichment + A1 hierarchy
     └──► Architecture comparison [requires A1 hierarchy]
@@ -171,10 +175,10 @@ For portfolio demonstrations, hirers ask architecture questions first:
 | Item | Effort | Notes |
 |------|--------|-------|
 | V1.1 Schema Foundation | 2-3 days | UUID, content_hash, delete API, List deps, model version |
-| V1.2 LanguageHandler Trait | 1-2 days | Extract abstraction before adding TypeScript |
+| V1.2 LanguageHandler Refactor | 1-2 days | Pure refactor: trait + registry, docstring stays None |
 | V1.3 Incremental Ingestion | 2-3 days | Uses V1.1 schema for change detection |
-| V1.4 TypeScript Support | 2-3 days | Uses V1.2 trait for clean addition |
-| V1.5 Docstring Extraction | 2-3 days | Implemented on V1.2 trait per language |
+| V1.4 Docstring Extraction | 2-3 days | Implement extract_docstring() per handler (Rust, Python) |
+| V1.5 TypeScript Support | 2-3 days | Implement TypeScriptHandler with full docstring support |
 
 ### V1.1: Schema Foundation (FIRST)
 
@@ -192,24 +196,18 @@ For portfolio demonstrations, hirers ask architecture questions first:
 
 **Crates:** coderag-types, coderag-store
 
-### V1.2: LanguageHandler Trait
+### V1.2: LanguageHandler Refactor
 
-**Why:** Current `SupportedLanguage` enum requires touching 4+ match statements per new language. Extract trait before adding TypeScript.
+**Why:** Current `SupportedLanguage` enum requires touching 4+ match statements per new language. Extract trait before adding languages or docstring extraction.
 
-**Trait definition:**
-```rust
-pub trait LanguageHandler {
-    fn from_extension(ext: &str) -> Option<Self> where Self: Sized;
-    fn get_grammar(&self) -> tree_sitter::Language;
-    fn query_string(&self) -> &'static str;
-    fn extract_docstring(&self, source: &str, node: &Node, source_bytes: &[u8]) -> Option<String>;
-}
-```
+**Scope:** Pure refactor. `extract_docstring` defined on trait with default returning `None`. Ingestion output identical before and after. See `v1.2.md` for full design including all caller migration points.
 
-**Implementations:**
-- `RustHandler` - existing Rust logic
-- `PythonHandler` - existing Python logic
-- (V1.4) `TypeScriptHandler` - new
+**Key changes:**
+- `LanguageHandler` trait with `name()`, `extensions()`, `grammar()`, `query_string()`, `extract_docstring()` (default None)
+- `RustHandler`, `PythonHandler` implementations
+- `handler_for_path()` registry replaces `SupportedLanguage::from_path()`
+- Migrate all callers: `analyze_content()`, `extract_module_docs()`, `process_code_file()`
+- Remove `SupportedLanguage` enum entirely
 
 **Crate:** code-raptor
 
@@ -225,30 +223,30 @@ pub trait LanguageHandler {
 - **Essential:** Enables fast iteration for all subsequent work
 - **Crate:** code-raptor
 
-### V1.4: TypeScript Support
+### V1.4: Docstring Extraction
 
-**Prerequisite:** V1.2 LanguageHandler trait
+**Prerequisite:** V1.2 LanguageHandler refactor (docstring extraction is a trait method)
 
-- Implement `TypeScriptHandler`
-- Tree-sitter grammar integration (`tree-sitter-typescript`)
-- File detection: `.ts`, `.tsx`, `.js`, `.jsx`
-- Query patterns for: `function_declaration`, `arrow_function`, `method_definition`, `class_declaration`
-- **Crate:** code-raptor
-
-### V1.5: Docstring Extraction
-
-**Prerequisite:** V1.2 LanguageHandler trait (docstring extraction is a trait method)
-
-- **Problem:** `docstring` field hardcoded to `None` in `parser.rs:125`
+- **Problem:** `docstring` field hardcoded to `None` in `analyze_with_handler()`
 - **Solution:** Implement `extract_docstring()` per LanguageHandler:
   - `RustHandler`: `///` and `//!` preceding comments
   - `PythonHandler`: `"""..."""` docstrings after def/class
-  - `TypeScriptHandler`: `/** */` JSDoc comments
-- Wire extraction into CodeChunk creation
+- Wire `handler.extract_docstring()` into CodeChunk creation in `analyze_with_handler()`
 - Handle multi-line aggregation
 - **Crate:** code-raptor
 
-**Deliverable:** Fast re-ingestion. Clean language abstraction. TypeScript support. Docstrings appear in search results.
+### V1.5: TypeScript Support
+
+**Prerequisite:** V1.2 LanguageHandler refactor
+
+- Implement `TypeScriptHandler` with full trait (including `extract_docstring` for `/** */` JSDoc)
+- Tree-sitter grammar integration (`tree-sitter-typescript`)
+- File detection: `.ts`, `.tsx`, `.js`, `.jsx`
+- Query patterns for: `function_declaration`, `arrow_function`, `method_definition`, `class_declaration`
+- Register in `languages/mod.rs` handler list
+- **Crate:** code-raptor
+
+**Deliverable:** Fast re-ingestion. Clean language abstraction. Docstrings in search results. TypeScript support with docstrings from day one.
 
 ### V1 Hero Queries (Testing Checkpoint)
 - "What is code-raptor?" → Explains ingestion pipeline with docstrings visible
@@ -611,9 +609,11 @@ Independent track. Can run in parallel with Track A and B.
 
 | Improvement | Crate |
 |-------------|-------|
-| Incremental ingestion (V1.1) | code-raptor |
-| TypeScript support (V1.2) | code-raptor |
-| Docstring extraction (V1.3) | code-raptor |
+| Schema foundation (V1.1) | coderag-types, coderag-store |
+| LanguageHandler refactor (V1.2) | code-raptor |
+| Incremental ingestion (V1.3) | code-raptor |
+| Docstring extraction (V1.4) | code-raptor |
+| TypeScript support (V1.5) | code-raptor |
 | Inline call context (V2.1) | code-raptor |
 | Intent classification (V2.2) | portfolio-rag-chat |
 | Query routing (V2.3) | portfolio-rag-chat |
@@ -634,7 +634,7 @@ Independent track. Can run in parallel with Track A and B.
 
 | Milestone | Metric |
 |-----------|--------|
-| V1 | TypeScript files indexed; docstrings appear in results (Rust, Python, TS); re-ingestion <30s for unchanged code |
+| V1 | Docstrings appear in results (Rust, Python); TypeScript files indexed with docstrings; re-ingestion <30s for unchanged code |
 | V2 | Queries route by type; retrieval sources shown; call context in embeddings |
 | V3 | Test dataset with 20+ queries; baseline recall@5 documented; regression script runs <60s |
 | A1 | "What does engine/ do?" returns coherent answer |

@@ -1,58 +1,13 @@
 use coderag_types::{CodeChunk, content_hash, new_chunk_id};
+use std::path::Path;
 use tracing::warn;
 use tree_sitter::{Parser, Query, StreamingIterator};
 
+use super::language::LanguageHandler;
+use super::languages::{RustHandler, handler_for_path};
+
 /// Default embedding model version (matches embedder.rs)
 const DEFAULT_EMBEDDING_MODEL: &str = "BGESmallENV15_384";
-
-#[derive(Debug, Clone, Copy)]
-pub enum SupportedLanguage {
-    Rust,
-    Python,
-}
-
-impl SupportedLanguage {
-    pub fn from_path(path: &std::path::Path) -> Option<Self> {
-        match path.extension()?.to_str()? {
-            "rs" => Some(Self::Rust),
-            "py" => Some(Self::Python),
-            _ => None,
-        }
-    }
-
-    pub fn get_grammar(&self) -> tree_sitter::Language {
-        match self {
-            Self::Rust => tree_sitter_rust::LANGUAGE.into(),
-            Self::Python => tree_sitter_python::LANGUAGE.into(),
-        }
-    }
-
-    pub fn name(&self) -> &'static str {
-        match self {
-            Self::Rust => "rust",
-            Self::Python => "python",
-        }
-    }
-
-    /// Returns the S-expression query for functions/methods/classes/structs/enums/traits
-    pub fn query_string(&self) -> &'static str {
-        match self {
-            Self::Rust => {
-                r#"(function_item name: (identifier) @name) @body
-(struct_item name: (type_identifier) @name) @body
-(enum_item name: (type_identifier) @name) @body
-(trait_item name: (type_identifier) @name) @body
-(impl_item type: (type_identifier) @name) @body
-(type_item name: (type_identifier) @name) @body
-(macro_definition name: (identifier) @name) @body"#
-            }
-            Self::Python => {
-                r#"(function_definition name: (identifier) @name) @body
-(class_definition name: (identifier) @name) @body"#
-            }
-        }
-    }
-}
 
 /// The Parser Engine (Logic Layer)
 pub struct CodeAnalyzer {
@@ -66,22 +21,35 @@ impl CodeAnalyzer {
         }
     }
 
-    pub fn analyze_content(&mut self, source: &str, lang: SupportedLanguage) -> Vec<CodeChunk> {
-        let grammar = lang.get_grammar();
+    /// Analyze a file, auto-detecting language from path
+    pub fn analyze_file(&mut self, path: &Path, source: &str) -> Vec<CodeChunk> {
+        let Some(handler) = handler_for_path(path) else {
+            return Vec::new();
+        };
+        self.analyze_with_handler(source, handler)
+    }
+
+    /// Analyze source code with a specific handler
+    pub fn analyze_with_handler(
+        &mut self,
+        source: &str,
+        handler: &dyn LanguageHandler,
+    ) -> Vec<CodeChunk> {
+        let grammar = handler.grammar();
         if let Err(e) = self.parser.set_language(&grammar) {
-            warn!(language = lang.name(), error = ?e, "Failed to set parser language");
+            warn!(language = handler.name(), error = ?e, "Failed to set parser language");
             return Vec::new();
         }
 
         let Some(tree) = self.parser.parse(source, None) else {
-            warn!(language = lang.name(), "Failed to parse source code");
+            warn!(language = handler.name(), "Failed to parse source code");
             return Vec::new();
         };
 
-        let query = match Query::new(&grammar, lang.query_string()) {
+        let query = match Query::new(&grammar, handler.query_string()) {
             Ok(q) => q,
             Err(e) => {
-                warn!(language = lang.name(), error = ?e, "Failed to create tree-sitter query");
+                warn!(language = handler.name(), error = ?e, "Failed to create tree-sitter query");
                 return Vec::new();
             }
         };
@@ -120,12 +88,12 @@ impl CodeAnalyzer {
                 let hash = content_hash(&code_content);
                 CodeChunk {
                     file_path: "<set_by_caller>".to_string(),
-                    language: lang.name().to_string(),
+                    language: handler.name().to_string(),
                     identifier,
                     node_type,
                     start_line,
                     project_name: None,
-                    docstring: None,
+                    docstring: None, // V1.4 will wire handler.extract_docstring() here
                     chunk_id: new_chunk_id(),
                     content_hash: hash,
                     embedding_model_version: DEFAULT_EMBEDDING_MODEL.to_string(),
@@ -144,7 +112,8 @@ impl CodeAnalyzer {
     /// Extract module-level documentation comments (//! lines) from Rust source.
     /// Returns the concatenated doc content if found.
     pub fn extract_module_docs(&mut self, source: &str) -> Option<String> {
-        let grammar = SupportedLanguage::Rust.get_grammar();
+        let handler = RustHandler;
+        let grammar = handler.grammar();
         if self.parser.set_language(&grammar).is_err() {
             return None;
         }
@@ -219,27 +188,21 @@ pub fn parse_cargo_toml(content: &str) -> Option<(String, Option<String>, Vec<St
 
 #[cfg(test)]
 mod tests {
+    use super::super::languages::{PythonHandler, handler_for_path};
     use super::*;
-    use std::path::Path;
 
     #[test]
-    fn test_language_detection_from_path() {
-        assert!(matches!(
-            SupportedLanguage::from_path(Path::new("test.rs")),
-            Some(SupportedLanguage::Rust)
-        ));
-        assert!(matches!(
-            SupportedLanguage::from_path(Path::new("test.py")),
-            Some(SupportedLanguage::Python)
-        ));
-        assert!(SupportedLanguage::from_path(Path::new("test.js")).is_none());
-        assert!(SupportedLanguage::from_path(Path::new("test")).is_none());
+    fn test_handler_for_path() {
+        assert!(handler_for_path(Path::new("test.rs")).is_some());
+        assert!(handler_for_path(Path::new("test.py")).is_some());
+        assert!(handler_for_path(Path::new("test.js")).is_none());
+        assert!(handler_for_path(Path::new("test")).is_none());
     }
 
     #[test]
-    fn test_language_name() {
-        assert_eq!(SupportedLanguage::Rust.name(), "rust");
-        assert_eq!(SupportedLanguage::Python.name(), "python");
+    fn test_handler_names() {
+        assert_eq!(RustHandler.name(), "rust");
+        assert_eq!(PythonHandler.name(), "python");
     }
 
     #[test]
@@ -251,7 +214,7 @@ mod tests {
         "#;
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_content(source, SupportedLanguage::Rust);
+        let chunks = analyzer.analyze_with_handler(source, &RustHandler);
 
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].identifier, "hello_world");
@@ -268,7 +231,7 @@ def greet(name):
         "#;
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_content(source, SupportedLanguage::Python);
+        let chunks = analyzer.analyze_with_handler(source, &PythonHandler);
 
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].identifier, "greet");
@@ -285,7 +248,7 @@ class MyClass:
         "#;
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_content(source, SupportedLanguage::Python);
+        let chunks = analyzer.analyze_with_handler(source, &PythonHandler);
 
         assert!(
             chunks
@@ -303,7 +266,7 @@ fn third() {}
         "#;
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_content(source, SupportedLanguage::Rust);
+        let chunks = analyzer.analyze_with_handler(source, &RustHandler);
 
         assert_eq!(chunks.len(), 3);
         assert_eq!(chunks[0].identifier, "first");
@@ -316,7 +279,7 @@ fn third() {}
         let source = "fn invalid {{{";
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_content(source, SupportedLanguage::Rust);
+        let chunks = analyzer.analyze_with_handler(source, &RustHandler);
 
         // Should handle gracefully - returns empty on parse errors
         assert_eq!(chunks.len(), 0);
@@ -327,7 +290,7 @@ fn third() {}
         let source = "fn test() {}";
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_content(source, SupportedLanguage::Rust);
+        let chunks = analyzer.analyze_with_handler(source, &RustHandler);
 
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].start_line, 1); // 1-indexed, first line
@@ -344,7 +307,7 @@ impl MyStruct {
         "#;
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_content(source, SupportedLanguage::Rust);
+        let chunks = analyzer.analyze_with_handler(source, &RustHandler);
 
         // Should capture method inside impl block
         assert!(chunks.iter().any(|c| c.identifier == "method"));

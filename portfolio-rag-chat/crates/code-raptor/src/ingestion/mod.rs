@@ -1,6 +1,11 @@
+pub mod language;
+pub mod languages;
 pub mod parser;
 
-use self::parser::{CodeAnalyzer, SupportedLanguage, parse_cargo_toml};
+pub use language::LanguageHandler;
+pub use languages::{handler_by_name, handler_for_path, supported_extensions};
+
+use self::parser::{CodeAnalyzer, parse_cargo_toml};
 use coderag_types::{
     CodeChunk, CrateChunk, ModuleDocChunk, ReadmeChunk, content_hash, new_chunk_id,
 };
@@ -130,11 +135,6 @@ fn process_code_file(
     repo_root: &Path,
     analyzer: &mut CodeAnalyzer,
 ) -> Vec<CodeChunk> {
-    let lang = match SupportedLanguage::from_path(entry.path()) {
-        Some(l) => l,
-        None => return Vec::new(),
-    };
-
     let content = match std::fs::read_to_string(entry.path()) {
         Ok(c) => c,
         Err(e) => {
@@ -143,7 +143,7 @@ fn process_code_file(
         }
     };
 
-    let mut chunks = analyzer.analyze_content(&content, lang);
+    let mut chunks = analyzer.analyze_file(entry.path(), &content);
 
     // Set file metadata once, then clone to each chunk
     // This is clearer than cloning in an iterator and allows future optimization with Rc<str>
