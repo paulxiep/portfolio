@@ -1,23 +1,28 @@
 pub mod language;
 pub mod languages;
 pub mod parser;
+pub mod reconcile;
 
 pub use language::LanguageHandler;
 pub use languages::{handler_by_name, handler_for_path, supported_extensions};
+pub use reconcile::{
+    DeletionsByTable, ExistingFileIndex, IngestionStats, ReconcileResult, reconcile,
+};
 
 use self::parser::{CodeAnalyzer, parse_cargo_toml};
 use coderag_types::{
-    CodeChunk, CrateChunk, ModuleDocChunk, ReadmeChunk, content_hash, new_chunk_id,
+    CodeChunk, CrateChunk, ModuleDocChunk, ReadmeChunk, content_hash, deterministic_chunk_id,
 };
 use std::path::{Path, PathBuf};
 use tracing::warn;
 use walkdir::{DirEntry, WalkDir};
 
 /// Default embedding model version (matches embedder.rs)
-const DEFAULT_EMBEDDING_MODEL: &str = "BGESmallENV15_384";
+pub const DEFAULT_EMBEDDING_MODEL: &str = "BGESmallENV15_384";
 
-/// Extract project name from file path based on directory structure
-/// Returns the top-level directory name relative to the repo root
+/// Extract project name from file path based on directory structure.
+/// Returns the top-level directory name relative to the repo root,
+/// or None for root-level files.
 fn extract_project_name(path: &Path, repo_root: &Path) -> Option<String> {
     let relative = path.strip_prefix(repo_root).ok()?;
     let mut components = relative.components();
@@ -27,6 +32,27 @@ fn extract_project_name(path: &Path, repo_root: &Path) -> Option<String> {
     components.next()?;
 
     first.as_os_str().to_str().map(|s| s.to_string())
+}
+
+/// Resolve project name — never returns None.
+/// Priority: CLI override > subdirectory name > repo directory name > "unknown"
+fn resolve_project_name(path: &Path, repo_root: &Path, cli_override: Option<&str>) -> String {
+    if let Some(name) = cli_override {
+        return name.to_string();
+    }
+    extract_project_name(path, repo_root).unwrap_or_else(|| {
+        repo_root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string()
+    })
+}
+
+/// Normalize a path for storage: relative to repo_root, forward slashes
+fn normalize_path(path: &Path, repo_root: &Path) -> String {
+    let relative = path.strip_prefix(repo_root).unwrap_or(path);
+    relative.to_string_lossy().replace('\\', "/")
 }
 
 /// Check if entry is a README file
@@ -60,40 +86,54 @@ fn is_lib_rs(entry: &DirEntry) -> bool {
 }
 
 /// Process a single README file
-fn process_readme(entry: &DirEntry, repo_root: &Path) -> Option<ReadmeChunk> {
+fn process_readme(
+    entry: &DirEntry,
+    repo_root: &Path,
+    project_name_override: Option<&str>,
+) -> Option<ReadmeChunk> {
     let content = std::fs::read_to_string(entry.path()).ok()?;
-    let project_name =
-        extract_project_name(entry.path(), repo_root).unwrap_or_else(|| "root".to_string());
+    let project_name = resolve_project_name(entry.path(), repo_root, project_name_override);
+
+    let norm_path = normalize_path(entry.path(), repo_root);
 
     Some(ReadmeChunk {
-        file_path: entry.path().to_string_lossy().to_string(),
-        project_name,
-        chunk_id: new_chunk_id(),
+        chunk_id: deterministic_chunk_id(&norm_path, &content),
         content_hash: content_hash(&content),
+        file_path: norm_path,
+        project_name,
         embedding_model_version: DEFAULT_EMBEDDING_MODEL.to_string(),
         content,
     })
 }
 
 /// Process a Cargo.toml file to extract crate metadata
-fn process_cargo_toml(entry: &DirEntry, repo_root: &Path) -> Option<CrateChunk> {
+fn process_cargo_toml(
+    entry: &DirEntry,
+    repo_root: &Path,
+    project_name_override: Option<&str>,
+) -> Option<CrateChunk> {
     let content = std::fs::read_to_string(entry.path()).ok()?;
     let (crate_name, description, dependencies) = parse_cargo_toml(&content)?;
 
-    let crate_path = entry.path().parent()?.to_string_lossy().to_string();
-    let project_name = extract_project_name(entry.path(), repo_root);
+    let crate_path = normalize_path(entry.path().parent()?, repo_root);
+    let project_name = resolve_project_name(entry.path(), repo_root, project_name_override);
 
-    // Hash the serialized metadata for change detection
-    let hash_content = format!("{}:{}", crate_name, dependencies.join(","));
+    // Hash all embedding-relevant fields for change detection
+    let hash_content = format!(
+        "{}:{}:{}",
+        crate_name,
+        description.as_deref().unwrap_or(""),
+        dependencies.join(",")
+    );
 
     Some(CrateChunk {
+        chunk_id: deterministic_chunk_id(&crate_path, &hash_content),
+        content_hash: content_hash(&hash_content),
         crate_name,
         crate_path,
         description,
         dependencies,
         project_name,
-        chunk_id: new_chunk_id(),
-        content_hash: content_hash(&hash_content),
         embedding_model_version: DEFAULT_EMBEDDING_MODEL.to_string(),
     })
 }
@@ -103,6 +143,7 @@ fn process_module_docs(
     entry: &DirEntry,
     repo_root: &Path,
     analyzer: &mut CodeAnalyzer,
+    project_name_override: Option<&str>,
 ) -> Option<ModuleDocChunk> {
     let content = std::fs::read_to_string(entry.path()).ok()?;
     let doc_content = analyzer.extract_module_docs(&content)?;
@@ -116,13 +157,15 @@ fn process_module_docs(
         .unwrap_or("unknown")
         .to_string();
 
-    let project_name = extract_project_name(entry.path(), repo_root);
+    let project_name = resolve_project_name(entry.path(), repo_root, project_name_override);
+
+    let norm_path = normalize_path(entry.path(), repo_root);
 
     Some(ModuleDocChunk {
-        file_path: entry.path().to_string_lossy().to_string(),
+        chunk_id: deterministic_chunk_id(&norm_path, &doc_content),
+        content_hash: content_hash(&content), // hash entire file for change detection
+        file_path: norm_path,
         module_name,
-        chunk_id: new_chunk_id(),
-        content_hash: content_hash(&doc_content),
         embedding_model_version: DEFAULT_EMBEDDING_MODEL.to_string(),
         doc_content,
         project_name,
@@ -134,7 +177,13 @@ fn process_code_file(
     entry: &DirEntry,
     repo_root: &Path,
     analyzer: &mut CodeAnalyzer,
+    project_name_override: Option<&str>,
 ) -> Vec<CodeChunk> {
+    // Skip files with unsupported extensions before reading (avoids UTF-8 errors on binary files)
+    if handler_for_path(entry.path()).is_none() {
+        return Vec::new();
+    }
+
     let content = match std::fs::read_to_string(entry.path()) {
         Ok(c) => c,
         Err(e) => {
@@ -145,15 +194,17 @@ fn process_code_file(
 
     let mut chunks = analyzer.analyze_file(entry.path(), &content);
 
-    // Set file metadata once, then clone to each chunk
-    // This is clearer than cloning in an iterator and allows future optimization with Rc<str>
+    // Set file-level metadata on each chunk
     if !chunks.is_empty() {
-        let path_str = entry.path().to_string_lossy().to_string();
-        let project_name = extract_project_name(entry.path(), repo_root);
+        let path_str = normalize_path(entry.path(), repo_root);
+        let project_name = resolve_project_name(entry.path(), repo_root, project_name_override);
+        let file_hash = content_hash(&content); // file-level hash for change detection
 
         for chunk in &mut chunks {
             chunk.file_path.clone_from(&path_str);
             chunk.project_name.clone_from(&project_name);
+            chunk.content_hash.clone_from(&file_hash);
+            chunk.chunk_id = deterministic_chunk_id(&path_str, &chunk.code_content);
         }
     }
 
@@ -199,8 +250,10 @@ pub struct IngestionResult {
     pub module_doc_chunks: Vec<ModuleDocChunk>,
 }
 
-/// This orchestrates the flow from Disk -> Parser -> Data
-pub fn run_ingestion(repo_path: &str) -> IngestionResult {
+/// This orchestrates the flow from Disk -> Parser -> Data.
+/// `project_name_override`: if Some, all chunks get this project name.
+/// If None, project name is inferred from directory structure.
+pub fn run_ingestion(repo_path: &str, project_name_override: Option<&str>) -> IngestionResult {
     let repo_root = PathBuf::from(repo_path);
     let mut analyzer = CodeAnalyzer::new();
 
@@ -215,24 +268,24 @@ pub fn run_ingestion(repo_path: &str) -> IngestionResult {
     let readme_chunks: Vec<ReadmeChunk> = entries
         .iter()
         .filter(|e| is_readme(e))
-        .filter_map(|e| process_readme(e, &repo_root))
+        .filter_map(|e| process_readme(e, &repo_root, project_name_override))
         .collect();
 
     let code_chunks: Vec<CodeChunk> = entries
         .iter()
-        .flat_map(|e| process_code_file(e, &repo_root, &mut analyzer))
+        .flat_map(|e| process_code_file(e, &repo_root, &mut analyzer, project_name_override))
         .collect();
 
     let crate_chunks: Vec<CrateChunk> = entries
         .iter()
         .filter(|e| is_cargo_toml(e))
-        .filter_map(|e| process_cargo_toml(e, &repo_root))
+        .filter_map(|e| process_cargo_toml(e, &repo_root, project_name_override))
         .collect();
 
     let module_doc_chunks: Vec<ModuleDocChunk> = entries
         .iter()
         .filter(|e| is_lib_rs(e))
-        .filter_map(|e| process_module_docs(e, &repo_root, &mut analyzer))
+        .filter_map(|e| process_module_docs(e, &repo_root, &mut analyzer, project_name_override))
         .collect();
 
     IngestionResult {
@@ -327,7 +380,7 @@ mod tests {
         let temp_dir = create_test_workspace();
         let path = temp_dir.path().to_str().unwrap();
 
-        let result = run_ingestion(path);
+        let result = run_ingestion(path, None);
 
         // Should find 2 code files (main.py and lib.rs)
         assert_eq!(result.code_chunks.len(), 2);
@@ -356,18 +409,26 @@ mod tests {
             result
                 .code_chunks
                 .iter()
-                .any(|c| c.project_name.as_deref() == Some("project1"))
+                .any(|c| c.project_name == "project1")
         );
         assert!(
             result
                 .code_chunks
                 .iter()
-                .any(|c| c.project_name.as_deref() == Some("project2"))
+                .any(|c| c.project_name == "project2")
         );
 
         // Check README content
         assert_eq!(result.readme_chunks[0].project_name, "project1");
         assert!(result.readme_chunks[0].content.contains("Project 1"));
+
+        // Check paths are relative with forward slashes
+        assert!(
+            result
+                .code_chunks
+                .iter()
+                .all(|c| !c.file_path.contains('\\') && !c.file_path.starts_with('/'))
+        );
     }
 
     #[test]
@@ -386,10 +447,61 @@ mod tests {
             .unwrap();
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = process_code_file(&entry, base, &mut analyzer);
+        let chunks = process_code_file(&entry, base, &mut analyzer, None);
 
         assert_eq!(chunks.len(), 1);
-        assert!(chunks[0].file_path.contains("code.py"));
-        assert_eq!(chunks[0].project_name.as_deref(), Some("myproj"));
+        assert_eq!(chunks[0].file_path, "myproj/code.py");
+        assert_eq!(chunks[0].project_name, "myproj");
+    }
+
+    #[test]
+    fn test_resolve_project_name_cli_override() {
+        let repo_root = Path::new("/home/user/portfolio");
+        let file_path = Path::new("/home/user/portfolio/my_project/src/main.rs");
+
+        // CLI override takes precedence
+        let name = resolve_project_name(file_path, repo_root, Some("my-app"));
+        assert_eq!(name, "my-app");
+    }
+
+    #[test]
+    fn test_resolve_project_name_root_file_fallback() {
+        let repo_root = Path::new("/home/user/portfolio");
+        let file_path = Path::new("/home/user/portfolio/README.md");
+
+        // Root-level file falls back to repo directory name
+        let name = resolve_project_name(file_path, repo_root, None);
+        assert_eq!(name, "portfolio");
+    }
+
+    #[test]
+    fn test_normalize_path() {
+        let repo_root = Path::new("/home/user/portfolio");
+        let file_path = Path::new("/home/user/portfolio/project1/src/main.rs");
+
+        let normalized = normalize_path(file_path, repo_root);
+        assert_eq!(normalized, "project1/src/main.rs");
+    }
+
+    #[test]
+    fn test_run_ingestion_with_project_name_override() {
+        let temp_dir = create_test_workspace();
+        let path = temp_dir.path().to_str().unwrap();
+
+        let result = run_ingestion(path, Some("my-app"));
+
+        // All chunks should have the override name
+        assert!(
+            result
+                .code_chunks
+                .iter()
+                .all(|c| c.project_name == "my-app")
+        );
+        assert!(
+            result
+                .readme_chunks
+                .iter()
+                .all(|c| c.project_name == "my-app")
+        );
     }
 }

@@ -1,5 +1,168 @@
 # Development Log
 
+## 2026-02-06: V1.3 Incremental Ingestion
+
+### Summary
+Implemented file-level incremental ingestion with three-layer architecture (parse → reconcile → orchestrate). Changed files are detected by SHA256 hash, unchanged files are skipped entirely. Includes schema tightening: `project_name` became non-optional, paths normalized to relative forward-slash format, CrateChunk hash fixed to include description. Chunk IDs switched from random UUID v4 to deterministic `hash(file_path, content)` for Track C edge stability. Content hashing normalizes CRLF → LF for cross-OS consistency.
+
+### Architecture: Three-Layer Separation
+
+```
+Layer 1 (sync):  run_ingestion()         → IngestionResult (parse code, no DB)
+Layer 2 (sync):  reconcile()             → ReconcileResult (data comparison, no DB)
+Layer 3 (async): main.rs orchestration   → apply diff (DB reads/writes)
+```
+
+### Changes by Crate
+
+| Crate | Changes |
+|-------|---------|
+| coderag-types | `project_name: Option<String>` → `String` on all types; `deterministic_chunk_id()` replaces random UUID; `content_hash()` normalizes CRLF |
+| coderag-store | Arrow schemas nullable → non-nullable for project_name; added `get_file_index()`, `delete_chunks_by_ids()`, `get_embedding_model_version()` |
+| code-raptor | New `reconcile` module; `resolve_project_name()` + `normalize_path()` helpers; orchestration in main.rs with `--full`, `--dry-run`, `--project-name` flags |
+| portfolio-rag-chat | Updated context.rs, dto.rs, handlers, templates for non-optional project_name |
+
+### New Module: `ingestion/reconcile.rs`
+
+Pure data comparison — no I/O, no DB handle, fully unit-testable.
+
+| Type | Purpose |
+|------|---------|
+| `ExistingFileIndex` | Per-table file → (hash, chunk_ids) mapping from DB |
+| `ReconcileResult` | What to insert + what to delete + stats |
+| `DeletionsByTable` | Deletions partitioned by LanceDB table |
+| `IngestionStats` | Counts: unchanged, changed, new, deleted files + chunks |
+
+| Function | Purpose |
+|----------|---------|
+| `reconcile()` | Entry point: compares current ingestion against existing index |
+| `reconcile_by_file()` | Generic: many chunks per file (CodeChunk, ReadmeChunk) |
+| `reconcile_single_per_file()` | Generic: 1:1 file mapping (ModuleDocChunk) |
+| `reconcile_crates()` | By `crate_name` instead of file path |
+
+### New VectorStore Methods
+
+| Method | Purpose |
+|--------|---------|
+| `get_file_index(table, project, path_col)` | Returns file → (hash, chunk_ids) for change detection |
+| `delete_chunks_by_ids(table, chunk_ids)` | Batch delete with `IN (...)` predicate, batched in groups of 100 |
+| `get_embedding_model_version(project)` | Query one chunk's model version for mismatch detection |
+
+### CLI Flags
+
+| Flag | Behavior |
+|------|----------|
+| `--full` | Force full re-index: delete all project chunks → re-embed → re-insert |
+| `--dry-run` | Run reconcile, print stats, no DB changes (conflicts with `--full`) |
+| `--project-name <name>` | Override project name for all chunks (defaults to directory inference) |
+
+### Incremental Flow
+
+1. Parse code into chunks (sync, no DB)
+2. Initialize embedder + store
+3. Check embedding model version (mismatch → bail with `--full` suggestion)
+4. Build existing index from DB (async)
+5. Reconcile: pure data comparison (sync)
+6. Insert new chunks first (safer on crash: duplicates > missing data)
+7. Delete old chunks
+
+### Schema Tightening
+
+| Change | Before | After |
+|--------|--------|-------|
+| `project_name` | `Option<String>` | `String` (non-optional) |
+| Path storage | Absolute, OS-specific | Relative to repo root, forward slashes |
+| CrateChunk hash | Omitted description | `crate_name:description:deps` |
+| CodeChunk hash | Per-chunk content hash | File-level SHA256 (all chunks from same file share hash) |
+| `chunk_id` | Random UUID v4 | Deterministic `hash(file_path, content)` — stable across re-indexing |
+| `content_hash()` | Raw bytes | CRLF-normalized before hashing (cross-OS consistency) |
+| `resolve_project_name()` | N/A | CLI override > subdir name > repo dir name > "unknown" |
+
+### Test Results
+
+All 58 tests pass (0 warnings):
+- coderag-types: 9 tests (deterministic ID + CRLF normalization tests added)
+- coderag-store: 6 tests
+- code-raptor: 26 unit + 9 integration tests (deterministic ID stability test added)
+- portfolio-rag-chat: 8 tests
+
+### Integration Tests (`tests/incremental_ingestion.rs`)
+
+| Test | Verifies |
+|------|----------|
+| `roundtrip_no_changes` | Re-ingest same files → 0 inserts/deletes |
+| `detects_modified_file` | Modified file → correct replacement, untouched files skipped |
+| `detects_deleted_file` | Deleted file → chunks removed by ID |
+| `detects_new_file` | New file → chunks inserted |
+| `mixed_changes` | Changed + deleted + new + unchanged simultaneously |
+| `project_name_override_stable_reconcile` | `--project-name` override produces stable reconcile |
+| `paths_normalized` | All paths relative, forward slashes |
+| `file_level_content_hash` | All chunks from same file share content hash |
+| `deterministic_ids_stable_across_runs` | Same input produces identical chunk_ids across runs |
+
+### Migration
+
+Existing databases incompatible (schema change: nullable → non-nullable). Requires full re-ingestion:
+```bash
+rm -rf data/portfolio.lance
+cargo run --bin code-raptor -- ingest /path/to/projects --db-path data/portfolio.lance
+```
+
+Subsequent ingestions are incremental by default:
+```bash
+cargo run --bin code-raptor -- ingest /path/to/projects --db-path data/portfolio.lance
+cargo run --bin code-raptor -- ingest /path/to/projects --db-path data/portfolio.lance --dry-run
+cargo run --bin code-raptor -- ingest /path/to/projects --db-path data/portfolio.lance --full
+```
+
+---
+
+## 2026-02-06: V1.2 LanguageHandler Refactor
+
+### Summary
+Replaced monolithic `SupportedLanguage` enum with trait-based `LanguageHandler` abstraction. Adding a new language is now "implement one trait + register" instead of modifying 4+ match statements. Pure refactor — ingestion output identical before and after.
+
+### Changes
+
+| Change | Detail |
+|--------|--------|
+| New trait | `LanguageHandler` with `name()`, `extensions()`, `grammar()`, `query_string()`, `extract_docstring()` (default None) |
+| Implementations | `RustHandler`, `PythonHandler` |
+| Registry | `handler_for_path()`, `handler_by_name()`, `supported_extensions()` via `OnceLock<Vec<Box<dyn LanguageHandler>>>` |
+| CodeAnalyzer | `analyze_content(src, lang)` → `analyze_file(path, src)` + `analyze_with_handler(src, handler)` |
+| Module docs | `extract_module_docs()` uses `RustHandler` directly (Rust-specific `//!` syntax) |
+| Deleted | `SupportedLanguage` enum entirely removed |
+
+### New File Structure
+
+```
+crates/code-raptor/src/ingestion/
+├── mod.rs              # Re-exports, orchestration
+├── parser.rs           # CodeAnalyzer (updated)
+├── reconcile.rs        # Reconcile module (V1.3)
+├── language.rs         # LanguageHandler trait (new)
+└── languages/
+    ├── mod.rs          # Registry + handler_for_path (new)
+    ├── rust.rs         # RustHandler (new)
+    └── python.rs       # PythonHandler (new)
+```
+
+### Key Design Decisions
+
+1. **Trait with default `extract_docstring`**: Returns `None` now, V1.4 implements per-handler
+2. **`OnceLock` registry**: Zero-cost after first access, thread-safe
+3. **`analyze_file()` as primary API**: Auto-detects language from path, cleaner call sites
+4. **Rust-specific module docs**: `extract_module_docs()` uses `RustHandler` directly rather than generalizing
+
+### Unblocks
+
+- V1.4: Docstring Extraction (implement `extract_docstring()` per handler)
+- V1.5: TypeScript Support (implement `TypeScriptHandler` + register)
+
+**Crate:** code-raptor
+
+---
+
 ## 2026-02-04: V1.1 Schema Foundation
 
 ### Summary

@@ -81,7 +81,7 @@ Folder/File-level embeddings
 
 Function signature extraction ─── independent (Track B)
 Large function chunking ───────── independent (Track B)
-Incremental ingestion ─────────── V1.3 (uses V1.1 schema)
+Incremental ingestion ─────────── V1.3 (uses V1.1 schema, tightens project_name/paths)
 
 LanguageHandler refactor ─────── V1.2 (pure refactor, unblocks V1.4 + V1.5)
     ├──► Docstring extraction (V1.4)
@@ -141,7 +141,7 @@ V1 → V2 → V3 are sequential. Tracks A, B, C can run in parallel after V3. Pr
 
 | Phase | Effort | Cumulative |
 |-------|--------|------------|
-| **V1** (Indexing) | 1.5-2 weeks | 1.5-2 weeks |
+| **V1** (Indexing) | 2.5-3 weeks | 2.5-3 weeks |
 | **V2** (Query) | 1 week | 2.5-3 weeks |
 | **V3** (Testing) | 1 week | 3.5-4 weeks |
 | **Track A** (A1→A2→A3) | 4-5 weeks | — |
@@ -170,13 +170,13 @@ For portfolio demonstrations, hirers ask architecture questions first:
 
 **Goal:** Enable fast iteration, clean language abstraction, and fix docstring extraction. All code-raptor + coderag-store work.
 
-**Estimated effort:** ~2-2.5 weeks total
+**Estimated effort:** ~2.5-3 weeks total
 
 | Item | Effort | Notes |
 |------|--------|-------|
 | V1.1 Schema Foundation | 2-3 days | UUID, content_hash, delete API, List deps, model version |
 | V1.2 LanguageHandler Refactor | 1-2 days | Pure refactor: trait + registry, docstring stays None |
-| V1.3 Incremental Ingestion | 2-3 days | Uses V1.1 schema for change detection |
+| V1.3 Incremental Ingestion | 3-5 days | File-level hashing, three-layer architecture, schema tightening |
 | V1.4 Docstring Extraction | 2-3 days | Implement extract_docstring() per handler (Rust, Python) |
 | V1.5 TypeScript Support | 2-3 days | Implement TypeScriptHandler with full docstring support |
 
@@ -215,13 +215,26 @@ For portfolio demonstrations, hirers ask architecture questions first:
 
 **Prerequisite:** V1.1 schema (UUID, content_hash, delete API)
 
-- Content-hash each chunk using SHA256 of `code_content`
-- Query existing chunks by `(file_path, identifier, start_line)`
-- Compare `content_hash`: skip if unchanged, delete+insert if changed
-- Delete orphaned chunks when files/functions removed
-- Store `embedding_model_version` on every chunk
+**Architecture:** Three-layer (parse → reconcile → orchestrate). Parsing stays sync/testable, reconcile takes data only (no DB handle), main.rs orchestrates all async I/O.
+
+**Comparison strategy:** File-level hashing. SHA256 of entire file content. Unchanged files are skipped entirely. Changed files: delete all old chunks, insert all new chunks. Simpler than per-chunk diffing with same performance characteristics.
+
+**Schema tightening (absorbed into V1.3):**
+- `project_name: Option<String>` → `String` on CodeChunk, CrateChunk, ModuleDocChunk
+- Relative forward-slash path storage (portable across OS)
+- CrateChunk content_hash includes description
+- `--project-name` CLI flag for single-repo/multi-repo use
+
+**Core incremental logic:**
+- File-level hash comparison: skip unchanged, nuke+replace changed, delete orphaned
+- CrateChunk comparison by `crate_name` (not file path)
+- Deletions partitioned by LanceDB table (each chunk type in its own table)
+- Batch delete API: `delete_chunks_by_ids()`
+- Embedding model version check: detect mismatch, force `--full`
+- `--full` flag for complete re-index, `--dry-run` for preview
+- Insert-before-delete ordering (safer on crash)
 - **Essential:** Enables fast iteration for all subsequent work
-- **Crate:** code-raptor
+- **Crates:** coderag-types, coderag-store, code-raptor
 
 ### V1.4: Docstring Extraction
 
@@ -611,7 +624,7 @@ Independent track. Can run in parallel with Track A and B.
 |-------------|-------|
 | Schema foundation (V1.1) | coderag-types, coderag-store |
 | LanguageHandler refactor (V1.2) | code-raptor |
-| Incremental ingestion (V1.3) | code-raptor |
+| Incremental ingestion (V1.3) | coderag-types, coderag-store, code-raptor |
 | Docstring extraction (V1.4) | code-raptor |
 | TypeScript support (V1.5) | code-raptor |
 | Inline call context (V2.1) | code-raptor |
@@ -634,7 +647,7 @@ Independent track. Can run in parallel with Track A and B.
 
 | Milestone | Metric |
 |-----------|--------|
-| V1 | Docstrings appear in results (Rust, Python); TypeScript files indexed with docstrings; re-ingestion <30s for unchanged code |
+| V1 | Docstrings appear in results (Rust, Python); TypeScript files indexed with docstrings; re-ingestion <30s for unchanged code; incremental ingestion skips unchanged files; `--full`/`--dry-run`/`--project-name` CLI flags work |
 | V2 | Queries route by type; retrieval sources shown; call context in embeddings |
 | V3 | Test dataset with 20+ queries; baseline recall@5 documented; regression script runs <60s |
 | A1 | "What does engine/ do?" returns coherent answer |

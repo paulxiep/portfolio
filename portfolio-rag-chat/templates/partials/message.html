@@ -15,9 +15,7 @@
             {% for source in sources %}
                 <li>
                     <code>{{ source.file }}</code>
-                    {% if let Some(project) = source.project %}
-                    <span class="project-tag">{{ project }}</span>
-                    {% endif %}
+                    <span class="project-tag">{{ source.project }}</span>
                     <span class="line-info">L{{ source.line }}</span>
                 </li>
             {% endfor %}

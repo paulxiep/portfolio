@@ -46,11 +46,10 @@ fn format_code_section(chunks: &[crate::models::CodeChunk]) -> String {
     let mut out = String::from("## Relevant Code\n");
 
     for chunk in chunks {
-        let project = chunk.project_name.as_deref().unwrap_or("(root)");
         out.push_str(&format!(
             "\n### `{}` in {} ({}:{})\n```{}\n{}\n```\n",
             chunk.identifier,
-            project,
+            chunk.project_name,
             chunk.file_path,
             chunk.start_line,
             chunk.language,
@@ -79,7 +78,6 @@ fn format_crate_section(chunks: &[CrateChunk]) -> String {
     let mut out = String::from("## Crate Structure\n");
 
     for chunk in chunks {
-        let project = chunk.project_name.as_deref().unwrap_or("(root)");
         let desc = chunk
             .description
             .as_deref()
@@ -92,7 +90,7 @@ fn format_crate_section(chunks: &[CrateChunk]) -> String {
 
         out.push_str(&format!(
             "\n### Crate `{}` ({})\n**Description:** {}\n**Local dependencies:** {}\n",
-            chunk.crate_name, project, desc, deps
+            chunk.crate_name, chunk.project_name, desc, deps
         ));
     }
 
@@ -103,11 +101,10 @@ fn format_module_doc_section(chunks: &[ModuleDocChunk]) -> String {
     let mut out = String::from("## Module Documentation\n");
 
     for chunk in chunks {
-        let project = chunk.project_name.as_deref().unwrap_or("(root)");
         out.push_str(&format!(
             "\n### Module `{}` ({})\n{}\n",
             chunk.module_name,
-            project,
+            chunk.project_name,
             truncate(&chunk.doc_content, 600)
         ));
     }
@@ -152,7 +149,7 @@ mod tests {
             code_content: "fn process_data(input: &str) -> Result<Output, Error> {\n    // ...\n}"
                 .into(),
             start_line: 42,
-            project_name: Some("my_project".into()),
+            project_name: "my_project".into(),
             docstring: None,
             chunk_id: "test-uuid-1".into(),
             content_hash: "test-hash-1".into(),
@@ -177,7 +174,7 @@ mod tests {
             crate_path: "my_project/crates/my-crate".into(),
             description: Some("A utility crate".into()),
             dependencies: vec!["types".into(), "utils".into()],
-            project_name: Some("my_project".into()),
+            project_name: "my_project".into(),
             chunk_id: "test-uuid-3".into(),
             content_hash: "test-hash-3".into(),
             embedding_model_version: "BGESmallENV15_384".into(),
@@ -189,7 +186,7 @@ mod tests {
             file_path: "my_project/src/lib.rs".into(),
             module_name: "my_module".into(),
             doc_content: "This module provides core functionality.".into(),
-            project_name: Some("my_project".into()),
+            project_name: "my_project".into(),
             chunk_id: "test-uuid-4".into(),
             content_hash: "test-hash-4".into(),
             embedding_model_version: "BGESmallENV15_384".into(),

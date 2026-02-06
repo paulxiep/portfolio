@@ -6,7 +6,10 @@
 pub mod ingestion;
 
 pub use coderag_types::{CodeChunk, CrateChunk, ModuleDocChunk, ReadmeChunk};
-pub use ingestion::{IngestionResult, run_ingestion};
+pub use ingestion::{
+    DEFAULT_EMBEDDING_MODEL, DeletionsByTable, ExistingFileIndex, IngestionResult, IngestionStats,
+    ReconcileResult, reconcile, run_ingestion,
+};
 
 // Re-export store functionality for convenience
 pub use coderag_store::{

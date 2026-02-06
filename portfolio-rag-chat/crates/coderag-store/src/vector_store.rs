@@ -327,6 +327,134 @@ impl VectorStore {
         Ok(pairs)
     }
 
+    // ========================================================================
+    // V1.3: Incremental ingestion support
+    // ========================================================================
+
+    /// Get file-level index for a project: maps file_path → (content_hash, chunk_ids).
+    /// For crate_chunks, use `file_path_column = "crate_name"`.
+    pub async fn get_file_index(
+        &self,
+        table_name: &str,
+        project_name: &str,
+        file_path_column: &str,
+    ) -> Result<std::collections::HashMap<String, (String, Vec<String>)>, StoreError> {
+        use std::collections::HashMap;
+
+        let table = match self.conn.open_table(table_name).execute().await {
+            Ok(t) => t,
+            Err(_) => return Ok(HashMap::new()),
+        };
+
+        let results: Vec<RecordBatch> = table
+            .query()
+            .only_if(format!(
+                "project_name = '{}'",
+                project_name.replace("'", "''")
+            ))
+            .select(lancedb::query::Select::columns(&[
+                file_path_column,
+                "chunk_id",
+                "content_hash",
+            ]))
+            .execute()
+            .await?
+            .try_collect()
+            .await?;
+
+        let mut index: HashMap<String, (String, Vec<String>)> = HashMap::new();
+
+        for batch in results {
+            let paths = batch
+                .column_by_name(file_path_column)
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let chunk_ids = batch
+                .column_by_name("chunk_id")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let hashes = batch
+                .column_by_name("content_hash")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+
+            if let (Some(paths), Some(ids), Some(hashes)) = (paths, chunk_ids, hashes) {
+                for i in 0..batch.num_rows() {
+                    let path = paths.value(i).to_string();
+                    let chunk_id = ids.value(i).to_string();
+                    let hash = hashes.value(i).to_string();
+
+                    index
+                        .entry(path)
+                        .and_modify(|(_, ids)| ids.push(chunk_id.clone()))
+                        .or_insert_with(|| (hash, vec![chunk_id]));
+                }
+            }
+        }
+
+        Ok(index)
+    }
+
+    /// Batch delete chunks by their UUIDs (batched in groups of 100).
+    pub async fn delete_chunks_by_ids(
+        &self,
+        table_name: &str,
+        chunk_ids: &[String],
+    ) -> Result<(), StoreError> {
+        if chunk_ids.is_empty() {
+            return Ok(());
+        }
+
+        let table = self.conn.open_table(table_name).execute().await?;
+
+        for batch in chunk_ids.chunks(100) {
+            let ids_str: String = batch
+                .iter()
+                .map(|id| format!("'{}'", id.replace("'", "''")))
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            table.delete(&format!("chunk_id IN ({})", ids_str)).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Check embedding model version for a project. Returns None if no chunks exist.
+    pub async fn get_embedding_model_version(
+        &self,
+        project_name: &str,
+    ) -> Result<Option<String>, StoreError> {
+        let table = match self.conn.open_table(CODE_TABLE).execute().await {
+            Ok(t) => t,
+            Err(_) => return Ok(None),
+        };
+
+        let results: Vec<RecordBatch> = table
+            .query()
+            .only_if(format!(
+                "project_name = '{}'",
+                project_name.replace("'", "''")
+            ))
+            .select(lancedb::query::Select::columns(&[
+                "embedding_model_version",
+            ]))
+            .limit(1)
+            .execute()
+            .await?
+            .try_collect()
+            .await?;
+
+        for batch in results {
+            if let Some(versions) = batch
+                .column_by_name("embedding_model_version")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                && batch.num_rows() > 0
+            {
+                return Ok(Some(versions.value(0).to_string()));
+            }
+        }
+
+        Ok(None)
+    }
+
     pub async fn list_projects(&self) -> Result<Vec<String>, StoreError> {
         let table = match self.conn.open_table(CODE_TABLE).execute().await {
             Ok(t) => t,
@@ -342,7 +470,7 @@ impl VectorStore {
             .try_collect()
             .await?;
 
-        // Extract unique non-null project names
+        // Extract unique project names (non-nullable since V1.3)
         let mut projects: Vec<String> = batches
             .iter()
             .flat_map(|batch| {
@@ -351,7 +479,6 @@ impl VectorStore {
                     .and_then(|c| c.as_any().downcast_ref::<StringArray>())
                     .map(|arr| {
                         (0..arr.len())
-                            .filter(|&i| !arr.is_null(i))
                             .map(|i| arr.value(i).to_string())
                             .collect::<Vec<_>>()
                     })
@@ -421,7 +548,10 @@ fn code_chunks_to_batch(
         .map(|c| Some(c.code_content.as_str()))
         .collect();
     let start_lines: UInt64Array = chunks.iter().map(|c| Some(c.start_line as u64)).collect();
-    let project_names: StringArray = chunks.iter().map(|c| c.project_name.as_deref()).collect();
+    let project_names: StringArray = chunks
+        .iter()
+        .map(|c| Some(c.project_name.as_str()))
+        .collect();
     let docstrings: StringArray = chunks.iter().map(|c| c.docstring.as_deref()).collect();
 
     // New V1.1 fields
@@ -453,7 +583,7 @@ fn code_chunks_to_batch(
         arrow_schema::Field::new("node_type", arrow_schema::DataType::Utf8, false),
         arrow_schema::Field::new("code_content", arrow_schema::DataType::Utf8, false),
         arrow_schema::Field::new("start_line", arrow_schema::DataType::UInt64, false),
-        arrow_schema::Field::new("project_name", arrow_schema::DataType::Utf8, true),
+        arrow_schema::Field::new("project_name", arrow_schema::DataType::Utf8, false),
         arrow_schema::Field::new("docstring", arrow_schema::DataType::Utf8, true),
         arrow_schema::Field::new("chunk_id", arrow_schema::DataType::Utf8, false),
         arrow_schema::Field::new("content_hash", arrow_schema::DataType::Utf8, false),
@@ -581,7 +711,10 @@ fn crate_chunks_to_batch(
     let crate_names: StringArray = chunks.iter().map(|c| Some(c.crate_name.as_str())).collect();
     let crate_paths: StringArray = chunks.iter().map(|c| Some(c.crate_path.as_str())).collect();
     let descriptions: StringArray = chunks.iter().map(|c| c.description.as_deref()).collect();
-    let project_names: StringArray = chunks.iter().map(|c| c.project_name.as_deref()).collect();
+    let project_names: StringArray = chunks
+        .iter()
+        .map(|c| Some(c.project_name.as_str()))
+        .collect();
 
     // Build list array for dependencies (V1.1: List<Utf8> instead of CSV string)
     let mut offsets = vec![0i32];
@@ -640,7 +773,7 @@ fn crate_chunks_to_batch(
             ))),
             true,
         ),
-        arrow_schema::Field::new("project_name", arrow_schema::DataType::Utf8, true),
+        arrow_schema::Field::new("project_name", arrow_schema::DataType::Utf8, false),
         arrow_schema::Field::new("chunk_id", arrow_schema::DataType::Utf8, false),
         arrow_schema::Field::new("content_hash", arrow_schema::DataType::Utf8, false),
         arrow_schema::Field::new(
@@ -694,7 +827,10 @@ fn module_doc_chunks_to_batch(
         .iter()
         .map(|c| Some(c.doc_content.as_str()))
         .collect();
-    let project_names: StringArray = chunks.iter().map(|c| c.project_name.as_deref()).collect();
+    let project_names: StringArray = chunks
+        .iter()
+        .map(|c| Some(c.project_name.as_str()))
+        .collect();
 
     // New V1.1 fields
     let chunk_ids: StringArray = chunks.iter().map(|c| Some(c.chunk_id.as_str())).collect();
@@ -721,7 +857,7 @@ fn module_doc_chunks_to_batch(
         arrow_schema::Field::new("file_path", arrow_schema::DataType::Utf8, false),
         arrow_schema::Field::new("module_name", arrow_schema::DataType::Utf8, false),
         arrow_schema::Field::new("doc_content", arrow_schema::DataType::Utf8, false),
-        arrow_schema::Field::new("project_name", arrow_schema::DataType::Utf8, true),
+        arrow_schema::Field::new("project_name", arrow_schema::DataType::Utf8, false),
         arrow_schema::Field::new("chunk_id", arrow_schema::DataType::Utf8, false),
         arrow_schema::Field::new("content_hash", arrow_schema::DataType::Utf8, false),
         arrow_schema::Field::new(
@@ -794,10 +930,9 @@ fn extract_code_chunks_from_batch(batch: &RecordBatch) -> Result<Vec<CodeChunk>,
         .and_then(|c| c.as_any().downcast_ref::<UInt64Array>())
         .ok_or_else(|| StoreError::SchemaMismatch("start_line".into()))?;
 
+    let project_names = col("project_name")?;
+
     // Optional columns
-    let project_names = batch
-        .column_by_name("project_name")
-        .and_then(|c| c.as_any().downcast_ref::<StringArray>());
     let docstrings = batch
         .column_by_name("docstring")
         .and_then(|c| c.as_any().downcast_ref::<StringArray>());
@@ -815,7 +950,7 @@ fn extract_code_chunks_from_batch(batch: &RecordBatch) -> Result<Vec<CodeChunk>,
             node_type: node_types.value(i).to_string(),
             code_content: code_contents.value(i).to_string(),
             start_line: start_lines.value(i) as usize,
-            project_name: nullable_string(project_names, i),
+            project_name: project_names.value(i).to_string(),
             docstring: nullable_string(docstrings, i),
             chunk_id: chunk_ids.value(i).to_string(),
             content_hash: content_hashes.value(i).to_string(),
@@ -895,15 +1030,13 @@ fn extract_crate_chunks_from_batch(batch: &RecordBatch) -> Result<Vec<CrateChunk
 
     let crate_names = col("crate_name")?;
     let crate_paths = col("crate_path")?;
+    let project_names = col("project_name")?;
     let chunk_ids = col("chunk_id")?;
     let content_hashes = col("content_hash")?;
     let model_versions = col("embedding_model_version")?;
 
     let descriptions = batch
         .column_by_name("description")
-        .and_then(|c| c.as_any().downcast_ref::<StringArray>());
-    let project_names = batch
-        .column_by_name("project_name")
         .and_then(|c| c.as_any().downcast_ref::<StringArray>());
 
     // Dependencies is now List<Utf8>
@@ -945,7 +1078,7 @@ fn extract_crate_chunks_from_batch(batch: &RecordBatch) -> Result<Vec<CrateChunk
                 crate_path: crate_paths.value(i).to_string(),
                 description: nullable_string(descriptions, i),
                 dependencies: deps,
-                project_name: nullable_string(project_names, i),
+                project_name: project_names.value(i).to_string(),
                 chunk_id: chunk_ids.value(i).to_string(),
                 content_hash: content_hashes.value(i).to_string(),
                 embedding_model_version: model_versions.value(i).to_string(),
@@ -983,25 +1116,17 @@ fn extract_module_doc_chunks_from_batch(
     let file_paths = col("file_path")?;
     let module_names = col("module_name")?;
     let doc_contents = col("doc_content")?;
+    let project_names = col("project_name")?;
     let chunk_ids = col("chunk_id")?;
     let content_hashes = col("content_hash")?;
     let model_versions = col("embedding_model_version")?;
-
-    let project_names = batch
-        .column_by_name("project_name")
-        .and_then(|c| c.as_any().downcast_ref::<StringArray>());
-
-    let nullable_string = |arr: Option<&StringArray>, i: usize| -> Option<String> {
-        arr.filter(|a| !a.is_null(i))
-            .map(|a| a.value(i).to_string())
-    };
 
     let chunks = (0..batch.num_rows())
         .map(|i| ModuleDocChunk {
             file_path: file_paths.value(i).to_string(),
             module_name: module_names.value(i).to_string(),
             doc_content: doc_contents.value(i).to_string(),
-            project_name: nullable_string(project_names, i),
+            project_name: project_names.value(i).to_string(),
             chunk_id: chunk_ids.value(i).to_string(),
             content_hash: content_hashes.value(i).to_string(),
             embedding_model_version: model_versions.value(i).to_string(),
@@ -1023,7 +1148,7 @@ mod tests {
             node_type: "function_item".into(),
             code_content: "fn test_func() {}".into(),
             start_line: 1,
-            project_name: Some("test_project".into()),
+            project_name: "test_project".into(),
             docstring: Some("A test function".into()),
             chunk_id: "test-uuid-1234".into(),
             content_hash: "abc123".into(),

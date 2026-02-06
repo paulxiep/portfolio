@@ -92,7 +92,7 @@ impl CodeAnalyzer {
                     identifier,
                     node_type,
                     start_line,
-                    project_name: None,
+                    project_name: String::new(),
                     docstring: None, // V1.4 will wire handler.extract_docstring() here
                     chunk_id: new_chunk_id(),
                     content_hash: hash,
