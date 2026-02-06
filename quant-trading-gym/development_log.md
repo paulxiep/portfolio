@@ -1,5 +1,157 @@
 # Development Log
 
+## 2026-02-06: Pre-V6 Refactor — SoC Pipeline, Agent Factory, Tier 2 Budget
+
+### Summary
+Restructured the codebase to remove V5's hardcoded 42-feature assumptions and monolithic agent spawning, then implemented Section F (training-serving parity) with a clean SoC pipeline.
+
+V6's 55+ features, swappable extractors, per-feature imputation, gym environment, and schema-flexible recording can now be built on clean abstractions.
+
+Design spec: `refactor_v6_prep.md` (sections A–F)
+
+### What Changed
+
+**1. FeatureVec + MlPredictionCache refactor** (`crates/agents/src/ml_cache.rs`)
+- Features: `[f64; N_MARKET_FEATURES]` → `SmallVec<[f64; 64]>` (type alias `FeatureVec`)
+  - Zero heap allocation for up to 64 features; derefs to `&[f64]` for all downstream code
+- Predictions: `HashMap<(String, Symbol), ClassProbabilities>` → nested `HashMap<String, HashMap<Symbol, ClassProbabilities>>`
+  - Fixes ~168us/tick allocation bug in `get_prediction()` — lookups are now zero-alloc via `Borrow` trait
+- Added `feature_symbols()` iterator and `all_features()` clone for recording reuse
+
+**2. FeatureExtractor trait + pure extraction pipeline** (`crates/agents/src/tier1/ml/`)
+```rust
+pub trait FeatureExtractor: Send + Sync {
+    fn n_features(&self) -> usize;
+    fn extract_market(&self, symbol: &Symbol, ctx: &StrategyContext<'_>) -> FeatureVec;
+    fn feature_names(&self) -> &[&str];
+    fn neutral_values(&self) -> &[f64];  // Per-feature NaN imputation targets
+}
+```
+- Extraction is **pure**: `extract_market()` returns raw features with NaN preserved
+- Imputation is a separate pipeline step using `neutral_values()`, applied by the runner
+- `extract_features_raw()` — pure extraction function (NaN preserved)
+- `extract_features()` — V5-compat wrapper: raw + NaN→-1.0
+- `impute_features(features, neutrals)` — single-point imputation function
+- `MINIMAL_FEATURE_NEUTRALS: [f64; 42] = [-1.0; 42]` — V5 training convention constant
+- `MinimalFeatures` delegates to `extract_features_raw()`, not the imputed version
+- V6 `FullFeatures` will define per-feature semantic neutrals (RSI→50, vol_ratio→1.0, bb_%b→0.5)
+
+**3. ModelRegistry — prediction only (SoC)** (`crates/agents/src/tier1/ml/model_registry.rs`)
+- **No longer owns a FeatureExtractor** — extraction is the runner's responsibility
+- Constructor: `ModelRegistry::new()` (no extractor arg)
+- Single method: `predict_from_cache(&self, cache: &mut MlPredictionCache)` — reads pre-extracted features from cache, computes predictions in parallel
+- Training-serving parity by construction: same features feed both ML cache and recording
+
+**4. Runner feature extraction pipeline** (`crates/simulation/src/runner.rs`)
+- New field: `feature_extractor: Option<Box<dyn FeatureExtractor>>`
+- `set_feature_extractor()` — explicit setter; `register_ml_model()` auto-sets `MinimalFeatures` as default
+- Phase 3b pipeline: extract in parallel → impute with `neutral_values()` → insert into cache → `predict_from_cache()`
+- Phase 13: pass features to hooks via `HookContext.features` (reuse ML cache features when available)
+- Added `parallel_features` to `ParallelizationConfig`
+
+**5. HookContext SoC — features separate from enriched data** (`crates/simulation/src/hooks.rs`)
+- `HookContext.features: Option<HashMap<Symbol, FeatureVec>>` — computed artifact for ML and recording
+- `EnrichedData.recent_trades: HashMap<Symbol, Vec<Trade>>` — observational state
+- Features and enriched data kept separate by design: they may overlap but won't be the same, avoiding recalculation
+
+**6. RecordingHook — simplified to pure Parquet writer** (`crates/storage/src/recording_hook.rs`)
+- Reads pre-extracted features from `ctx.features` instead of extracting internally
+- Removed `PriceHistory` dependency and `on_tick_start()` lifecycle hook
+- Training-serving parity guaranteed: features in Parquet are identical to features used for ML prediction
+- `MarketFeatures::extract()` deleted — dual extraction path eliminated
+- `PriceHistory` deprecated (module hidden, no re-export)
+
+**7. Gym-facing API** (`crates/simulation/src/runner.rs`, `subsystems/agents.rs`)
+- Added `Simulation::agent_state(id) -> Option<AgentState>` for gym observation extraction
+- `AgentOrchestrator::agent_state()` acquires agent mutex briefly to clone state
+
+**8. Agent Factory extraction** (`crates/simulation/src/agent_factory/`)
+- ~800 lines of spawn functions moved from `src/main.rs` into library crate sub-modules:
+  - `mod.rs` — `spawn_all()` orchestrator, `SpawnResult`, top-level API
+  - `tier1.rs` — market makers, noise traders, quant strategies, pairs traders
+  - `tier2.rs` — reactive agents, sector rotators
+  - `ml_agents.rs` — `MlModels` struct, tree agent creation + model registration
+  - `background_pool.rs` — Tier 3 pool setup
+- `src/main.rs` reduced by ~800 lines; all 4 run modes use single `spawn_all()` call
+- Model I/O (JSON loading from disk) stays in binary via `load_ml_models()`
+- Gym crate can now import `simulation::agent_factory::spawn_all()` directly
+
+**9. SimConfig migration** (`crates/simulation/src/sim_config.rs`)
+- `SimConfig`, `SymbolSpec`, `Tier1AgentType` moved from binary (`src/config.rs`) to library crate
+- `src/config.rs` is now a thin re-export: `pub use simulation::{SimConfig, SymbolSpec, Tier1AgentType};`
+
+**10. Tier 2 budget: sector rotators folded in**
+- `num_tier2_agents` now represents **total** Tier 2 (reactive + sector rotators)
+- Default: 5000 (was 4500 reactive + 500 rotators counted separately)
+- New computed methods: `reactive_tier2_count()`, `effective_sector_rotators()`
+- `total_agents()` no longer double-counts rotators
+
+### Architecture: Feature Pipeline (SoC)
+
+```
+Runner Phase 3b                          Phase 13
+    │                                        │
+    ▼                                        ▼
+FeatureExtractor                        HookContext
+  .extract_market()  ──► raw features       .features ──► RecordingHook
+        │                (NaN)                              (Parquet writer)
+        ▼
+  impute_features()  ──► clean features
+        │
+        ▼
+  MlPredictionCache
+  .insert_features()
+        │
+        ▼
+  ModelRegistry
+  .predict_from_cache()  ──► predictions ──► agents
+```
+
+Extraction, imputation, prediction, and recording are four separate concerns.
+Same features feed both ML and recording — training-serving parity by construction.
+
+### Files Summary
+
+| File | Action | Change |
+|------|--------|--------|
+| `crates/types/src/features.rs` | MODIFY | `MINIMAL_FEATURE_NEUTRALS` constant |
+| `crates/types/src/lib.rs` | MODIFY | Export `MINIMAL_FEATURE_NEUTRALS` |
+| `crates/agents/src/ml_cache.rs` | MODIFY | `FeatureVec` alias, nested HashMap, `feature_symbols()`, `all_features()` |
+| `crates/agents/src/tier1/ml/mod.rs` | MODIFY | `FeatureExtractor` trait with `neutral_values()`, `impute_features()` fn |
+| `crates/agents/src/tier1/ml/feature_extractor.rs` | MODIFY | `extract_features_raw()`, `MinimalFeatures` delegates to raw, `neutral_values()` impl |
+| `crates/agents/src/tier1/ml/model_registry.rs` | MODIFY | Prediction-only: `new()`, `predict_from_cache()`. Removed extractor field |
+| `crates/agents/src/tier1/mod.rs` | MODIFY | Re-export `extract_features_raw`, `impute_features` |
+| `crates/agents/src/lib.rs` | MODIFY | Export `FeatureVec`, `FeatureExtractor`, `MinimalFeatures`, `impute_features`, `extract_features_raw` |
+| `crates/simulation/src/runner.rs` | MODIFY | `feature_extractor` field, Phase 3b pipeline, enriched context with features + recent_trades |
+| `crates/simulation/src/config.rs` | MODIFY | `parallel_features` in `ParallelizationConfig` |
+| `crates/simulation/src/hooks.rs` | MODIFY | `HookContext.features`, `EnrichedData.recent_trades`, `with_features()` builder |
+| `crates/simulation/src/subsystems/agents.rs` | MODIFY | `AgentOrchestrator::agent_state()` |
+| `crates/simulation/src/sim_config.rs` | CREATE | SimConfig, SymbolSpec, Tier1AgentType (from binary) |
+| `crates/simulation/src/agent_factory/mod.rs` | CREATE | `spawn_all()`, `SpawnResult` |
+| `crates/simulation/src/agent_factory/tier1.rs` | CREATE | T1 spawn helpers |
+| `crates/simulation/src/agent_factory/tier2.rs` | CREATE | T2 + sector rotators |
+| `crates/simulation/src/agent_factory/ml_agents.rs` | CREATE | `MlModels`, tree agents |
+| `crates/simulation/src/agent_factory/background_pool.rs` | CREATE | T3 pool setup |
+| `crates/simulation/src/lib.rs` | MODIFY | Add modules + re-exports |
+| `crates/storage/src/comprehensive_features.rs` | MODIFY | Removed `extract()`, kept struct + schema constants |
+| `crates/storage/src/parquet_writer.rs` | MODIFY | Accept `feature_names` parameter |
+| `crates/storage/src/recording_hook.rs` | MODIFY | Pure Parquet writer: reads `ctx.features`, removed `PriceHistory`/`on_tick_start` |
+| `crates/storage/src/price_history.rs` | DEPRECATE | Hidden, not re-exported (only consumer was deleted `MarketFeatures::extract()`) |
+| `src/config.rs` | REWRITE | Thin re-export from simulation crate |
+| `src/main.rs` | MODIFY | -800 lines, uses `agent_factory::spawn_all()` |
+
+### Verification
+- `cargo check` — clean
+- `cargo test --workspace` — 376 passed, 0 failed
+- Behavior: identical for same seed (MinimalFeatures produces same 42 features via raw + impute(-1.0))
+
+### What V6 Can Now Do
+- Add `FullFeatures` implementing `FeatureExtractor` with 55+ columns and per-feature semantic neutrals
+- Build `crates/gym/` importing `agent_factory::spawn_all()` + `Simulation::agent_state()` directly
+- Record with dynamic Parquet schema by passing `extractor.feature_names()` to `RecordingHook`
+- Swap extractors at runtime: `sim.set_feature_extractor(Box::new(FullFeatures))` — recording and ML both update
+- Training-serving parity is structural, not a convention — same features serve both paths
+
 ## 2026-01-31: V5.6 Centralized ML Inference
 
 ### Summary

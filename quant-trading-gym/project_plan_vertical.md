@@ -777,121 +777,199 @@ crates/agents/src/
 
 **Total V5** ~2.5 weeks (V5.1: 2d, V5.2: 3-4d, V5.3: 2d, V5.4: 3d, V5.5: 2d, V5.6: 2d)
 
-## V6: Feature Engineering
+## V6: Feature Engineering & Training Infrastructure
 
-**Philosophy** Expand V5 minimal proof into full ML infrastructure. Add new trait implementations (no V5 modifications), gym environment, PyO3 bindings, and ensemble models.
+**Philosophy** Expand V5 minimal proof into full ML infrastructure. Centralized market features, ensemble models as V7 baseline, gym environment for RL readiness, and PyO3 bindings for Python training.
 
 **Requires** V5 complete (TreeAgent working)
 
-**Open-Closed Principle** V6 adds files, never modifies V5 files.
+**V5 Modifications** V6 modifies V5 files where needed (open-closed is aspirational). Key V5 changes: `MlPredictionCache` `[f64;42]` → `Vec<f64>`, add `FeatureExtractor` trait (planned in 5.3, never built), extract agent spawning from `main.rs`.
 
-| V5 Component | V6 Extension | Modification? |
-|--------------|--------------|---------------|
-| `MlModel` trait | Add `LinearModel`, `SvmLinear` impls | ❌ None |
-| `FeatureExtractor` trait | Add `FullFeatures` impl (20-30 features) | ❌ None |
-| `DecisionTree` | Reused in `EnsembleAgent` | ❌ None |
-| `TreeAgent<F, M>` | New `EnsembleAgent<F>` uses same pattern | ❌ None |
-| `--headless-record` | Add more columns (backward compatible) | ❌ Schema only |
+**Architecture: Centralized Features (54 total)**
+```
+┌─────────────────────────────────────────────────────────────────┐
+│               ALL FEATURES: centralized, cached per symbol      │
+│  54 market features = 42 V5 base + 12 new                      │
+│  ├── V5 base (42): price history, indicators, news              │
+│  ├── Microstructure (2): spread_bps, book_imbalance             │
+│  ├── Volatility (3): realized_vol_8, realized_vol_32, vol_ratio │
+│  ├── Fundamental (2): fair_value_dev, price_to_fair             │
+│  ├── Momentum (2): trend_strength, rsi_divergence               │
+│  └── Volume/Cross (3): volume_surge, trade_intensity,           │
+│                         sentiment_price_gap                     │
+├─────────────────────────────────────────────────────────────────┤
+│  No per-agent portfolio features. Position limits enforced by   │
+│  PositionValidator. Sunk-cost features (position, unrealized    │
+│  P&L) encode behavioral biases, not predictive market signal.   │
+│  RL reward shaping (V7) handles risk management instead.        │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-**Architecture**
+**Training / Inference Split**
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        TRAINING (Python)                        │
 ├─────────────────────────────────────────────────────────────────┤
-│  scikit-learn: RandomForest, LinearRegression, SVM              │
+│  scikit-learn: RandomForest, LogisticRegression, LinearSVC      │
 │  PyO3 bindings → Rust TradingEnv.step() for episode collection  │
-│  Export → models/ensemble_model.json                            │
+│  Export → models/*.json (trees, coefficients, weights)          │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                       INFERENCE (Rust)                          │
 ├─────────────────────────────────────────────────────────────────┤
-│  crates/agents/src/tier1/ml/         (V5 files unchanged)       │
-│  ├── mod.rs              # Add pub use for new files            │
-│  ├── features.rs         # (V5) MinimalFeatures                 │
-│  ├── decision_tree.rs    # (V5) DecisionTree                    │
-│  ├── tree_agent.rs       # (V5) TreeAgent<F, M>                 │
-│  ├── full_features.rs    # (V6) FullFeatures: 20-30 features    │
-│  ├── linear_model.rs     # (V6) LinearModel implements MlModel  │
-│  ├── svm_linear.rs       # (V6) SvmLinear implements MlModel    │
-│  └── ensemble_agent.rs   # (V6) EnsembleAgent combines models   │
-│  Load JSON at startup, inference: ~25µs per agent (no FFI)      │
+│  crates/agents/src/tier1/ml/                                    │
+│  ├── mod.rs              # FeatureExtractor trait + MlModel     │
+│  ├── feature_extractor.rs# MinimalFeatures (V5, 42 features)    │
+│  ├── full_features.rs    # FullFeatures (V6, 54 market features)│
+│  ├── decision_tree.rs    # V5 DecisionTree                      │
+│  ├── random_forest.rs    # V5 RandomForest                      │
+│  ├── gradient_boosted.rs # V5 GradientBoosted                   │
+│  ├── linear_model.rs     # V6 LinearModel                       │
+│  ├── svm_linear.rs       # V6 SvmLinear                         │
+│  ├── tree_agent.rs       # V5 TreeAgent<M> (42 features)        │
+│  ├── ensemble_agent.rs   # V6 EnsembleAgent (54 features)       │
+│  └── model_registry.rs   # V5 ModelRegistry (uses FeatureExtractor) │
+│  Load JSON at startup, inference: ~50µs per ensemble (no FFI)   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 **Why Not PyO3 for Inference?**
-- FFI overhead: ~1-10µs per call × 100k agents = 100ms-1s per tick (way over <1ms target)
+- FFI overhead: ~1-10us per call x 100k agents = 100ms-1s per tick (way over <1ms target)
 - GIL prevents parallel inference across Rayon threads
 - PyO3 is for training only (Python calls Rust), not inference (Rust calls Python)
 
+### Pre-V6 Refactor
+
+See `refactor_v6_prep.md`. Unblocks V6 by addressing V5 rigidity:
+
 ```
-V6.1: Full Features (~3 days)
-    └─► Add `FullFeatures` implementing `FeatureExtractor` trait
-    └─► Price indicators: SMA, EMA, RSI, MACD, Bollinger, ATR
-    └─► Portfolio state: position, cash, unrealized P&L, equity
-    └─► Market microstructure: bid-ask spread, order book imbalance
-    └─► Fundamental: news sentiment, value score
-    └─► Update `--headless-record` to use `FullFeatures` (add columns, don't remove)
-    └─► Observation parity: human sees same data
+Refactor:
+    └─► MlPredictionCache: [f64; 42] → Vec<f64> for variable feature counts
+    └─► Add FeatureExtractor trait + MinimalFeatures impl (wraps existing extract_features)
+    └─► ModelRegistry: accept &dyn FeatureExtractor instead of hardcoded extractor
+    └─► Extract agent spawning from main.rs → simulation::AgentFactory
+    └─► Add Simulation::agent_state(id) for gym observation extraction
+    └─► Make recording infrastructure schema-flexible via FeatureExtractor
+```
 
-V6.2: Gym Environment (~3 days)
-    └─► New crate: `crates/gym/`
-    └─► `TradingEnv` with step/reset (Rust)
-    └─► Episode management, termination conditions
-    └─► Seed support: random by default, optional fixed seed for reproducibility
-    └─► Logging infrastructure for training curves
+### V6.1: Full Features
 
-V6.3: PyO3 Bindings (~3 days)
-    └─► Add `crates/gym-python/` with PyO3 wrapper
-    └─► Python can call Rust TradingEnv (training direction only)
-    └─► NumPy array interface for features
-    └─► Batched episode collection (parallel Rust envs)
+See `6.1_full_features.md`. Data science step — each feature chosen for predictive signal.
+
+```
+V6.1: Full Features
+    └─► FullFeatures implementing FeatureExtractor trait (54 market features)
+    └─► Microstructure: spread_bps, book_imbalance
+    │     Why: liquidity cost and order flow predict short-term direction
+    └─► Volatility regime: realized_vol_8, realized_vol_32, vol_ratio
+    │     Why: vol expansion/contraction drives position sizing and opportunity
+    └─► Fundamental: fair_value_dev, price_to_fair
+    │     Why: mean-reversion anchor from Gordon Growth Model
+    └─► Momentum quality: trend_strength (EMA gap / ATR), rsi_divergence
+    │     Why: normalized trend magnitude beats raw indicator values
+    └─► Volume/cross: volume_surge, trade_intensity, sentiment_price_gap
+    │     Why: volume confirms moves; sentiment aligned with mispricing = stronger
+    └─► Update --headless-record to use FullFeatures (adds columns, preserves 42)
+    └─► Feature validation: MI analysis, SHAP, ablation after V6.2 training
+```
+
+### V6.2: Full Ensemble
+
+See `6.2_full_ensemble.md`. V7 baseline. No PyO3 dependency — models trained via scikit-learn on Parquet recordings, exported as JSON, loaded in Rust.
+
+```
+V6.2: Full Ensemble
+    └─► LinearModel: MlModel impl, dot(coefs, features) + intercept → softmax
+    └─► SvmLinear: MlModel impl, dot(weights, features) + bias → softmax
+    └─► EnsembleAgent: NEW Agent impl (not TreeAgent)
+    │     1. Gets cached extended market features (54) from MlPredictionCache
+    │     2. Runs each model: model.predict(&features[..model.n_features()])
+    │     3. Weighted average → threshold-based order generation
+    └─► Python scripts: train_ensemble.py, export_linear.py, export_svm.py
+    └─► Feature importance via SHAP on ensemble
+    └─► Benchmark: target <50us per ensemble prediction
+```
+
+### V6.3: Gym Environment
+
+See `6.3_gym_environment.md`. Bridges to V7 RL.
+
+```
+V6.3: Gym Environment
+    └─► New crate: crates/gym/
+    └─► ExternalAgent: Agent impl with Arc<Mutex<DiscreteAction>> for external control
+    └─► TradingEnv: owns Simulation + ExternalAgent, step/reset/seed
+    └─► Action space: Discrete(3) = {Sell, Hold, Buy}
+    └─► Observation: 54-feature Vec<f64> (centralized market features)
+    └─► RewardFunction trait: pluggable for V7.1 reward shaping
+    │     Default: PnlDeltaReward (realized + unrealized P&L change)
+    │     Prepared: RiskAdjustedReward (drawdown penalty, transaction cost, Sharpe bonus)
+    └─► Episode management: configurable max_ticks, bankrupt termination
+    └─► Seed support: deterministic episodes for reproducible training
+    └─► Uses AgentFactory to spawn background agents per episode
+```
+
+### V6.4: PyO3 Bindings
+
+See `6.4_pyo3_bindings.md`. Python-Rust bridge for training.
+
+```
+V6.4: PyO3 Bindings
+    └─► New crate: crates/gym-python/ (cdylib via maturin)
+    └─► PyTradingEnv: wraps TradingEnv, NumPy array I/O
+    └─► observation_space / action_space properties (gymnasium.spaces compatible)
+    └─► py.allow_threads() releases GIL during Rust computation
+    └─► PyVecTradingEnv: parallel Rust envs via rayon for batched episode collection
     └─► Seed passthrough for reproducible training runs
-
-V6.4: Full Ensemble (~4 days)
-    └─► Add `LinearModel` implementing `MlModel` (coefficients + intercept)
-    └─► Add `SvmLinear` implementing `MlModel` (weights + bias)
-    └─► Train Linear Regression, SVM (scikit-learn)
-    └─► `EnsembleAgent<F>` composes: Vec<Box<dyn MlModel>> + voting weights
-    └─► Reuses V5 `DecisionTree` — no duplication
-    └─► Validate on held-out episodes
-    └─► Benchmark: target <50µs per ensemble prediction
+    └─► Build: maturin develop --release
 ```
 
-**V6 File Additions (no V5 modifications)**
+**Dependency Graph**
 ```
-crates/agents/src/tier1/ml/
-├── mod.rs              # (modify: add pub use for new files only)
-├── features.rs         # (V5, unchanged)
-├── decision_tree.rs    # (V5, unchanged)
-├── tree_agent.rs       # (V5, unchanged)
-├── full_features.rs    # NEW: FullFeatures impl
-├── linear_model.rs     # NEW: LinearModel impl
-├── svm_linear.rs       # NEW: SvmLinear impl
-└── ensemble_agent.rs   # NEW: EnsembleAgent
-
-crates/gym/             # NEW: Gym environment crate
-├── Cargo.toml
-├── src/
-│   ├── lib.rs
-│   └── trading_env.rs
-
-crates/gym-python/      # NEW: PyO3 bindings crate
-├── Cargo.toml
-├── src/
-│   └── lib.rs
+Refactor ──► 6.1 Full Features ──► 6.2 Ensemble
+                   │
+                   └──► 6.3 Gym Env ──► 6.4 PyO3
 ```
 
-**V6 Deliverable** Full ensemble ML agent with PyO3 training infrastructure.
+**V6 Files**
+```
+MODIFIED:
+  crates/agents/src/ml_cache.rs           # Vec<f64> features
+  crates/agents/src/tier1/ml/mod.rs       # FeatureExtractor trait + new modules
+  crates/agents/src/tier1/ml/model_registry.rs  # Generic over extractor
+  crates/agents/src/tier1/ml/feature_extractor.rs  # MinimalFeatures struct
+  crates/types/src/features.rs            # Extended constants + indices
+  crates/simulation/src/runner.rs         # agent_state() + extractor in Phase 3
+  crates/storage/src/comprehensive_features.rs  # Schema-flexible
+  crates/storage/src/recording_hook.rs    # Pass extractor
+  src/main.rs                             # Delegate to AgentFactory
+
+NEW:
+  crates/simulation/src/agent_factory.rs  # Extracted agent spawning
+  crates/agents/src/tier1/ml/full_features.rs   # FullFeatures (54 market)
+  crates/agents/src/tier1/ml/linear_model.rs    # LinearModel
+  crates/agents/src/tier1/ml/svm_linear.rs      # SvmLinear
+  crates/agents/src/tier1/ml/ensemble_agent.rs  # EnsembleAgent (54 features)
+  crates/gym/                             # Gym environment crate
+  crates/gym-python/                      # PyO3 bindings crate
+  scripts/train_ensemble.py               # Training pipeline
+  scripts/export_linear.py                # Model export
+  scripts/export_svm.py                   # Model export
+```
+
+**V6 Deliverable** Full ensemble ML agent with gym environment and PyO3 training infrastructure. Ensemble performance is the baseline V7 RL must beat.
 
 **Deferred Decisions (with trade-offs)**
 
 | Decision | Options | Trade-off | When to Decide |
 |----------|---------|-----------|----------------|
 | **SVM kernel** | Linear / RBF | Linear: trivial export (weights+bias), ~200ns; RBF: requires support vectors, ~10x slower | V6.4 training |
+| **Action space** | Discrete(3) / Continuous | Discrete matches V5 3-class; Continuous enables position sizing in V7 | V7.1 |
+| **Feature pruning** | Keep all 54 / Prune by MI | Fewer features = faster + less overfit; more = richer signal | After V6.2 SHAP analysis |
 
-**Total V6** ~2 weeks
+**Total V6** ~2.5 weeks (Refactor: 3-4d, V6.1: 3d, V6.2: 4d, V6.3: 3d, V6.4: 3d; 6.2 and 6.3 can overlap)
 
 ## V7: Reinforcement Learning
 

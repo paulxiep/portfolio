@@ -1,8 +1,14 @@
-//! Model registry for centralized ML prediction caching (V5.6).
+//! Model registry for centralized ML prediction (V5.6, SoC refactor).
 //!
-//! The [`ModelRegistry`] holds all registered ML models and provides centralized
-//! prediction computation. This enables O(M × S) predictions instead of O(N)
-//! when multiple agents share the same model.
+//! The [`ModelRegistry`] holds registered ML models and computes predictions
+//! from pre-extracted features in the [`MlPredictionCache`]. This enables
+//! O(M × S) predictions instead of O(N) per-agent computations.
+//!
+//! # SoC
+//!
+//! ModelRegistry is **prediction only**. Feature extraction is the runner's
+//! responsibility — the runner extracts features once and populates the cache.
+//! ModelRegistry reads cached features and computes predictions.
 //!
 //! # Usage
 //!
@@ -10,37 +16,44 @@
 //! use agents::tier1::ml::{ModelRegistry, DecisionTree};
 //!
 //! let mut registry = ModelRegistry::new();
-//!
-//! // Register models
 //! registry.register(DecisionTree::from_json("model1.json")?);
 //! registry.register(DecisionTree::from_json("model2.json")?);
 //!
-//! // Compute all predictions for all symbols in O(M × S)
-//! let mut cache = MlPredictionCache::new(tick);
-//! registry.compute_all_predictions(&ctx, &symbols, &mut cache);
+//! // Runner populates cache with features, then:
+//! registry.predict_from_cache(&mut cache);
 //! ```
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::StrategyContext;
 use crate::ml_cache::MlPredictionCache;
 use crate::tier1::ml::MlModel;
-use crate::tier1::ml::feature_extractor::extract_features;
-use types::Symbol;
 
 /// Registry of ML models for centralized prediction computation.
 ///
-/// Stores models by name and provides bulk prediction computation
-/// for all (model, symbol) pairs in a single pass.
-#[derive(Default)]
+/// Stores models by name. Provides bulk prediction computation for all
+/// (model, symbol) pairs from pre-extracted features.
+///
+/// # SoC (pre-V6 refactor section F)
+///
+/// ModelRegistry is responsible for **prediction only**. Feature extraction
+/// is the runner's responsibility — the runner extracts features once and
+/// feeds them to both the ML cache (for prediction) and recording hooks
+/// (for Parquet). This separation ensures training-serving parity and
+/// avoids recalculation.
 pub struct ModelRegistry {
     /// Models indexed by name.
     models: HashMap<String, Arc<dyn MlModel>>,
 }
 
+impl Default for ModelRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ModelRegistry {
-    /// Create a new empty registry.
+    /// Create a new empty model registry.
     pub fn new() -> Self {
         Self {
             models: HashMap::new(),
@@ -88,44 +101,20 @@ impl ModelRegistry {
         self.models.keys().map(|s| s.as_str()).collect()
     }
 
-    /// Compute all predictions for all symbols.
+    /// Compute predictions for all (model, symbol) pairs from pre-extracted features.
     ///
-    /// This is the core optimization: O(S) feature extractions and O(M × S) predictions
-    /// instead of O(N) per-agent computations.
+    /// Features must already be populated in the cache (by the runner).
+    /// This method only handles the prediction step: O(M × S), parallelized.
     ///
-    /// # Arguments
+    /// # SoC
     ///
-    /// * `ctx` - Strategy context for feature extraction
-    /// * `symbols` - List of symbols to compute predictions for
-    /// * `cache` - Cache to populate with features and predictions
-    ///
-    /// # Performance
-    ///
-    /// With N agents, M models, S symbols:
-    /// - Before: N feature extractions, N predictions
-    /// - After: S feature extractions, M × S predictions (parallelized)
-    pub fn compute_all_predictions(
-        &self,
-        ctx: &StrategyContext<'_>,
-        symbols: &[Symbol],
-        cache: &mut MlPredictionCache,
-    ) {
-        // Phase 1: Extract features for all symbols ONCE (O(S), parallelized)
-        let features_vec: Vec<_> = parallel::map_slice(
-            symbols,
-            |symbol| {
-                let features = extract_features(symbol, ctx);
-                (symbol.clone(), features)
-            },
-            false, // Use parallel execution
-        );
+    /// Feature extraction is NOT this method's responsibility. The runner extracts
+    /// features once and inserts them into the cache. This method reads those features
+    /// and computes predictions. The same extracted features are also passed to
+    /// recording hooks for Parquet output — guaranteeing training-serving parity.
+    pub fn predict_from_cache(&self, cache: &mut MlPredictionCache) {
+        let symbols: Vec<_> = cache.feature_symbols().cloned().collect();
 
-        // Insert features into cache
-        for (symbol, features) in features_vec {
-            cache.insert_features(symbol, features);
-        }
-
-        // Phase 2: Compute predictions for all (model, symbol) pairs (O(M × S), parallelized)
         // Create work items: (model_name, model, symbol)
         let work_items: Vec<_> = self
             .models

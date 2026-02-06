@@ -49,7 +49,7 @@ mod random_forest;
 mod tree_agent;
 
 pub use decision_tree::DecisionTree;
-pub use feature_extractor::extract_features;
+pub use feature_extractor::{MinimalFeatures, extract_features, extract_features_raw};
 pub use gradient_boosted::GradientBoosted;
 pub use model_registry::ModelRegistry;
 pub use random_forest::RandomForest;
@@ -79,6 +79,61 @@ pub trait MlModel: Send + Sync {
     fn n_features(&self) -> usize {
         42
     }
+}
+
+/// Trait for extracting market-level features from simulation state.
+///
+/// Implementors produce a feature vector from `StrategyContext` for a given symbol.
+/// Market features are shared across agents (cacheable). Per-agent features
+/// (portfolio state) are NOT part of this trait — they are computed locally.
+///
+/// # Pipeline
+///
+/// Extraction is **pure** — `extract_market()` returns raw features with NaN
+/// for missing values. Imputation is a separate step using `neutral_values()`.
+/// The runner applies imputation before caching:
+///
+/// ```ignore
+/// let raw = extractor.extract_market(symbol, ctx);
+/// let neutrals = extractor.neutral_values();
+/// let imputed: FeatureVec = raw.iter().zip(neutrals).map(|(f, n)| {
+///     if f.is_nan() { *n } else { *f }
+/// }).collect();
+/// cache.insert_features(symbol, imputed);
+/// ```
+pub trait FeatureExtractor: Send + Sync {
+    /// Number of features this extractor produces.
+    fn n_features(&self) -> usize;
+
+    /// Extract raw market features for a symbol. NaN values preserved.
+    fn extract_market(
+        &self,
+        symbol: &types::Symbol,
+        ctx: &crate::StrategyContext<'_>,
+    ) -> crate::ml_cache::FeatureVec;
+
+    /// Feature names in extraction order (for Parquet schema, logging).
+    fn feature_names(&self) -> &[&str];
+
+    /// Per-feature neutral values for NaN imputation.
+    ///
+    /// Length must equal `n_features()`. Each value is the "no signal" default
+    /// for that feature when data is missing (e.g. RSI → 50, vol_ratio → 1.0).
+    fn neutral_values(&self) -> &[f64];
+}
+
+/// Apply per-feature NaN imputation using neutral values from an extractor.
+///
+/// Replaces NaN values in `features` with the corresponding neutral value.
+/// This is the single imputation point in the pipeline — called by the runner
+/// after extraction and before cache insertion.
+#[inline]
+pub fn impute_features(features: &mut crate::ml_cache::FeatureVec, neutrals: &[f64]) {
+    features.iter_mut().zip(neutrals).for_each(|(f, n)| {
+        if f.is_nan() {
+            *f = *n;
+        }
+    });
 }
 
 /// Type aliases for convenience.

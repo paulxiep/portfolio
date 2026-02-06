@@ -28,7 +28,7 @@ pub use strategies::{
 // Re-export ML model types (V5.5)
 // V5.6: Added ModelRegistry and extract_features for centralized prediction caching
 pub use ml::{
-    ClassProbabilities, DecisionTree, DecisionTreeAgent, GradientBoosted, GradientBoostedAgent,
-    MlModel, ModelRegistry, RandomForest, RandomForestAgent, TreeAgent, TreeAgentConfig,
-    extract_features,
+    ClassProbabilities, DecisionTree, DecisionTreeAgent, FeatureExtractor, GradientBoosted,
+    GradientBoostedAgent, MinimalFeatures, MlModel, ModelRegistry, RandomForest, RandomForestAgent,
+    TreeAgent, TreeAgentConfig, extract_features, extract_features_raw, impute_features,
 };

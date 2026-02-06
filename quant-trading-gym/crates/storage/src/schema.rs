@@ -10,7 +10,7 @@ use std::path::Path;
 pub struct StorageConfig {
     /// Path to SQLite database (`:memory:` for in-memory)
     pub path: String,
-    /// Candle timeframes in ticks (e.g., [60, 300, 3600] for 1m, 5m, 1h)
+    /// Candle timeframes in ticks (e.g., [100, 300, 3600])
     pub candle_timeframes: Vec<u64>,
     /// Snapshot interval in ticks (default: 1000)
     pub snapshot_interval: u64,
@@ -22,7 +22,7 @@ impl Default for StorageConfig {
     fn default() -> Self {
         Self {
             path: ":memory:".to_string(),
-            candle_timeframes: vec![60, 300, 3600], // 1m, 5m, 1h (assuming 1 tick = 1 second)
+            candle_timeframes: vec![100, 300, 3600], // Aligned with trade_write_interval
             snapshot_interval: 1000,
             trade_write_interval: 100, // Flush trades every 100 ticks
         }

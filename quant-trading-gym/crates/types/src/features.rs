@@ -149,6 +149,19 @@ pub const MARKET_FEATURE_NAMES: &[&str] = &[
 ];
 
 // =============================================================================
+// Neutral (Imputation) Values
+// =============================================================================
+
+/// Per-feature neutral values for NaN imputation (V5 MinimalFeatures).
+///
+/// V5 training used `nan_to_num(X, nan=-1.0)` uniformly. All 42 features
+/// impute to -1.0 for backward compatibility with trained V5 models.
+///
+/// V6 `FullFeatures` will define semantic neutrals per feature:
+/// RSI → 50.0, vol_ratio → 1.0, bb_percent_b → 0.5, etc.
+pub const MINIMAL_FEATURE_NEUTRALS: [f64; N_MARKET_FEATURES] = [-1.0; N_MARKET_FEATURES];
+
+// =============================================================================
 // Pure Computation Functions
 // =============================================================================
 

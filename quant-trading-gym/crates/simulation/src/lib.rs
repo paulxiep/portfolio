@@ -77,10 +77,12 @@
 //! println!("Executed {} trades over 1000 ticks", trades.len());
 //! ```
 
+pub mod agent_factory;
 pub mod config;
 mod hooks;
 mod metrics;
 mod runner;
+pub mod sim_config;
 pub mod subsystems;
 pub mod traits;
 
@@ -96,3 +98,7 @@ pub use metrics::{MetricsHook, MetricsSnapshot};
 
 // Re-export from traits
 pub use traits::AgentSummary;
+
+// Re-export agent config types (used by binary and gym)
+pub use agent_factory::{MlModels, SpawnResult};
+pub use sim_config::{SimConfig, SymbolSpec, Tier1AgentType};
