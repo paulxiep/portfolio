@@ -2,7 +2,7 @@
 
 Ideated with LLM assistance, structured for agile-friendly milestones.
 
-Refer to [project vision](project-vision.md) for full improvement ideas.
+Refer to [project vision](project-vision.md) for full improvement ideas and [architecture](architecture.md) for technical design.
 
 ---
 
@@ -12,9 +12,9 @@ Refer to [project vision](project-vision.md) for full improvement ideas.
 
 Each iteration delivers a thin slice through both crates (code-raptor + portfolio-rag-chat). Every version produces something *runnable* and *demonstrable*.
 
-**Value proposition: Make cheap models work well.**
+**Value proposition: Decouple knowledge from reasoning.**
 
-Commercial tools (Cursor/Copilot) can afford GPT-4/Claude Opus for code understanding. This tool's differentiator is making low-end models (Gemini Flash, Haiku) answer well through rich, structured context. Compete on retrieval quality, not model quality.
+Rich, structured retrieval amplifies *any* model—cheap or frontier. By offloading "what context is relevant" to the retrieval layer, the model's complexity budget can be spent on reasoning, multi-step workflows, or tool orchestration. This scales independently of model choice: better retrieval benefits Haiku and Opus alike.
 
 ---
 
@@ -81,7 +81,11 @@ Folder/File-level embeddings
 
 Function signature extraction ─── independent (Track B)
 Large function chunking ───────── independent (Track B)
-Incremental ingestion ─────────── V1.1 (FIRST - enables fast iteration)
+Incremental ingestion ─────────── V1.3 (uses V1.1 schema, tightens project_name/paths)
+
+LanguageHandler refactor ─────── V1.2 (pure refactor, unblocks V1.4 + V1.5)
+    ├──► TypeScript support (V1.4)
+    └──► Docstring extraction (V1.5, wires extract_docstring for all handlers)
 
 RAPTOR clustering ─────────────── needs A2 enrichment + A1 hierarchy
     └──► Architecture comparison [requires A1 hierarchy]
@@ -137,7 +141,7 @@ V1 → V2 → V3 are sequential. Tracks A, B, C can run in parallel after V3. Pr
 
 | Phase | Effort | Cumulative |
 |-------|--------|------------|
-| **V1** (Indexing) | 1.5-2 weeks | 1.5-2 weeks |
+| **V1** (Indexing) | 2.5-3 weeks | 2.5-3 weeks |
 | **V2** (Query) | 1 week | 2.5-3 weeks |
 | **V3** (Testing) | 1 week | 3.5-4 weeks |
 | **Track A** (A1→A2→A3) | 4-5 weeks | — |
@@ -162,51 +166,108 @@ For portfolio demonstrations, hirers ask architecture questions first:
 
 ---
 
-## V1: Indexing Foundation
+## V1: Indexing Foundation [COMPLETE]
 
-**Goal:** Enable fast iteration and fix docstring extraction. All code-raptor work.
+**Goal:** Enable fast iteration, clean language abstraction, and fix docstring extraction. All code-raptor + coderag-store work.
 
-**Estimated effort:** ~1.5-2 weeks total
-
-| Item | Effort | Notes |
+| Item | Status | Notes |
 |------|--------|-------|
-| V1.1 Incremental Ingestion | 3-5 days | Content hashing, chunk diffing, deletion logic |
-| V1.2 TypeScript Support | 2-3 days | New language: tree-sitter grammar, file detection, node types |
-| V1.3 Docstring Extraction | 2-3 days | Fix for Rust/Python, add for TypeScript |
+| V1.1 Schema Foundation | Done | UUID, content_hash, delete API, List deps, model version |
+| V1.2 LanguageHandler Refactor | Done | Pure refactor: trait + registry, docstring stays None |
+| V1.3 Incremental Ingestion | Done | File-level hashing, three-layer architecture, schema tightening |
+| V1.4 TypeScript Support | Done | TypeScriptHandler with JSDoc extract_docstring |
+| V1.5 Docstring Extraction | Done | Parser wiring, Rust + Python extraction, TypeScript activation |
 
-### V1.1: Incremental Ingestion (FIRST)
-- Content-hash each chunk
-- Skip unchanged files/functions on re-ingest
-- Delete removed chunks
-- Store `embedding_model_version` in chunk metadata (enables clean re-embedding on model change)
+### V1.1: Schema Foundation (FIRST)
+
+**Why:** Current schema lacks fields needed for incremental operations and has design debt that compounds in later phases.
+
+**Changes to coderag-types:**
+- Add `chunk_id: String` (UUID) - stable foreign key for Track C call graph edges
+- Add `content_hash: String` - SHA256 of code_content for change detection
+- Add `embedding_model_version: String` - prevents silent embedding inconsistency
+
+**Changes to coderag-store:**
+- Add delete API: `delete_chunks_by_file()`, `delete_chunks_by_project()`
+- Change `crate_chunks.dependencies` from CSV string to `List<Utf8>` - enables "what depends on X?" queries
+- Update Arrow schemas for all 4 tables
+
+**Crates:** coderag-types, coderag-store
+
+### V1.2: LanguageHandler Refactor
+
+**Why:** Current `SupportedLanguage` enum requires touching 4+ match statements per new language. Extract trait before adding languages or docstring extraction.
+
+**Scope:** Pure refactor. `extract_docstring` defined on trait with default returning `None`. Ingestion output identical before and after. See `v1.2.md` for full design including all caller migration points.
+
+**Key changes:**
+- `LanguageHandler` trait with `name()`, `extensions()`, `grammar()`, `query_string()`, `extract_docstring()` (default None)
+- `RustHandler`, `PythonHandler` implementations
+- `handler_for_path()` registry replaces `SupportedLanguage::from_path()`
+- Migrate all callers: `analyze_content()`, `extract_module_docs()`, `process_code_file()`
+- Remove `SupportedLanguage` enum entirely
+
+**Crate:** code-raptor
+
+### V1.3: Incremental Ingestion
+
+**Prerequisite:** V1.1 schema (UUID, content_hash, delete API)
+
+**Architecture:** Three-layer (parse → reconcile → orchestrate). Parsing stays sync/testable, reconcile takes data only (no DB handle), main.rs orchestrates all async I/O.
+
+**Comparison strategy:** File-level hashing. SHA256 of entire file content. Unchanged files are skipped entirely. Changed files: delete all old chunks, insert all new chunks. Simpler than per-chunk diffing with same performance characteristics.
+
+**Schema tightening (absorbed into V1.3):**
+- `project_name: Option<String>` → `String` on CodeChunk, CrateChunk, ModuleDocChunk
+- Relative forward-slash path storage (portable across OS)
+- CrateChunk content_hash includes description
+- `--project-name` CLI flag for single-repo/multi-repo use
+
+**Core incremental logic:**
+- File-level hash comparison: skip unchanged, nuke+replace changed, delete orphaned
+- CrateChunk comparison by `crate_name` (not file path)
+- Deletions partitioned by LanceDB table (each chunk type in its own table)
+- Batch delete API: `delete_chunks_by_ids()`
+- Embedding model version check: detect mismatch, force `--full`
+- `--full` flag for complete re-index, `--dry-run` for preview
+- Insert-before-delete ordering (safer on crash)
 - **Essential:** Enables fast iteration for all subsequent work
-- **Crate:** code-raptor
+- **Crates:** coderag-types, coderag-store, code-raptor
 
-### V1.2: TypeScript Support
-- Add TypeScript/JavaScript as supported language
+### V1.4: TypeScript Support
+
+**Prerequisite:** V1.2 LanguageHandler refactor
+
+- Implement `TypeScriptHandler` with full trait (including `extract_docstring` for `/** */` JSDoc)
 - Tree-sitter grammar integration (`tree-sitter-typescript`)
 - File detection: `.ts`, `.tsx`, `.js`, `.jsx`
-- Function node extraction (functions, arrow functions, methods)
+- Query patterns for: `function_declaration`, `arrow_function`, `method_definition`, `class_declaration`, `interface_declaration`, `type_alias_declaration`, `enum_declaration`
+- Register in `languages/mod.rs` handler list
+- Note: `extract_docstring` is implemented but remains unwired in parser.rs until V1.5
 - **Crate:** code-raptor
 
-### V1.3: Docstring Extraction
-- **Problem:** `docstring` field hardcoded to `None` in `parser.rs:125`
-- **Current state:**
-  - Module-level `//!` extraction exists (`extract_module_docs`) but unused
-  - Function-level `///` extraction: NOT implemented
-- **Implementation:**
-  - Extract doc comments preceding each function node via tree-sitter
-  - Wire extraction into CodeChunk creation
-  - Handle multi-line aggregation
-- **Languages:**
-  - Rust: `///` and `//!`
-  - Python: `"""..."""` docstrings
-  - TypeScript/JavaScript: `/** */` JSDoc comments
-- **Crate:** code-raptor
+### V1.5: Docstring Extraction [COMPLETE]
 
-**Deliverable:** Fast re-ingestion. TypeScript support. Docstrings appear in search results.
+**Prerequisite:** V1.2 LanguageHandler refactor (docstring extraction is a trait method), V1.4 (TypeScriptHandler)
 
-### V1 Hero Queries (Testing Checkpoint)
+**Three concerns (SoC):**
+
+1. **Wire parser.rs** — Extended `analyze_with_handler()` fold tuple to call `handler.extract_docstring(source, &node, source_bytes)` inside the fold closure where tree-sitter Nodes are still alive.
+
+2. **Implement per-handler extraction:**
+   - **RustHandler:** `///` outer doc comments (backward scan, aggregate lines), `#[doc = "..."]` attribute form, skip `#[derive]`/`#[cfg]` attributes between doc and item, preserve empty lines within doc blocks. `//!` (inner doc) scoped out — already handled by `extract_module_docs()`.
+   - **PythonHandler:** AST traversal into body (`node → child_by_field_name("body") → first expression_statement → string`), `"""..."""` and `'''...'''` delimiters, PEP 257-style dedent for multi-line content.
+   - **TypeScriptHandler:** `/** ... */` JSDoc (implemented in V1.4, activated by parser.rs wiring). Verified through pipeline with 5 dedicated tests.
+
+3. **Context display** — `format_code_section()` in `context.rs` now includes `**Docs:**` line when docstring is present.
+
+**Testing:** 97 tests pass (0 failures, 0 warnings). Unit tests per handler, cross-language pipeline tests in parser.rs, context display test.
+
+**Crate:** code-raptor, portfolio-rag-chat
+
+**Deliverable:** Fast re-ingestion. Clean language abstraction. Docstrings in search results. TypeScript support with docstrings from day one. V1 milestone complete.
+
+### V1 Hero Queries (Testing Checkpoint — Ready to Validate)
 - "What is code-raptor?" → Explains ingestion pipeline with docstrings visible
 - "How does the retriever work?" → Returns `retriever.rs` (self-reference verification)
 
@@ -567,9 +628,11 @@ Independent track. Can run in parallel with Track A and B.
 
 | Improvement | Crate |
 |-------------|-------|
-| Incremental ingestion (V1.1) | code-raptor |
-| TypeScript support (V1.2) | code-raptor |
-| Docstring extraction (V1.3) | code-raptor |
+| Schema foundation (V1.1) | coderag-types, coderag-store |
+| LanguageHandler refactor (V1.2) | code-raptor |
+| Incremental ingestion (V1.3) | coderag-types, coderag-store, code-raptor |
+| TypeScript support (V1.4) | code-raptor |
+| Docstring extraction (V1.5) | code-raptor |
 | Inline call context (V2.1) | code-raptor |
 | Intent classification (V2.2) | portfolio-rag-chat |
 | Query routing (V2.3) | portfolio-rag-chat |
@@ -590,7 +653,7 @@ Independent track. Can run in parallel with Track A and B.
 
 | Milestone | Metric |
 |-----------|--------|
-| V1 | TypeScript files indexed; docstrings appear in results (Rust, Python, TS); re-ingestion <30s for unchanged code |
+| V1 [DONE] | Docstrings appear in results (Rust, Python, TypeScript); TypeScript files indexed with docstrings; re-ingestion <30s for unchanged code; incremental ingestion skips unchanged files; `--full`/`--dry-run`/`--project-name` CLI flags work; 97 tests pass |
 | V2 | Queries route by type; retrieval sources shown; call context in embeddings |
 | V3 | Test dataset with 20+ queries; baseline recall@5 documented; regression script runs <60s |
 | A1 | "What does engine/ do?" returns coherent answer |

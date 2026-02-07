@@ -12,6 +12,7 @@ coderag-store = { path = "../coderag-store" }
 tree-sitter = "0.26"
 tree-sitter-rust = "0.24"
 tree-sitter-python = "0.25"
+tree-sitter-typescript = "0.23"
 streaming-iterator = "0.1"
 toml = "0.8"
 walkdir = "2.5"

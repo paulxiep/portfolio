@@ -18,8 +18,7 @@ pub struct ChatResponse {
 pub struct SourceInfo {
     pub file: String,
     pub function: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub project: Option<String>,
+    pub project: String,
     pub line: usize,
 }
 
