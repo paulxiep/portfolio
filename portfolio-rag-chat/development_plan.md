@@ -279,43 +279,81 @@ For portfolio demonstrations, hirers ask architecture questions first:
 
 **Estimated effort:** ~1 week total
 
+
 | Item | Effort | Notes |
 |------|--------|-------|
-| V2.1 Inline Call Context | 1 day | Simple string append during parsing (code-raptor) |
-| V2.2 Intent Classification | 1-2 days | Keyword heuristics, no ML |
-| V2.3 Query Routing | 1-2 days | Config-driven routing logic |
-| V2.4 Retrieval Traces | 1-2 days | Format and display retrieved chunks |
+| V2.1 Inline Call Context | 1 day | Ephemeral call extraction via tree-sitter, enriches embedding text (code-raptor) |
+| V2.2 Intent Classification | 1-2 days | Declarative keyword rules, `QueryIntent` enum (portfolio-rag-chat) |
+| V2.3 Query Routing | 1-2 days | `RoutingTable` HashMap maps intent → `RetrievalConfig` (portfolio-rag-chat) |
+| V2.4 Retrieval Traces | 1-2 days | `ScoredChunk<T>`, all chunk types as sources, relevance scores (both crates) |
+
+### V2 Architecture Decisions
+
+- **Calls are ephemeral**: `extract_calls()` returns `Vec<String>` alongside the parser fold tuple. Calls enrich embedding text via `format_code_for_embedding(id, lang, doc, code, calls)`, then are discarded. No `CodeChunk` struct change, no LanceDB schema change.
+- **V2.2 + V2.3 share `engine/intent.rs`**: Classification produces `QueryIntent`; routing maps it to `RetrievalConfig` via `RoutingTable`. Tightly coupled by design — one module, two functions.
+- **Retriever stays intent-agnostic**: Handlers classify → route → pass `RetrievalConfig` to `retrieve()`. SoC preserved.
+- **`ScoredChunk<T>` wrapper**: `RetrievalResult` wraps all chunks with relevance scores. Distance → relevance conversion happens once in the retriever.
+- **Breaking `ChatResponse` API**: `SourceInfo` redesigned with `chunk_type`, `path`, `label`, `relevance`. All 4 chunk types surfaced, sorted by relevance. Acceptable pre-v1.0.
 
 ### V2.1: Inline Call Context
-- Append "Calls: foo, bar" to embedding text
-- Low effort, immediate value for relationship queries
-- Improves semantic search without full graph infrastructure
-- **Crate:** code-raptor
+
+**Goal:** Append `Calls: foo, bar` to embedding text during code parsing, so functions that call other functions become semantically closer in vector space to queries about relationships and data flow. Lightweight precursor to Track C's persistent call graph.
+
+**Architecture:** Ephemeral HashMap side-channel. `run_ingestion` returns `(IngestionResult, HashMap<String, Vec<String>>)`. The HashMap carries `chunk_id → call identifiers` from parser to embedder, completely bypassing `reconcile()`. Calls are consumed by `format_code_for_embedding(id, lang, doc, code, calls)`, baked into the embedding vector, then discarded. No `CodeChunk` struct change, no LanceDB schema change.
+
+**Continuity with V1.5:** Same four-step extension pattern:
+
+| Step | V1.5 (docstrings) | V2.1 (calls) |
+|------|-------------------|--------------|
+| Trait method | `extract_docstring() → Option<String>`, default `None` | `extract_calls() → Vec<String>`, default `Vec::new()` |
+| Per-handler | Backward scan / AST / JSDoc | `call_expression` / `call` node walking |
+| Fold extension | 4-tuple → 5-tuple | 5-tuple → 6-tuple |
+| Downstream | Stored on `CodeChunk.docstring` | **Ephemeral side-channel** (diverges here) |
+
+**SoC rationale for ephemeral design:** `coderag-types` is the cross-crate data contract defining the LanceDB schema. Adding an ephemeral `calls` field would pollute the contract with embedding-pipeline-specific data. `CodeChunk` is used by reconcile, by the query-side retriever, and by context formatting — none need calls. Track C will store persistent call edges in a separate `call_edges` table.
+
+**Per-language extraction:**
+- **Rust:** `call_expression` → `identifier` (direct) or `field_expression > field_identifier` (method)
+- **Python:** `call` → `identifier` (direct) or `attribute > identifier` (method)
+- **TypeScript:** `call_expression` → `identifier` (direct) or `member_expression > property_identifier` (method)
+- Each handler owns its AST semantics via private `collect_calls_recursive` helper
+
+**Scope exclusions:** No macros (`macro_invocation` nodes, not `call_expression`), no variable-bound calls, no cross-file resolution (Track C scope).
+
+**Breaking change:** `analyze_with_handler` return type changes from `Vec<CodeChunk>` to `Vec<(CodeChunk, Vec<String>)>`, requiring ~30 tests to add mechanical destructuring.
+
+**Deployment:** Requires `code-raptor ingest <repo> --full` after deployment. `content_hash` is SHA256 of source file, not embedding text — incremental mode won't re-embed unchanged files.
+
+**Crates affected:** code-raptor (`language.rs`, `languages/*.rs`, `parser.rs`, `mod.rs`, `main.rs`), coderag-store (`embedder.rs`)
 
 ### V2.2: Basic Intent Classification
-- Simple heuristic classifier (keyword matching initially)
-- Categories: `overview`, `implementation`, `relationship`, `comparison`
-- Route to appropriate chunk types
+- Declarative keyword rules (`IntentRule` structs), evaluated in specificity order
+- `QueryIntent` enum: `Overview`, `Implementation`, `Relationship`, `Comparison`
+- Default fallback: `Implementation` (most common code question type)
+- `ClassificationResult` includes `match_count` as weak confidence signal
 - **Crate:** portfolio-rag-chat
 
 ### V2.3: Query Routing
-- Adjust retrieval limits based on intent
-- `overview` → README, CrateChunks
-- `implementation` → CodeChunks
+- `RoutingTable`: `HashMap<QueryIntent, RetrievalConfig>` with default fallback
+- Overview → code:2, readme:3, crate:4, module_doc:3
+- Implementation → code:7, readme:1, crate:1, module_doc:2
 - **Crate:** portfolio-rag-chat
 
 ### V2.4: Retrieval Traces
-- Display "Sources used" in query response
-- Show: chunk type, file path, relevance score
-- Format for CLI: simple list with scores
+- Extract `_distance` from LanceDB, convert to relevance: `1.0 / (1.0 + distance)`
+- `ScoredChunk<T>` generic wrapper pairs each chunk with relevance score
+- Redesigned `SourceInfo`: `chunk_type`, `path`, `label`, `project`, `relevance`, `line`
+- All 4 chunk types surfaced as sources, sorted by relevance descending
+- `ChatResponse` gains `intent` field
 - **Demo value:** Makes retrieval quality visible; differentiator from black-box tools
-- **Crate:** portfolio-rag-chat
+- **Crate:** portfolio-rag-chat, coderag-store
 
 **Deliverable:** Intent-based routing. Visible retrieval sources. Embeddings include call context.
 
 ### V2 Hero Queries (Testing Checkpoint)
-- "How does the chat endpoint work?" → Returns `handlers.rs`, mentions Retriever, shows sources
-- Overview vs implementation queries route to different chunk types
+- "How does the chat endpoint work?" → intent: implementation, sources include handlers.rs with relevance %
+- "What is code-raptor?" → intent: overview, sources show README + CrateChunks ranking higher
+- Overview vs implementation queries produce visibly different source distributions
 
 ---
 

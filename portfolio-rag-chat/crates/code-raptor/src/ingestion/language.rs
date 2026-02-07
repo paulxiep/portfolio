@@ -33,4 +33,12 @@ pub trait LanguageHandler: Send + Sync {
     ) -> Option<String> {
         None
     }
+
+    /// Extract function/method call identifiers from a code element's body.
+    ///
+    /// Walks the AST subtree of the body node to find call expressions.
+    /// Returns deduplicated, sorted identifiers. Default returns empty vec.
+    fn extract_calls(&self, _source: &str, _node: &Node, _source_bytes: &[u8]) -> Vec<String> {
+        Vec::new()
+    }
 }

@@ -22,7 +22,7 @@ impl CodeAnalyzer {
     }
 
     /// Analyze a file, auto-detecting language from path
-    pub fn analyze_file(&mut self, path: &Path, source: &str) -> Vec<CodeChunk> {
+    pub fn analyze_file(&mut self, path: &Path, source: &str) -> Vec<(CodeChunk, Vec<String>)> {
         let Some(handler) = handler_for_path(path) else {
             return Vec::new();
         };
@@ -34,7 +34,7 @@ impl CodeAnalyzer {
         &mut self,
         source: &str,
         handler: &dyn LanguageHandler,
-    ) -> Vec<CodeChunk> {
+    ) -> Vec<(CodeChunk, Vec<String>)> {
         let grammar = handler.grammar();
         if let Err(e) = self.parser.set_language(&grammar) {
             warn!(language = handler.name(), error = ?e, "Failed to set parser language");
@@ -62,14 +62,16 @@ impl CodeAnalyzer {
         let body_idx = query.capture_index_for_name("body");
 
         // Use StreamingIterator::fold to collect matches
-        // Extract docstring inside fold where Node is still alive
-        let raw_matches: Vec<(String, String, String, usize, Option<String>)> = cursor
+        // Extract docstring and calls inside fold where Node is still alive
+        type RawMatch = (String, String, String, usize, Option<String>, Vec<String>);
+        let raw_matches: Vec<RawMatch> = cursor
             .captures(&query, tree.root_node(), source_bytes)
             .fold(Vec::new(), |mut acc, (m, _)| {
                 let body = m.captures.iter().find(|c| Some(c.index) == body_idx);
                 let name = m.captures.iter().find(|c| Some(c.index) == name_idx);
                 if let (Some(b), Some(n)) = (body, name) {
                     let docstring = handler.extract_docstring(source, &b.node, source_bytes);
+                    let calls = handler.extract_calls(source, &b.node, source_bytes);
                     acc.push((
                         b.node.kind().to_string(),
                         n.node
@@ -79,18 +81,19 @@ impl CodeAnalyzer {
                         b.node.utf8_text(source_bytes).unwrap_or("").to_string(),
                         b.node.start_position().row + 1,
                         docstring,
+                        calls,
                     ));
                 }
                 acc
             });
 
-        // Transform to CodeChunks using functional style
-        let mut chunks: Vec<CodeChunk> = raw_matches
+        // Transform to (CodeChunk, calls) pairs using functional style
+        let mut pairs: Vec<(CodeChunk, Vec<String>)> = raw_matches
             .into_iter()
             .map(
-                |(node_type, identifier, code_content, start_line, docstring)| {
+                |(node_type, identifier, code_content, start_line, docstring, calls)| {
                     let hash = content_hash(&code_content);
-                    CodeChunk {
+                    let chunk = CodeChunk {
                         file_path: "<set_by_caller>".to_string(),
                         language: handler.name().to_string(),
                         identifier,
@@ -102,16 +105,19 @@ impl CodeAnalyzer {
                         content_hash: hash,
                         embedding_model_version: DEFAULT_EMBEDDING_MODEL.to_string(),
                         code_content,
-                    }
+                    };
+                    (chunk, calls)
                 },
             )
             .collect();
 
         // Deduplicate by (identifier, start_line) since impl blocks may capture methods multiple times
-        chunks.sort_by(|a, b| (&a.identifier, a.start_line).cmp(&(&b.identifier, b.start_line)));
-        chunks.dedup_by(|a, b| a.identifier == b.identifier && a.start_line == b.start_line);
+        pairs.sort_by(|a, b| {
+            (&a.0.identifier, a.0.start_line).cmp(&(&b.0.identifier, b.0.start_line))
+        });
+        pairs.dedup_by(|a, b| a.0.identifier == b.0.identifier && a.0.start_line == b.0.start_line);
 
-        chunks
+        pairs
     }
 
     /// Extract module-level documentation comments (//! lines) from Rust source.
@@ -196,6 +202,10 @@ mod tests {
     use super::super::languages::{PythonHandler, handler_for_path};
     use super::*;
 
+    fn chunks_only(pairs: Vec<(CodeChunk, Vec<String>)>) -> Vec<CodeChunk> {
+        pairs.into_iter().map(|(c, _)| c).collect()
+    }
+
     #[test]
     fn test_handler_for_path() {
         assert!(handler_for_path(Path::new("test.rs")).is_some());
@@ -220,7 +230,7 @@ mod tests {
         "#;
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_with_handler(source, &RustHandler);
+        let chunks = chunks_only(analyzer.analyze_with_handler(source, &RustHandler));
 
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].identifier, "hello_world");
@@ -237,7 +247,7 @@ def greet(name):
         "#;
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_with_handler(source, &PythonHandler);
+        let chunks = chunks_only(analyzer.analyze_with_handler(source, &PythonHandler));
 
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].identifier, "greet");
@@ -254,7 +264,7 @@ class MyClass:
         "#;
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_with_handler(source, &PythonHandler);
+        let chunks = chunks_only(analyzer.analyze_with_handler(source, &PythonHandler));
 
         assert!(
             chunks
@@ -272,7 +282,7 @@ fn third() {}
         "#;
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_with_handler(source, &RustHandler);
+        let chunks = chunks_only(analyzer.analyze_with_handler(source, &RustHandler));
 
         assert_eq!(chunks.len(), 3);
         assert_eq!(chunks[0].identifier, "first");
@@ -285,7 +295,7 @@ fn third() {}
         let source = "fn invalid {{{";
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_with_handler(source, &RustHandler);
+        let chunks = chunks_only(analyzer.analyze_with_handler(source, &RustHandler));
 
         // Should handle gracefully - returns empty on parse errors
         assert_eq!(chunks.len(), 0);
@@ -296,7 +306,7 @@ fn third() {}
         let source = "fn test() {}";
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_with_handler(source, &RustHandler);
+        let chunks = chunks_only(analyzer.analyze_with_handler(source, &RustHandler));
 
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].start_line, 1); // 1-indexed, first line
@@ -313,7 +323,7 @@ impl MyStruct {
         "#;
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_with_handler(source, &RustHandler);
+        let chunks = chunks_only(analyzer.analyze_with_handler(source, &RustHandler));
 
         // Should capture method inside impl block
         assert!(chunks.iter().any(|c| c.identifier == "method"));
@@ -326,7 +336,7 @@ impl MyStruct {
         let source = "/// Rust docstring.\nfn foo() {}";
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_with_handler(source, &RustHandler);
+        let chunks = chunks_only(analyzer.analyze_with_handler(source, &RustHandler));
 
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].docstring, Some("Rust docstring.".to_string()));
@@ -337,7 +347,7 @@ impl MyStruct {
         let source = "def foo():\n    \"\"\"Python docstring.\"\"\"\n    pass";
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_with_handler(source, &PythonHandler);
+        let chunks = chunks_only(analyzer.analyze_with_handler(source, &PythonHandler));
 
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].docstring, Some("Python docstring.".to_string()));
@@ -350,7 +360,7 @@ impl MyStruct {
         let source = "/** TypeScript docstring */\nfunction foo() {}";
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_with_handler(source, &TypeScriptHandler);
+        let chunks = chunks_only(analyzer.analyze_with_handler(source, &TypeScriptHandler));
 
         assert_eq!(chunks.len(), 1);
         assert_eq!(
@@ -364,9 +374,23 @@ impl MyStruct {
         let source = "fn foo() {}";
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_with_handler(source, &RustHandler);
+        let chunks = chunks_only(analyzer.analyze_with_handler(source, &RustHandler));
 
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].docstring, None);
+    }
+
+    // V2.1: Call extraction pipeline test
+
+    #[test]
+    fn test_calls_pipeline() {
+        let source = "fn foo() { bar(); baz(); }";
+
+        let mut analyzer = CodeAnalyzer::new();
+        let pairs = analyzer.analyze_with_handler(source, &RustHandler);
+
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].0.identifier, "foo");
+        assert_eq!(pairs[0].1, vec!["bar", "baz"]);
     }
 }

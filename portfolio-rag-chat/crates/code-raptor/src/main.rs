@@ -7,7 +7,7 @@ use code_raptor::{
     format_module_doc_for_embedding, format_readme_for_embedding, reconcile, run_ingestion,
 };
 use coderag_types::{CodeChunk, CrateChunk, ModuleDocChunk, ReadmeChunk};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use tracing::info;
 
 /// Batch size for embedding processing to reduce peak memory usage
@@ -86,7 +86,7 @@ async fn main() -> anyhow::Result<()> {
             }
 
             // Step 1: Parse code into chunks (sync, no DB)
-            let result = run_ingestion(&repo_path, project_name.as_deref());
+            let (result, calls_map) = run_ingestion(&repo_path, project_name.as_deref());
             info!(
                 "Parsed: {} code, {} readme, {} crate, {} module_doc chunks",
                 result.code_chunks.len(),
@@ -102,9 +102,10 @@ async fn main() -> anyhow::Result<()> {
 
             // Step 3: Run the appropriate ingestion mode
             if full {
-                run_full_ingestion(&result, &store, &mut embedder).await?;
+                run_full_ingestion(&result, &store, &mut embedder, &calls_map).await?;
             } else {
-                run_incremental_ingestion(&result, &store, &mut embedder, dry_run).await?;
+                run_incremental_ingestion(&result, &store, &mut embedder, dry_run, &calls_map)
+                    .await?;
             }
         }
         Commands::Status { db_path } => {
@@ -126,6 +127,7 @@ async fn run_full_ingestion(
     result: &IngestionResult,
     store: &VectorStore,
     embedder: &mut Embedder,
+    calls_map: &HashMap<String, Vec<String>>,
 ) -> anyhow::Result<()> {
     info!("Mode: full re-index");
 
@@ -137,7 +139,7 @@ async fn run_full_ingestion(
     }
 
     // Embed and store all chunks
-    embed_and_store_all(result, store, embedder).await?;
+    embed_and_store_all(result, store, embedder, calls_map).await?;
 
     info!(
         "Full ingestion complete: {} code, {} readme, {} crate, {} module_doc chunks",
@@ -159,6 +161,7 @@ async fn run_incremental_ingestion(
     store: &VectorStore,
     embedder: &mut Embedder,
     dry_run: bool,
+    calls_map: &HashMap<String, Vec<String>>,
 ) -> anyhow::Result<()> {
     info!("Mode: {}", if dry_run { "dry run" } else { "incremental" });
 
@@ -185,7 +188,7 @@ async fn run_incremental_ingestion(
     }
 
     // Insert new chunks first (safer on crash: duplicates > missing data)
-    embed_and_store_all(&diff.to_insert, store, embedder).await?;
+    embed_and_store_all(&diff.to_insert, store, embedder, calls_map).await?;
 
     // Then delete old chunks
     apply_deletions(store, &diff.to_delete).await?;
@@ -323,8 +326,9 @@ async fn embed_and_store_all(
     result: &IngestionResult,
     store: &VectorStore,
     embedder: &mut Embedder,
+    calls_map: &HashMap<String, Vec<String>>,
 ) -> anyhow::Result<()> {
-    let code_count = embed_and_store_code(&result.code_chunks, store, embedder).await?;
+    let code_count = embed_and_store_code(&result.code_chunks, store, embedder, calls_map).await?;
     if code_count > 0 {
         info!("Stored {} code chunks", code_count);
     }
@@ -368,22 +372,26 @@ async fn embed_and_store_code(
     chunks: &[CodeChunk],
     store: &VectorStore,
     embedder: &mut Embedder,
+    calls_map: &HashMap<String, Vec<String>>,
 ) -> anyhow::Result<usize> {
     if chunks.is_empty() {
         return Ok(0);
     }
 
     info!("Embedding {} code chunks...", chunks.len());
+    let empty = Vec::new();
     let mut total = 0;
     for batch in chunks.chunks(EMBEDDING_BATCH_SIZE) {
         let texts: Vec<String> = batch
             .iter()
             .map(|c| {
+                let chunk_calls = calls_map.get(&c.chunk_id).unwrap_or(&empty);
                 format_code_for_embedding(
                     &c.identifier,
                     &c.language,
                     c.docstring.as_deref(),
                     &c.code_content,
+                    chunk_calls,
                 )
             })
             .collect();

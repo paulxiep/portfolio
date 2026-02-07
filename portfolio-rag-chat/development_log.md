@@ -1,5 +1,107 @@
 # Development Log
 
+## 2026-02-07: V2.1 Inline Call Context (V2 Phase 1)
+
+### Summary
+Enriched embedding text with `Calls: foo, bar` lines so functions become semantically closer to relationship queries in vector space. Implemented `extract_calls()` on the `LanguageHandler` trait for all three languages (Rust, Python, TypeScript), extended the parser fold to return `(CodeChunk, Vec<String>)` tuples, and threaded an ephemeral `HashMap<String, Vec<String>>` side-channel from `run_ingestion` through `embed_and_store_code`. Calls bypass reconcile and are discarded after embedding — they never touch `coderag-types` or the database schema.
+
+### Architecture: Ephemeral Side-Channel
+
+```
+run_ingestion()
+  ├─ IngestionResult     → reconcile → embed_and_store_all
+  └─ HashMap<chunk_id,   ─────────────────────┐
+       Vec<calls>>                             │
+                                               ▼
+                              embed_and_store_code() enriches embedding text:
+                                "foo (rust)\nfn foo() { bar(); }\nCalls: bar"
+                              then HashMap is discarded
+```
+
+Calls are ephemeral enrichment data — they don't belong on `CodeChunk` (the cross-crate contract in `coderag-types`). Track C will have its own persistent `call_edges` table for structured graph queries.
+
+### Continuity with V1.5
+
+Follows the same four-step extension pattern:
+1. Trait method (`extract_calls` on `LanguageHandler`)
+2. Per-handler implementation (Rust, Python, TypeScript)
+3. Fold extension (`parser.rs` 5-tuple → 6-tuple)
+4. Downstream consumption
+
+Diverges at step 4: V1.5 stored docstrings on `CodeChunk` (persistent), V2.1 uses an ephemeral HashMap (transient enrichment only).
+
+### Changes
+
+| File | Change |
+|------|--------|
+| `crates/code-raptor/src/ingestion/language.rs` | Added `extract_calls()` default trait method returning `Vec::new()` |
+| `crates/code-raptor/src/ingestion/languages/rust.rs` | Implemented `extract_calls` + `collect_calls_recursive` helper, 5 unit tests |
+| `crates/code-raptor/src/ingestion/languages/python.rs` | Implemented `extract_calls` + `collect_calls_recursive` helper, 4 unit tests |
+| `crates/code-raptor/src/ingestion/languages/typescript.rs` | Implemented `extract_calls` + `collect_calls_recursive` helper, 4 unit tests |
+| `crates/code-raptor/src/ingestion/parser.rs` | Extended fold 5-tuple → 6-tuple with `Vec<String>`, `analyze_with_handler` returns `Vec<(CodeChunk, Vec<String>)>`, added `type RawMatch` alias, added `test_calls_pipeline`, updated ~11 existing tests with `chunks_only()` helper |
+| `crates/code-raptor/src/ingestion/mod.rs` | `process_code_file` returns `(Vec<CodeChunk>, HashMap)`, `run_ingestion` returns `(IngestionResult, HashMap)`, added `type CallsMap` alias, updated 4 tests |
+| `crates/code-raptor/src/main.rs` | Threaded `calls_map` through `run_full_ingestion`, `run_incremental_ingestion`, `embed_and_store_all`, `embed_and_store_code`; lookup by `chunk_id` in embedding loop |
+| `crates/coderag-store/src/embedder.rs` | Added `calls: &[String]` parameter to `format_code_for_embedding`, appends `Calls:` line if non-empty, 2 new tests + 2 updated tests |
+| `crates/code-raptor/tests/incremental_ingestion.rs` | Updated all 9 integration tests to destructure `(result, _)` from `run_ingestion` |
+
+### Per-Language Call Extraction
+
+| Language | AST Node | Direct Call | Method Call |
+|----------|----------|-------------|-------------|
+| Rust | `call_expression` | `function: identifier` → `foo()` | `function: field_expression > field: field_identifier` → `self.bar()` |
+| Python | `call` | `function: identifier` → `foo()` | `function: attribute > attribute: identifier` → `self.bar()` |
+| TypeScript | `call_expression` | `function: identifier` → `foo()` | `function: member_expression > property: property_identifier` → `obj.bar()` |
+
+Each handler walks the body node descendants via `TreeCursor` recursion, sorts + dedups results.
+
+### Scope Exclusions
+
+- No macro invocations (Rust `macro_rules!` calls)
+- No variable-bound calls (`let f = bar; f()`)
+- No cross-file resolution (Track C scope)
+- No generic/template specialization calls
+
+### Breaking Change: `analyze_with_handler` Return Type
+
+`Vec<CodeChunk>` → `Vec<(CodeChunk, Vec<String>)>`
+
+This broke ~30 tests across the codebase. All were mechanical fixes: add a `chunks_only()` helper per test module that strips the calls via `.map(|(c, _)| c).collect()`, or destructure `let (result, _) = run_ingestion(...)`.
+
+### Key Design Decisions
+
+1. **Ephemeral HashMap, not on CodeChunk**: SoC — `coderag-types` is the cross-crate data contract. Embedding enrichment data doesn't belong on the shared type. Track C will have its own persistent storage.
+2. **`type CallsMap` and `type RawMatch` aliases**: Introduced to satisfy `clippy::type_complexity` without structural changes.
+3. **Declarative `unzip` in `run_ingestion`**: Preferred over imperative `fold` at file-count scale. `embed_and_store_code` keeps its imperative batching (EMBEDDING_BATCH_SIZE = 25) where memory matters.
+4. **Calls appended to embedding text, not prepended**: Embedding models weight earlier text more heavily — identifier, docstring, and code content should dominate the vector, with calls as supplementary signal.
+
+### Gotchas Found During Implementation
+
+1. **Missing closing brace in typescript.rs**: `collect_calls_recursive` was missing its `}` before `#[cfg(test)]` — caught by compilation.
+2. **`flat_map(|m| m)` → `flatten()`**: Clippy flagged `flat_map_identity` in `run_ingestion`'s call map merge.
+3. **6 `collapsible_if` warnings**: All three handler `collect_calls_recursive` functions had nested `if node.kind() == X { if let Some(func) = ... }` — collapsed with `&&` let chains.
+4. **Integration tests not updated**: `tests/incremental_ingestion.rs` called `run_ingestion` without destructuring the new tuple return — 26 compilation errors, all fixed by `let (result, _) = ...`.
+
+### Test Results
+
+All 95 tests pass (0 warnings):
+- code-raptor: 78 unit tests (13 new call extraction + 1 pipeline + mechanical updates)
+- code-raptor: 9 integration tests (updated for tuple return)
+- coderag-store: 8 tests (2 new call format + 2 updated signature)
+- `cargo fmt --all` clean
+- `cargo clippy --workspace` clean (0 warnings)
+
+### Deployment
+
+Requires `code-raptor ingest <repo> --full` after deployment. Content hashes are file-level — call context changes the embedding text but not the hash, so incremental mode won't detect the change.
+
+### What This Enables
+
+Queries like "what functions call process_data?" or "show me callers of authenticate" will produce better vector matches because the embedding text now contains `Calls: process_data` or `Calls: authenticate`. This is a probabilistic improvement — not a precise graph query (that's Track C + V2.3 query routing).
+
+**Crates:** code-raptor, coderag-store
+
+---
+
 ## 2026-02-07: V1.5 Docstring Extraction (V1 Milestone Complete)
 
 ### Summary
