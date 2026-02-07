@@ -27,16 +27,19 @@ mod schema;
 // V5.3/V5.5.2: ML training data recording
 pub mod comprehensive_features;
 pub mod parquet_writer;
-pub mod price_history;
 pub mod recording_hook;
+
+// Deprecated: PriceHistory was only used by MarketFeatures::extract() which has been removed.
+// Kept as a module for now but not re-exported. Delete in next cleanup pass.
+#[doc(hidden)]
+pub mod price_history;
 
 pub use hook::StorageHook;
 pub use schema::StorageConfig;
 
-// V5.5.2: Re-export recording types (simplified)
+// Re-export recording types
 pub use comprehensive_features::MarketFeatures;
 pub use parquet_writer::{MarketParquetWriter, MarketRecord, ParquetWriterError};
-pub use price_history::PriceHistory;
 pub use recording_hook::{RecordingConfig, RecordingHook};
 
 #[cfg(test)]

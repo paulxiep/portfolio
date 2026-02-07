@@ -16,8 +16,6 @@ use parquet::arrow::ArrowWriter;
 use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
 
-use crate::comprehensive_features::MarketFeatures;
-
 /// Buffer size before flushing to Parquet (number of records).
 const MARKET_BUFFER_SIZE: usize = 1_000;
 
@@ -30,7 +28,7 @@ const MARKET_BUFFER_SIZE: usize = 1_000;
 pub struct MarketRecord {
     pub tick: u64,
     pub symbol: String,
-    /// 42 market features (price, indicators, news).
+    /// Market features (42 for V5, 55+ for V6).
     pub features: Vec<f64>,
 }
 
@@ -38,17 +36,25 @@ pub struct MarketRecord {
 // Market Parquet Writer (V5.5.2)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Parquet writer for market features only.
+/// Parquet writer for market features.
 ///
-/// Creates `{base}_market.parquet` with market features (42 columns).
+/// Creates `{base}_market.parquet` with feature columns determined by
+/// the provided feature names (42 for V5/MinimalFeatures, 55+ for V6/FullFeatures).
 pub struct MarketParquetWriter {
     writer: ParquetTableWriter,
     feature_names: Vec<String>,
 }
 
 impl MarketParquetWriter {
-    /// Create a new market writer.
-    pub fn new<P: AsRef<Path>>(base_path: P) -> Result<Self, ParquetWriterError> {
+    /// Create a new market writer with the given feature names for schema.
+    ///
+    /// Feature names determine the Parquet column schema. Pass
+    /// `MarketFeatures::default_feature_names()` for V5 compatibility, or
+    /// `extractor.feature_names()` for a custom extractor.
+    pub fn new<P: AsRef<Path>>(
+        base_path: P,
+        feature_names: &[&str],
+    ) -> Result<Self, ParquetWriterError> {
         let base = base_path.as_ref();
         let stem = base.file_stem().and_then(|s| s.to_str()).unwrap_or("data");
         let parent = base.parent().unwrap_or(Path::new("."));
@@ -58,11 +64,7 @@ impl MarketParquetWriter {
         // Create parent directories
         std::fs::create_dir_all(parent).map_err(|e| ParquetWriterError::Io(e.to_string()))?;
 
-        let feature_names: Vec<String> = MarketFeatures::feature_names()
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-
+        let feature_names: Vec<String> = feature_names.iter().map(|s| s.to_string()).collect();
         let schema = Self::build_schema(&feature_names);
 
         Ok(Self {

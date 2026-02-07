@@ -123,6 +123,16 @@ impl AgentOrchestrator {
         )
     }
 
+    /// Get a clone of an agent's state by ID (for gym observation extraction).
+    ///
+    /// Returns `None` if the agent ID is not found.
+    /// Acquires the agent's mutex lock briefly to clone the state.
+    pub fn agent_state(&self, id: AgentId) -> Option<agents::AgentState> {
+        let &idx = self.agent_id_to_index.get(&id)?;
+        let agent = self.agents[idx].lock();
+        Some(agent.state().clone())
+    }
+
     /// Apply wake condition updates from fill notifications.
     pub fn apply_wake_updates(&mut self, updates: Vec<agents::ConditionUpdate>) {
         self.wake_index.apply_updates(updates);

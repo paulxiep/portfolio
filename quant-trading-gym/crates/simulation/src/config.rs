@@ -26,6 +26,8 @@ pub struct ParallelizationConfig {
     pub parallel_wake_conditions: bool,
     /// Phase 11: Update risk tracking in parallel
     pub parallel_risk_tracking: bool,
+    /// Phase 3b: Extract ML features in parallel per-symbol (pre-V6)
+    pub parallel_features: bool,
 }
 
 impl Default for ParallelizationConfig {
@@ -41,6 +43,7 @@ impl Default for ParallelizationConfig {
             parallel_fill_notifications: true,
             parallel_wake_conditions: true,
             parallel_risk_tracking: true,
+            parallel_features: true,
         }
     }
 }
@@ -58,6 +61,7 @@ impl ParallelizationConfig {
             parallel_fill_notifications: false,
             parallel_wake_conditions: false,
             parallel_risk_tracking: false,
+            parallel_features: false,
         }
     }
 

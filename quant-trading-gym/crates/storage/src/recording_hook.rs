@@ -1,7 +1,9 @@
 //! Recording hook for ML training data capture.
 //!
-//! V5.5.2: Simplified to only capture market features. Agent features removed
-//! as tree agents only use market data for inference.
+//! Pre-V6 refactor (section F): Reads pre-extracted features from `HookContext.features`
+//! instead of extracting features internally. This guarantees training-serving parity
+//! by construction — the same `FeatureExtractor` produces features for both ML inference
+//! and recording. RecordingHook is now a simple Parquet writer.
 //!
 //! ## Output Files
 //!
@@ -11,9 +13,7 @@ use parking_lot::Mutex;
 use simulation::{HookContext, SimulationHook, SimulationStats};
 use types::Tick;
 
-use crate::comprehensive_features::MarketFeatures;
 use crate::parquet_writer::{MarketParquetWriter, MarketRecord, ParquetWriterError};
-use crate::price_history::PriceHistory;
 
 /// Configuration for the recording hook.
 #[derive(Debug, Clone)]
@@ -60,8 +60,6 @@ impl RecordingConfig {
 
 /// Internal state protected by Mutex.
 struct RecordingState {
-    /// Rolling price history.
-    price_history: PriceHistory,
     /// Parquet writer.
     writer: Option<MarketParquetWriter>,
     /// Configuration.
@@ -73,26 +71,31 @@ struct RecordingState {
 
 /// Recording hook for ML training data.
 ///
-/// Captures market features at each tick and writes to Parquet files
-/// for Python ML training. V5.5.2 simplified to market features only.
+/// Reads pre-extracted features from `HookContext.features` and writes to
+/// Parquet files. Does NOT extract features itself — the runner handles
+/// extraction, imputation, and passes features via the hook context.
 ///
 /// # Lifecycle
 ///
-/// 1. `on_tick_start()`: Record mid prices to price history
-/// 2. `on_tick_end()`: Extract features, write market records
-/// 3. `on_simulation_end()`: Final flush and close files
+/// 1. `on_tick_end()`: Read pre-extracted features, write market records
+/// 2. `on_simulation_end()`: Final flush and close files
 pub struct RecordingHook {
     state: Mutex<RecordingState>,
 }
 
 impl RecordingHook {
-    /// Create a new recording hook.
-    pub fn new(config: RecordingConfig) -> Result<Self, ParquetWriterError> {
-        let writer = MarketParquetWriter::new(&config.output_path)?;
+    /// Create a new recording hook with custom feature names for Parquet schema.
+    ///
+    /// Pass `extractor.feature_names()` to use an extractor's schema, or
+    /// `MarketFeatures::default_feature_names()` for V5 compatibility.
+    pub fn new(
+        config: RecordingConfig,
+        feature_names: &[&str],
+    ) -> Result<Self, ParquetWriterError> {
+        let writer = MarketParquetWriter::new(&config.output_path, feature_names)?;
 
         Ok(Self {
             state: Mutex::new(RecordingState {
-                price_history: PriceHistory::new(),
                 writer: Some(writer),
                 config,
                 error: None,
@@ -115,55 +118,32 @@ impl SimulationHook for RecordingHook {
         "RecordingHook"
     }
 
-    fn on_tick_start(&self, ctx: &HookContext) {
-        let mut state = self.state.lock();
-
-        // Record mid prices for all symbols
-        ctx.market.mid_prices.iter().for_each(|(symbol, price)| {
-            state.price_history.record(ctx.tick, symbol, *price);
-        });
-    }
-
     fn on_tick_end(&self, _stats: &SimulationStats, ctx: &HookContext) {
         let mut state = self.state.lock();
 
-        // Skip if not recording this tick
         if !Self::should_record(ctx.tick, &state.config) {
             return;
         }
 
-        // Get enriched data (required for feature extraction)
-        let enriched = match ctx.enriched.as_ref() {
-            Some(e) => e,
-            None => return, // Can't extract features without enriched data
+        // Read pre-extracted features (guaranteed parity with ML serving path)
+        let features_map = match ctx.features.as_ref() {
+            Some(f) => f,
+            None => return, // No features extracted (warmup or no extractor)
         };
 
         let tick = ctx.tick;
-        let price_history = &state.price_history;
-        let market = &ctx.market;
+        let market_records: Vec<MarketRecord> = features_map
+            .iter()
+            .map(|(symbol, features)| MarketRecord {
+                tick,
+                symbol: symbol.to_string(),
+                features: features.to_vec(),
+            })
+            .collect();
 
-        // Collect symbols for parallel iteration
-        let symbols: Vec<_> = ctx.market.mid_prices.keys().collect();
-
-        // Extract market features in PARALLEL (42 features per symbol is CPU-bound)
-        let market_records: Vec<MarketRecord> = parallel::map_slice(
-            &symbols,
-            |symbol| {
-                let market_features =
-                    MarketFeatures::extract(symbol, tick, market, Some(enriched), price_history);
-                MarketRecord {
-                    tick,
-                    symbol: symbol.to_string(),
-                    features: market_features.features,
-                }
-            },
-            false, // Use parallel when available
-        );
-
-        // Write market records SEQUENTIALLY (Parquet writer not thread-safe)
         if let Some(ref mut writer) = state.writer {
-            for market_record in market_records {
-                if let Err(e) = writer.write(market_record) {
+            for record in market_records {
+                if let Err(e) = writer.write(record) {
                     state.error = Some(e.to_string());
                     return;
                 }

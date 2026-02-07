@@ -151,6 +151,8 @@ pub struct EnrichedData {
     pub fair_values: HashMap<Symbol, Price>,
     /// Active news events.
     pub news_events: Vec<NewsEventSnapshot>,
+    /// Recent trades per symbol (pre-V6 refactor section F).
+    pub recent_trades: HashMap<Symbol, Vec<Trade>>,
 }
 
 impl EnrichedData {
@@ -208,6 +210,15 @@ pub struct HookContext {
     pub tier3_count: usize,
     /// Enriched data for V4.4 hooks (candles, indicators, agents, etc.)
     pub enriched: Option<EnrichedData>,
+    /// Pre-extracted feature vectors per symbol (pre-V6 refactor section F).
+    ///
+    /// Separate from `enriched` by design: features are a computed artifact for
+    /// ML and recording, while enriched data is observational state for display hooks.
+    /// These may overlap but won't be the same — keeping them separate avoids
+    /// recalculation and maintains SoC.
+    ///
+    /// `None` during warmup or when no `FeatureExtractor` is configured.
+    pub features: Option<HashMap<Symbol, agents::FeatureVec>>,
 }
 
 impl HookContext {
@@ -221,6 +232,7 @@ impl HookContext {
             tier2_count: 0,
             tier3_count: 0,
             enriched: None,
+            features: None,
         }
     }
 
@@ -235,6 +247,12 @@ impl HookContext {
         self.tier1_count = t1;
         self.tier2_count = t2;
         self.tier3_count = t3;
+        self
+    }
+
+    /// Set pre-extracted feature vectors (pre-V6 refactor section F).
+    pub fn with_features(mut self, features: HashMap<Symbol, agents::FeatureVec>) -> Self {
+        self.features = Some(features);
         self
     }
 

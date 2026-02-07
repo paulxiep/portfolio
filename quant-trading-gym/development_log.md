@@ -1,5 +1,273 @@
 # Development Log
 
+## 2026-02-07: V6.1 Feature Engineering — Declarative Registry + 55 Candidate Features
+
+### Summary
+Expanded the ML feature set from 42 to 55 candidate features using a declarative architecture. Features are defined via `FeatureDescriptor` + `FeatureRegistry` (single source of truth), extracted by modular group functions, and recorded via `--full-features` CLI flag. The 55 features are a candidate pool for SHAP-based pruning in V6.2 — the final production set will be trimmed to whatever carries signal.
+
+Design spec: `6.1_full_features.md`
+
+### What Changed
+
+**1. Declarative feature registry** (`crates/types/src/features.rs`)
+- `FeatureGroup` enum — 8 groups: Price, TechnicalIndicator, News, Microstructure, Volatility, Fundamental, MomentumQuality, VolumeCross
+- `FeatureDescriptor` struct — co-locates index, name, group, neutral, valid_range per feature
+- `FeatureRegistry` struct — wraps static descriptor/name/neutral arrays with derived accessors:
+  - `group_indices(group)` — for ablation testing
+  - `valid_ranges()` — for V7.2 NN normalization
+  - `validate(features)` — out-of-range detection
+- `MINIMAL_DESCRIPTORS` (42 entries, neutrals all -1.0) + `FULL_DESCRIPTORS` (55, semantic neutrals)
+- `MINIMAL_REGISTRY` + `FULL_REGISTRY` — static instances
+- Exhaustive compile-time assertions: every descriptor index == array position, prefix consistency between MINIMAL and FULL
+
+**2. Extended feature indices and pure functions** (`crates/types/src/features.rs`)
+- `extended_idx` module — constants for features 42-54, contiguous by group
+- `realized_volatility(candles, lookback)` — std of sequential 1-period log returns
+- `spread_bps(bid, ask, mid)` — spread in basis points
+
+**3. Group extraction functions** (`crates/agents/src/tier1/ml/group_extractors.rs`) — NEW
+- 8 free functions writing into `&mut [f64]` buffer at correct indices:
+  - V5 refactored: `extract_price`, `extract_technical`, `extract_news`
+  - V6.1 new: `extract_microstructure`, `extract_volatility`, `extract_fundamental`, `extract_momentum_quality`, `extract_volume_cross`
+- Equivalence test confirms V5 group functions produce identical output to monolithic `extract_features_raw()`
+- Dependency: `extract_fundamental` must run before `extract_volume_cross` (reads `fair_value_dev`)
+
+**4. FullFeatures extractor** (`crates/agents/src/tier1/ml/full_features.rs`) — NEW
+- `FullFeatures` struct implementing `FeatureExtractor` — calls all 8 group functions
+- Ablation API: `disable_group(group)` / `enable_group(group)` — disabled groups leave NaN, imputation fills neutrals
+- Returns `FULL_REGISTRY` from `registry()`
+
+**5. FeatureExtractor trait extended** (`crates/agents/src/tier1/ml/mod.rs`)
+- Added `fn registry(&self) -> &'static FeatureRegistry` — provides metadata to downstream consumers (V6.2 SHAP, V6.3 gym, V7.2 deep RL)
+- `MinimalFeatures` returns `&MINIMAL_REGISTRY`
+
+**6. CLI integration** (`src/main.rs`)
+- `--full-features` flag (env: `SIM_FULL_FEATURES`)
+- When set in `--headless-record` mode: uses `FullFeatures` extractor (55 columns in Parquet)
+- Default: `MinimalFeatures` (42 columns, V5 backward compat)
+
+### New V6.1 Features (13 candidates)
+
+| Index | Name | Group | Signal |
+|-------|------|-------|--------|
+| 42 | `f_spread_bps` | Microstructure | Liquidity cost |
+| 43 | `f_book_imbalance` | Microstructure | Buy/sell pressure |
+| 44 | `f_net_order_flow` | Microstructure | Tick-rule aggressor flow |
+| 45 | `f_realized_vol_8` | Volatility | Short-term regime |
+| 46 | `f_realized_vol_32` | Volatility | Medium-term regime |
+| 47 | `f_vol_ratio` | Volatility | Regime change (>1 expanding) |
+| 48 | `f_fair_value_dev` | Fundamental | Distance from fair value |
+| 49 | `f_price_to_fair` | Fundamental | Price/fair ratio |
+| 50 | `f_trend_strength` | MomentumQuality | abs(ema8-ema16)/atr8 |
+| 51 | `f_rsi_divergence` | MomentumQuality | RSI distance from neutral |
+| 52 | `f_volume_surge` | VolumeCross | Latest vol / avg vol |
+| 53 | `f_trade_intensity` | VolumeCross | Trade count / baseline |
+| 54 | `f_sentiment_price_gap` | VolumeCross | Sentiment * fair_value_dev |
+
+### Architecture: Declarative Feature Schema
+
+```
+types crate (declaration)              agents crate (computation)
+    │                                      │
+    ▼                                      ▼
+FeatureDescriptor ──► FeatureRegistry   group_extractors.rs
+  index: 42                │               extract_microstructure()
+  name: "f_spread_bps"     │               extract_volatility()
+  group: Microstructure    │               ...
+  neutral: 0.0             │                    │
+  valid_range: (0, 1000)   │                    ▼
+                           │            FullFeatures.extract_market()
+                           │                    │
+                           ▼                    ▼
+                    registry.names()     Runner Phase 3b ──► ML cache
+                    registry.neutrals()         │
+                    registry.group_indices()     ▼
+                           │            HookContext.features ──► Parquet
+                           ▼
+                    V6.2: SHAP group aggregation
+                    V6.3: gym observation bounds
+                    V7.2: NN normalization ranges
+```
+
+### Files Summary
+
+| File | Action | Change |
+|------|--------|--------|
+| `crates/types/src/features.rs` | MODIFY | `FeatureGroup`, `FeatureDescriptor`, `FeatureRegistry`, `FULL_DESCRIPTORS`, `extended_idx`, `realized_volatility`, `spread_bps`, compile-time assertions |
+| `crates/types/src/lib.rs` | MODIFY | Export V6.1 types |
+| `crates/agents/src/tier1/ml/group_extractors.rs` | CREATE | 8 group extraction functions |
+| `crates/agents/src/tier1/ml/full_features.rs` | CREATE | `FullFeatures` extractor with ablation |
+| `crates/agents/src/tier1/ml/mod.rs` | MODIFY | `registry()` on `FeatureExtractor`, register new modules, export `FullFeatures` |
+| `crates/agents/src/tier1/ml/feature_extractor.rs` | MODIFY | `MinimalFeatures.registry()` returns `&MINIMAL_REGISTRY` |
+| `crates/agents/src/tier1/mod.rs` | MODIFY | Re-export `FullFeatures` |
+| `crates/agents/src/lib.rs` | MODIFY | Re-export `FullFeatures` |
+| `src/main.rs` | MODIFY | `--full-features` CLI flag, feature extractor selection in recording mode |
+
+### Verification
+- `cargo build` — full workspace clean
+- `cargo test --workspace` — 395 passed, 0 failed
+- V5 equivalence: group extractors produce identical output to monolithic `extract_features_raw()`
+- Compile-time assertions verify all 55 descriptor indices, name/neutral array consistency
+
+### What V6.2 Needs
+- Record 55-feature training data with `--headless-record --full-features`
+- Train models on full candidate pool in Python
+- SHAP analysis using `FeatureRegistry.group_indices()` for per-group importance
+- Ablation validation using `FullFeatures::disable_group()`
+- Trim to final feature set based on SHAP signal, potentially engineer new candidates
+
+## 2026-02-06: Pre-V6 Refactor — SoC Pipeline, Agent Factory, Tier 2 Budget
+
+### Summary
+Restructured the codebase to remove V5's hardcoded 42-feature assumptions and monolithic agent spawning, then implemented Section F (training-serving parity) with a clean SoC pipeline.
+
+V6's 55+ features, swappable extractors, per-feature imputation, gym environment, and schema-flexible recording can now be built on clean abstractions.
+
+Design spec: `refactor_v6_prep.md` (sections A–F)
+
+### What Changed
+
+**1. FeatureVec + MlPredictionCache refactor** (`crates/agents/src/ml_cache.rs`)
+- Features: `[f64; N_MARKET_FEATURES]` → `SmallVec<[f64; 64]>` (type alias `FeatureVec`)
+  - Zero heap allocation for up to 64 features; derefs to `&[f64]` for all downstream code
+- Predictions: `HashMap<(String, Symbol), ClassProbabilities>` → nested `HashMap<String, HashMap<Symbol, ClassProbabilities>>`
+  - Fixes ~168us/tick allocation bug in `get_prediction()` — lookups are now zero-alloc via `Borrow` trait
+- Added `feature_symbols()` iterator and `all_features()` clone for recording reuse
+
+**2. FeatureExtractor trait + pure extraction pipeline** (`crates/agents/src/tier1/ml/`)
+```rust
+pub trait FeatureExtractor: Send + Sync {
+    fn n_features(&self) -> usize;
+    fn extract_market(&self, symbol: &Symbol, ctx: &StrategyContext<'_>) -> FeatureVec;
+    fn feature_names(&self) -> &[&str];
+    fn neutral_values(&self) -> &[f64];  // Per-feature NaN imputation targets
+}
+```
+- Extraction is **pure**: `extract_market()` returns raw features with NaN preserved
+- Imputation is a separate pipeline step using `neutral_values()`, applied by the runner
+- `extract_features_raw()` — pure extraction function (NaN preserved)
+- `extract_features()` — V5-compat wrapper: raw + NaN→-1.0
+- `impute_features(features, neutrals)` — single-point imputation function
+- `MINIMAL_FEATURE_NEUTRALS: [f64; 42] = [-1.0; 42]` — V5 training convention constant
+- `MinimalFeatures` delegates to `extract_features_raw()`, not the imputed version
+- V6 `FullFeatures` will define per-feature semantic neutrals (RSI→50, vol_ratio→1.0, bb_%b→0.5)
+
+**3. ModelRegistry — prediction only (SoC)** (`crates/agents/src/tier1/ml/model_registry.rs`)
+- **No longer owns a FeatureExtractor** — extraction is the runner's responsibility
+- Constructor: `ModelRegistry::new()` (no extractor arg)
+- Single method: `predict_from_cache(&self, cache: &mut MlPredictionCache)` — reads pre-extracted features from cache, computes predictions in parallel
+- Training-serving parity by construction: same features feed both ML cache and recording
+
+**4. Runner feature extraction pipeline** (`crates/simulation/src/runner.rs`)
+- New field: `feature_extractor: Option<Box<dyn FeatureExtractor>>`
+- `set_feature_extractor()` — explicit setter; `register_ml_model()` auto-sets `MinimalFeatures` as default
+- Phase 3b pipeline: extract in parallel → impute with `neutral_values()` → insert into cache → `predict_from_cache()`
+- Phase 13: pass features to hooks via `HookContext.features` (reuse ML cache features when available)
+- Added `parallel_features` to `ParallelizationConfig`
+
+**5. HookContext SoC — features separate from enriched data** (`crates/simulation/src/hooks.rs`)
+- `HookContext.features: Option<HashMap<Symbol, FeatureVec>>` — computed artifact for ML and recording
+- `EnrichedData.recent_trades: HashMap<Symbol, Vec<Trade>>` — observational state
+- Features and enriched data kept separate by design: they may overlap but won't be the same, avoiding recalculation
+
+**6. RecordingHook — simplified to pure Parquet writer** (`crates/storage/src/recording_hook.rs`)
+- Reads pre-extracted features from `ctx.features` instead of extracting internally
+- Removed `PriceHistory` dependency and `on_tick_start()` lifecycle hook
+- Training-serving parity guaranteed: features in Parquet are identical to features used for ML prediction
+- `MarketFeatures::extract()` deleted — dual extraction path eliminated
+- `PriceHistory` deprecated (module hidden, no re-export)
+
+**7. Gym-facing API** (`crates/simulation/src/runner.rs`, `subsystems/agents.rs`)
+- Added `Simulation::agent_state(id) -> Option<AgentState>` for gym observation extraction
+- `AgentOrchestrator::agent_state()` acquires agent mutex briefly to clone state
+
+**8. Agent Factory extraction** (`crates/simulation/src/agent_factory/`)
+- ~800 lines of spawn functions moved from `src/main.rs` into library crate sub-modules:
+  - `mod.rs` — `spawn_all()` orchestrator, `SpawnResult`, top-level API
+  - `tier1.rs` — market makers, noise traders, quant strategies, pairs traders
+  - `tier2.rs` — reactive agents, sector rotators
+  - `ml_agents.rs` — `MlModels` struct, tree agent creation + model registration
+  - `background_pool.rs` — Tier 3 pool setup
+- `src/main.rs` reduced by ~800 lines; all 4 run modes use single `spawn_all()` call
+- Model I/O (JSON loading from disk) stays in binary via `load_ml_models()`
+- Gym crate can now import `simulation::agent_factory::spawn_all()` directly
+
+**9. SimConfig migration** (`crates/simulation/src/sim_config.rs`)
+- `SimConfig`, `SymbolSpec`, `Tier1AgentType` moved from binary (`src/config.rs`) to library crate
+- `src/config.rs` is now a thin re-export: `pub use simulation::{SimConfig, SymbolSpec, Tier1AgentType};`
+
+**10. Tier 2 budget: sector rotators folded in**
+- `num_tier2_agents` now represents **total** Tier 2 (reactive + sector rotators)
+- Default: 5000 (was 4500 reactive + 500 rotators counted separately)
+- New computed methods: `reactive_tier2_count()`, `effective_sector_rotators()`
+- `total_agents()` no longer double-counts rotators
+
+### Architecture: Feature Pipeline (SoC)
+
+```
+Runner Phase 3b                          Phase 13
+    │                                        │
+    ▼                                        ▼
+FeatureExtractor                        HookContext
+  .extract_market()  ──► raw features       .features ──► RecordingHook
+        │                (NaN)                              (Parquet writer)
+        ▼
+  impute_features()  ──► clean features
+        │
+        ▼
+  MlPredictionCache
+  .insert_features()
+        │
+        ▼
+  ModelRegistry
+  .predict_from_cache()  ──► predictions ──► agents
+```
+
+Extraction, imputation, prediction, and recording are four separate concerns.
+Same features feed both ML and recording — training-serving parity by construction.
+
+### Files Summary
+
+| File | Action | Change |
+|------|--------|--------|
+| `crates/types/src/features.rs` | MODIFY | `MINIMAL_FEATURE_NEUTRALS` constant |
+| `crates/types/src/lib.rs` | MODIFY | Export `MINIMAL_FEATURE_NEUTRALS` |
+| `crates/agents/src/ml_cache.rs` | MODIFY | `FeatureVec` alias, nested HashMap, `feature_symbols()`, `all_features()` |
+| `crates/agents/src/tier1/ml/mod.rs` | MODIFY | `FeatureExtractor` trait with `neutral_values()`, `impute_features()` fn |
+| `crates/agents/src/tier1/ml/feature_extractor.rs` | MODIFY | `extract_features_raw()`, `MinimalFeatures` delegates to raw, `neutral_values()` impl |
+| `crates/agents/src/tier1/ml/model_registry.rs` | MODIFY | Prediction-only: `new()`, `predict_from_cache()`. Removed extractor field |
+| `crates/agents/src/tier1/mod.rs` | MODIFY | Re-export `extract_features_raw`, `impute_features` |
+| `crates/agents/src/lib.rs` | MODIFY | Export `FeatureVec`, `FeatureExtractor`, `MinimalFeatures`, `impute_features`, `extract_features_raw` |
+| `crates/simulation/src/runner.rs` | MODIFY | `feature_extractor` field, Phase 3b pipeline, enriched context with features + recent_trades |
+| `crates/simulation/src/config.rs` | MODIFY | `parallel_features` in `ParallelizationConfig` |
+| `crates/simulation/src/hooks.rs` | MODIFY | `HookContext.features`, `EnrichedData.recent_trades`, `with_features()` builder |
+| `crates/simulation/src/subsystems/agents.rs` | MODIFY | `AgentOrchestrator::agent_state()` |
+| `crates/simulation/src/sim_config.rs` | CREATE | SimConfig, SymbolSpec, Tier1AgentType (from binary) |
+| `crates/simulation/src/agent_factory/mod.rs` | CREATE | `spawn_all()`, `SpawnResult` |
+| `crates/simulation/src/agent_factory/tier1.rs` | CREATE | T1 spawn helpers |
+| `crates/simulation/src/agent_factory/tier2.rs` | CREATE | T2 + sector rotators |
+| `crates/simulation/src/agent_factory/ml_agents.rs` | CREATE | `MlModels`, tree agents |
+| `crates/simulation/src/agent_factory/background_pool.rs` | CREATE | T3 pool setup |
+| `crates/simulation/src/lib.rs` | MODIFY | Add modules + re-exports |
+| `crates/storage/src/comprehensive_features.rs` | MODIFY | Removed `extract()`, kept struct + schema constants |
+| `crates/storage/src/parquet_writer.rs` | MODIFY | Accept `feature_names` parameter |
+| `crates/storage/src/recording_hook.rs` | MODIFY | Pure Parquet writer: reads `ctx.features`, removed `PriceHistory`/`on_tick_start` |
+| `crates/storage/src/price_history.rs` | DEPRECATE | Hidden, not re-exported (only consumer was deleted `MarketFeatures::extract()`) |
+| `src/config.rs` | REWRITE | Thin re-export from simulation crate |
+| `src/main.rs` | MODIFY | -800 lines, uses `agent_factory::spawn_all()` |
+
+### Verification
+- `cargo check` — clean
+- `cargo test --workspace` — 376 passed, 0 failed
+- Behavior: identical for same seed (MinimalFeatures produces same 42 features via raw + impute(-1.0))
+
+### What V6 Can Now Do
+- Add `FullFeatures` implementing `FeatureExtractor` with 55+ columns and per-feature semantic neutrals
+- Build `crates/gym/` importing `agent_factory::spawn_all()` + `Simulation::agent_state()` directly
+- Record with dynamic Parquet schema by passing `extractor.feature_names()` to `RecordingHook`
+- Swap extractors at runtime: `sim.set_feature_extractor(Box::new(FullFeatures))` — recording and ML both update
+- Training-serving parity is structural, not a convention — same features serve both paths
+
 ## 2026-01-31: V5.6 Centralized ML Inference
 
 ### Summary
