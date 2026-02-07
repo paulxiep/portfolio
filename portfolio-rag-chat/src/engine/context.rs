@@ -47,11 +47,14 @@ fn format_code_section(chunks: &[crate::models::CodeChunk]) -> String {
 
     for chunk in chunks {
         out.push_str(&format!(
-            "\n### `{}` in {} ({}:{})\n```{}\n{}\n```\n",
-            chunk.identifier,
-            chunk.project_name,
-            chunk.file_path,
-            chunk.start_line,
+            "\n### `{}` in {} ({}:{})\n",
+            chunk.identifier, chunk.project_name, chunk.file_path, chunk.start_line,
+        ));
+        if let Some(ref doc) = chunk.docstring {
+            out.push_str(&format!("**Docs:** {}\n", doc));
+        }
+        out.push_str(&format!(
+            "```{}\n{}\n```\n",
             chunk.language,
             chunk.code_content.trim()
         ));
@@ -278,6 +281,24 @@ mod tests {
         assert!(prompt.contains(SYSTEM_PROMPT));
         assert!(prompt.contains("## Code"));
         assert!(prompt.contains("What does process_data do?"));
+    }
+
+    #[test]
+    fn test_build_context_with_docstring() {
+        let mut chunk = sample_code_chunk();
+        chunk.docstring = Some("Processes input data and returns results.".into());
+
+        let result = RetrievalResult {
+            code_chunks: vec![chunk],
+            readme_chunks: vec![],
+            crate_chunks: vec![],
+            module_doc_chunks: vec![],
+        };
+
+        let context = build_context(&result);
+
+        assert!(context.contains("**Docs:** Processes input data and returns results."));
+        assert!(context.contains("```rust"));
     }
 
     #[test]

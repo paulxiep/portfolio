@@ -166,19 +166,17 @@ For portfolio demonstrations, hirers ask architecture questions first:
 
 ---
 
-## V1: Indexing Foundation
+## V1: Indexing Foundation [COMPLETE]
 
 **Goal:** Enable fast iteration, clean language abstraction, and fix docstring extraction. All code-raptor + coderag-store work.
 
-**Estimated effort:** ~2.5-3 weeks total
-
-| Item | Effort | Notes |
+| Item | Status | Notes |
 |------|--------|-------|
-| V1.1 Schema Foundation | 2-3 days | UUID, content_hash, delete API, List deps, model version |
-| V1.2 LanguageHandler Refactor | 1-2 days | Pure refactor: trait + registry, docstring stays None |
-| V1.3 Incremental Ingestion | 3-5 days | File-level hashing, three-layer architecture, schema tightening |
-| V1.4 TypeScript Support | 2-3 days | Implement TypeScriptHandler with JSDoc extract_docstring |
-| V1.5 Docstring Extraction | 2-3 days | Wire extract_docstring() in parser, implement for Rust + Python |
+| V1.1 Schema Foundation | Done | UUID, content_hash, delete API, List deps, model version |
+| V1.2 LanguageHandler Refactor | Done | Pure refactor: trait + registry, docstring stays None |
+| V1.3 Incremental Ingestion | Done | File-level hashing, three-layer architecture, schema tightening |
+| V1.4 TypeScript Support | Done | TypeScriptHandler with JSDoc extract_docstring |
+| V1.5 Docstring Extraction | Done | Parser wiring, Rust + Python extraction, TypeScript activation |
 
 ### V1.1: Schema Foundation (FIRST)
 
@@ -248,31 +246,28 @@ For portfolio demonstrations, hirers ask architecture questions first:
 - Note: `extract_docstring` is implemented but remains unwired in parser.rs until V1.5
 - **Crate:** code-raptor
 
-### V1.5: Docstring Extraction
+### V1.5: Docstring Extraction [COMPLETE]
 
 **Prerequisite:** V1.2 LanguageHandler refactor (docstring extraction is a trait method), V1.4 (TypeScriptHandler)
 
-**Problem:** `docstring` field hardcoded to `None` in `analyze_with_handler()`. All three handlers need working extraction.
+**Three concerns (SoC):**
 
-**Two parts:**
-
-1. **Wire parser.rs** — Restructure `analyze_with_handler()` to call `handler.extract_docstring(source, &node, source_bytes)` during chunk creation. Currently the Node reference is lost in the `fold` closure before CodeChunk construction; must extract docstring inside the fold where nodes are still alive.
+1. **Wire parser.rs** — Extended `analyze_with_handler()` fold tuple to call `handler.extract_docstring(source, &node, source_bytes)` inside the fold closure where tree-sitter Nodes are still alive.
 
 2. **Implement per-handler extraction:**
-   - **RustHandler:** `///` outer doc comments (scan backwards, aggregate lines), `#[doc = "..."]` attribute form, skip `#[derive]`/`#[cfg]` attributes between doc and item, preserve empty lines within doc blocks
-   - **PythonHandler:** `"""..."""` and `'''...'''` triple-quoted docstrings as first statement in function/class body, find `block` child via `child_by_field_name("body")`, dedent multi-line content (PEP 257 style)
-   - **TypeScriptHandler:** `/** ... */` JSDoc (already implemented in V1.4, activated by the parser.rs wiring)
+   - **RustHandler:** `///` outer doc comments (backward scan, aggregate lines), `#[doc = "..."]` attribute form, skip `#[derive]`/`#[cfg]` attributes between doc and item, preserve empty lines within doc blocks. `//!` (inner doc) scoped out — already handled by `extract_module_docs()`.
+   - **PythonHandler:** AST traversal into body (`node → child_by_field_name("body") → first expression_statement → string`), `"""..."""` and `'''...'''` delimiters, PEP 257-style dedent for multi-line content.
+   - **TypeScriptHandler:** `/** ... */` JSDoc (implemented in V1.4, activated by parser.rs wiring). Verified through pipeline with 5 dedicated tests.
 
-**Testing:**
-- Unit tests per handler: simple doc, multi-line doc, doc with attributes/decorators, no doc → `None`
-- Integration test: ingest files with docstrings, verify `CodeChunk.docstring` is populated
-- Verify docstrings appear in embedding text via `format_code_for_embedding()`
+3. **Context display** — `format_code_section()` in `context.rs` now includes `**Docs:**` line when docstring is present.
 
-**Crate:** code-raptor
+**Testing:** 97 tests pass (0 failures, 0 warnings). Unit tests per handler, cross-language pipeline tests in parser.rs, context display test.
 
-**Deliverable:** Fast re-ingestion. Clean language abstraction. Docstrings in search results. TypeScript support with docstrings from day one.
+**Crate:** code-raptor, portfolio-rag-chat
 
-### V1 Hero Queries (Testing Checkpoint)
+**Deliverable:** Fast re-ingestion. Clean language abstraction. Docstrings in search results. TypeScript support with docstrings from day one. V1 milestone complete.
+
+### V1 Hero Queries (Testing Checkpoint — Ready to Validate)
 - "What is code-raptor?" → Explains ingestion pipeline with docstrings visible
 - "How does the retriever work?" → Returns `retriever.rs` (self-reference verification)
 
@@ -658,7 +653,7 @@ Independent track. Can run in parallel with Track A and B.
 
 | Milestone | Metric |
 |-----------|--------|
-| V1 | Docstrings appear in results (Rust, Python); TypeScript files indexed with docstrings; re-ingestion <30s for unchanged code; incremental ingestion skips unchanged files; `--full`/`--dry-run`/`--project-name` CLI flags work |
+| V1 [DONE] | Docstrings appear in results (Rust, Python, TypeScript); TypeScript files indexed with docstrings; re-ingestion <30s for unchanged code; incremental ingestion skips unchanged files; `--full`/`--dry-run`/`--project-name` CLI flags work; 97 tests pass |
 | V2 | Queries route by type; retrieval sources shown; call context in embeddings |
 | V3 | Test dataset with 20+ queries; baseline recall@5 documented; regression script runs <60s |
 | A1 | "What does engine/ do?" returns coherent answer |

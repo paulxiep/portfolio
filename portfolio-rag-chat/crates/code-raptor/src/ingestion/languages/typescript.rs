@@ -393,4 +393,72 @@ function add(a: number, b: number): number {
         }
         None
     }
+
+    // V1.5 pipeline tests — verify JSDoc flows through analyze_with_handler
+
+    #[test]
+    fn test_jsdoc_pipeline_function() {
+        let handler = TypeScriptHandler;
+        let source = "/** Fetches data */\nfunction fetchData() {}";
+
+        let mut analyzer = CodeAnalyzer::new();
+        let chunks = analyzer.analyze_with_handler(source, &handler);
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].docstring, Some("Fetches data".to_string()));
+    }
+
+    #[test]
+    fn test_jsdoc_pipeline_arrow() {
+        let handler = TypeScriptHandler;
+        let source = "/** Adds two numbers */\nconst add = (a: number, b: number) => a + b;";
+
+        let mut analyzer = CodeAnalyzer::new();
+        let chunks = analyzer.analyze_with_handler(source, &handler);
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].identifier, "add");
+        assert_eq!(chunks[0].docstring, Some("Adds two numbers".to_string()));
+    }
+
+    #[test]
+    fn test_jsdoc_pipeline_method() {
+        let handler = TypeScriptHandler;
+        let source = r#"
+class Service {
+    /** Gets the user */
+    getUser(id: string) { return id; }
+}
+"#;
+
+        let mut analyzer = CodeAnalyzer::new();
+        let chunks = analyzer.analyze_with_handler(source, &handler);
+
+        let method = chunks.iter().find(|c| c.identifier == "getUser").unwrap();
+        assert_eq!(method.docstring, Some("Gets the user".to_string()));
+    }
+
+    #[test]
+    fn test_jsdoc_pipeline_interface() {
+        let handler = TypeScriptHandler;
+        let source = "/** User data model */\ninterface User { name: string; }";
+
+        let mut analyzer = CodeAnalyzer::new();
+        let chunks = analyzer.analyze_with_handler(source, &handler);
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].docstring, Some("User data model".to_string()));
+    }
+
+    #[test]
+    fn test_jsdoc_pipeline_none() {
+        let handler = TypeScriptHandler;
+        let source = "function helper() { return 1; }";
+
+        let mut analyzer = CodeAnalyzer::new();
+        let chunks = analyzer.analyze_with_handler(source, &handler);
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].docstring, None);
+    }
 }

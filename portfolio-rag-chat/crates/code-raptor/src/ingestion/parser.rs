@@ -62,12 +62,14 @@ impl CodeAnalyzer {
         let body_idx = query.capture_index_for_name("body");
 
         // Use StreamingIterator::fold to collect matches
-        let raw_matches: Vec<(String, String, String, usize)> = cursor
+        // Extract docstring inside fold where Node is still alive
+        let raw_matches: Vec<(String, String, String, usize, Option<String>)> = cursor
             .captures(&query, tree.root_node(), source_bytes)
             .fold(Vec::new(), |mut acc, (m, _)| {
                 let body = m.captures.iter().find(|c| Some(c.index) == body_idx);
                 let name = m.captures.iter().find(|c| Some(c.index) == name_idx);
                 if let (Some(b), Some(n)) = (body, name) {
+                    let docstring = handler.extract_docstring(source, &b.node, source_bytes);
                     acc.push((
                         b.node.kind().to_string(),
                         n.node
@@ -76,6 +78,7 @@ impl CodeAnalyzer {
                             .to_string(),
                         b.node.utf8_text(source_bytes).unwrap_or("").to_string(),
                         b.node.start_position().row + 1,
+                        docstring,
                     ));
                 }
                 acc
@@ -84,22 +87,24 @@ impl CodeAnalyzer {
         // Transform to CodeChunks using functional style
         let mut chunks: Vec<CodeChunk> = raw_matches
             .into_iter()
-            .map(|(node_type, identifier, code_content, start_line)| {
-                let hash = content_hash(&code_content);
-                CodeChunk {
-                    file_path: "<set_by_caller>".to_string(),
-                    language: handler.name().to_string(),
-                    identifier,
-                    node_type,
-                    start_line,
-                    project_name: String::new(),
-                    docstring: None, // V1.4 will wire handler.extract_docstring() here
-                    chunk_id: new_chunk_id(),
-                    content_hash: hash,
-                    embedding_model_version: DEFAULT_EMBEDDING_MODEL.to_string(),
-                    code_content,
-                }
-            })
+            .map(
+                |(node_type, identifier, code_content, start_line, docstring)| {
+                    let hash = content_hash(&code_content);
+                    CodeChunk {
+                        file_path: "<set_by_caller>".to_string(),
+                        language: handler.name().to_string(),
+                        identifier,
+                        node_type,
+                        start_line,
+                        project_name: String::new(),
+                        docstring,
+                        chunk_id: new_chunk_id(),
+                        content_hash: hash,
+                        embedding_model_version: DEFAULT_EMBEDDING_MODEL.to_string(),
+                        code_content,
+                    }
+                },
+            )
             .collect();
 
         // Deduplicate by (identifier, start_line) since impl blocks may capture methods multiple times
@@ -312,5 +317,56 @@ impl MyStruct {
 
         // Should capture method inside impl block
         assert!(chunks.iter().any(|c| c.identifier == "method"));
+    }
+
+    // V1.5: Cross-language docstring pipeline tests
+
+    #[test]
+    fn test_docstring_pipeline_rust() {
+        let source = "/// Rust docstring.\nfn foo() {}";
+
+        let mut analyzer = CodeAnalyzer::new();
+        let chunks = analyzer.analyze_with_handler(source, &RustHandler);
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].docstring, Some("Rust docstring.".to_string()));
+    }
+
+    #[test]
+    fn test_docstring_pipeline_python() {
+        let source = "def foo():\n    \"\"\"Python docstring.\"\"\"\n    pass";
+
+        let mut analyzer = CodeAnalyzer::new();
+        let chunks = analyzer.analyze_with_handler(source, &PythonHandler);
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].docstring, Some("Python docstring.".to_string()));
+    }
+
+    #[test]
+    fn test_docstring_pipeline_typescript() {
+        use super::super::languages::TypeScriptHandler;
+
+        let source = "/** TypeScript docstring */\nfunction foo() {}";
+
+        let mut analyzer = CodeAnalyzer::new();
+        let chunks = analyzer.analyze_with_handler(source, &TypeScriptHandler);
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(
+            chunks[0].docstring,
+            Some("TypeScript docstring".to_string())
+        );
+    }
+
+    #[test]
+    fn test_no_docstring_still_none() {
+        let source = "fn foo() {}";
+
+        let mut analyzer = CodeAnalyzer::new();
+        let chunks = analyzer.analyze_with_handler(source, &RustHandler);
+
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].docstring, None);
     }
 }

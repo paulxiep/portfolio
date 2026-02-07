@@ -4,7 +4,7 @@ use tree_sitter::{Language, Node};
 ///
 /// Implement this trait to add support for a new programming language.
 /// Each implementation handles grammar loading and query patterns for its language.
-/// Docstring extraction (V1.4) will override the default `None` return.
+/// Docstring extraction (V1.5) overrides the default `None` return per handler.
 pub trait LanguageHandler: Send + Sync {
     /// Language identifier (e.g., "rust", "python")
     fn name(&self) -> &'static str;
@@ -24,7 +24,7 @@ pub trait LanguageHandler: Send + Sync {
 
     /// Extract docstring from a code element.
     ///
-    /// Default returns None. V1.4 will add per-language implementations.
+    /// Default returns None. Per-language implementations added in V1.5.
     fn extract_docstring(
         &self,
         _source: &str,

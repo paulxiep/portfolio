@@ -1,5 +1,73 @@
 # Development Log
 
+## 2026-02-07: V1.5 Docstring Extraction (V1 Milestone Complete)
+
+### Summary
+Wired `extract_docstring()` into the parser pipeline and implemented it for all three language handlers (Rust, Python, TypeScript). The `docstring` field is now populated with real documentation instead of `None`. This completes the V1 (Indexing Foundation) milestone.
+
+### Three Concerns (SoC)
+
+1. **Parser wiring** — restructured `analyze_with_handler()` fold closure to call `handler.extract_docstring()` while the tree-sitter Node is still alive
+2. **Handler implementations** — implemented for RustHandler (`///`, `#[doc]`) and PythonHandler (triple-quoted string in body via AST traversal)
+3. **TypeScript verification** — V1.4's JSDoc extraction was dead code; V1.5 activated it via parser wiring and verified with pipeline tests
+
+### Changes
+
+| File | Change |
+|------|--------|
+| `crates/code-raptor/src/ingestion/parser.rs` | Extended fold tuple to `(String, String, String, usize, Option<String>)`, call `handler.extract_docstring()` inside fold, added 4 cross-language pipeline tests |
+| `crates/code-raptor/src/ingestion/languages/rust.rs` | Implemented `extract_docstring` for `///` and `#[doc = "..."]`, added 7 unit tests |
+| `crates/code-raptor/src/ingestion/languages/python.rs` | Implemented `extract_docstring` with AST traversal + `dedent_docstring()`, added 6 unit tests |
+| `crates/code-raptor/src/ingestion/languages/typescript.rs` | Added 5 pipeline tests verifying JSDoc through `analyze_with_handler` |
+| `crates/code-raptor/src/ingestion/language.rs` | Updated stale doc comments (V1.4 references to V1.5) |
+| `src/engine/context.rs` (portfolio-rag-chat) | Added docstring display to `format_code_section()`, added context test |
+
+### Extraction Strategies by Language
+
+| Language | Strategy | Patterns |
+|----------|----------|----------|
+| Rust | Scan backwards from `node.start_position().row` | `///` outer doc, `#[doc = "..."]` attribute form. Skips `#[derive]`/`#[cfg]` |
+| Python | AST traversal into function/class body | `"""..."""` and `'''...'''` triple-quoted strings. First `expression_statement` → `string` node. Dedented via `dedent_docstring()` |
+| TypeScript | Scan backwards for JSDoc blocks (V1.4) | `/** ... */` multi/single-line. Filters out `@param`, `@returns` |
+
+### Key Design Decisions
+
+1. **Docstring extracted inside `fold` closure** — Node lifetime constraint: tree-sitter Nodes are only valid during fold iteration. Must extract before the tuple is created.
+2. **`//!` (inner doc) excluded from RustHandler** — Already handled by `extract_module_docs()` in parser.rs. SoC: per-item docs vs module-level docs.
+3. **Python uses AST, not line scanning** — Unlike Rust/TypeScript which scan backwards from the node, Python docstrings live inside the body. Tree-sitter AST traversal (`node → body → first expression_statement → string`) is the correct approach.
+4. **Downstream already ready** — `format_code_for_embedding()`, Arrow schema, VectorStore roundtrip, and retriever all handled `Option<String>` docstrings since V1.1. Only context display needed a small addition.
+
+### Gotchas Found During Implementation
+
+1. **Node lifetime in `fold` closure** — Only primitives survived into the tuple. Must call `extract_docstring()` inside fold where Node is alive.
+2. **Clippy: `if_same_then_else`** — Python's `parse_python_docstring()` had identical blocks for `"""` vs `'''` and `"` vs `'`. Consolidated with `||` conditions.
+3. **Clippy: `collapsible_if`** — Rust's `#[doc]` parsing had nested `if let` chains. Collapsed with `let`-chaining.
+4. **TypeScript arrow function `@body` offset** — `@body` captures `arrow_function` node, not `lexical_declaration`. Works for single-line declarations; accepted limitation for rare multi-line splits.
+
+### Test Results
+
+All 97 tests pass (0 warnings):
+- code-raptor: 64 unit tests (7 new Rust + 6 new Python + 5 new TypeScript pipeline + 4 new cross-language pipeline)
+- code-raptor: 9 integration tests
+- coderag-store: 6 tests
+- coderag-types: 9 tests
+- portfolio-rag-chat: 9 tests (1 new docstring context test)
+- `cargo fmt --all` clean
+- `cargo clippy --workspace` clean (0 warnings)
+
+### V1 Milestone Status
+
+V1 (Indexing Foundation) is now complete:
+- V1.1: Schema Foundation (chunk_id, content_hash, embedding_model_version)
+- V1.2: LanguageHandler Trait (trait-based language abstraction)
+- V1.3: Incremental Ingestion (file-level change detection, reconcile)
+- V1.4: TypeScript Support (TypeScriptHandler + JSDoc extraction)
+- V1.5: Docstring Extraction (wired pipeline + Rust/Python/TypeScript handlers)
+
+**Crate:** code-raptor, portfolio-rag-chat
+
+---
+
 ## 2026-02-07: V1.4 TypeScript Support
 
 ### Summary
