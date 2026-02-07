@@ -43,13 +43,16 @@
 
 mod decision_tree;
 mod feature_extractor;
+mod full_features;
 mod gradient_boosted;
+pub mod group_extractors;
 mod model_registry;
 mod random_forest;
 mod tree_agent;
 
 pub use decision_tree::DecisionTree;
 pub use feature_extractor::{MinimalFeatures, extract_features, extract_features_raw};
+pub use full_features::FullFeatures;
 pub use gradient_boosted::GradientBoosted;
 pub use model_registry::ModelRegistry;
 pub use random_forest::RandomForest;
@@ -120,6 +123,12 @@ pub trait FeatureExtractor: Send + Sync {
     /// Length must equal `n_features()`. Each value is the "no signal" default
     /// for that feature when data is missing (e.g. RSI → 50, vol_ratio → 1.0).
     fn neutral_values(&self) -> &[f64];
+
+    /// Feature registry providing metadata (groups, valid ranges, descriptors).
+    ///
+    /// Used by downstream consumers: V6.2 SHAP analysis (group names),
+    /// V6.3 gym (observation space bounds), V7.2 deep RL (normalization ranges).
+    fn registry(&self) -> &'static types::FeatureRegistry;
 }
 
 /// Apply per-feature NaN imputation using neutral values from an extractor.

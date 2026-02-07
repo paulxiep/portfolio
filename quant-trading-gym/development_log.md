@@ -1,5 +1,121 @@
 # Development Log
 
+## 2026-02-07: V6.1 Feature Engineering — Declarative Registry + 55 Candidate Features
+
+### Summary
+Expanded the ML feature set from 42 to 55 candidate features using a declarative architecture. Features are defined via `FeatureDescriptor` + `FeatureRegistry` (single source of truth), extracted by modular group functions, and recorded via `--full-features` CLI flag. The 55 features are a candidate pool for SHAP-based pruning in V6.2 — the final production set will be trimmed to whatever carries signal.
+
+Design spec: `6.1_full_features.md`
+
+### What Changed
+
+**1. Declarative feature registry** (`crates/types/src/features.rs`)
+- `FeatureGroup` enum — 8 groups: Price, TechnicalIndicator, News, Microstructure, Volatility, Fundamental, MomentumQuality, VolumeCross
+- `FeatureDescriptor` struct — co-locates index, name, group, neutral, valid_range per feature
+- `FeatureRegistry` struct — wraps static descriptor/name/neutral arrays with derived accessors:
+  - `group_indices(group)` — for ablation testing
+  - `valid_ranges()` — for V7.2 NN normalization
+  - `validate(features)` — out-of-range detection
+- `MINIMAL_DESCRIPTORS` (42 entries, neutrals all -1.0) + `FULL_DESCRIPTORS` (55, semantic neutrals)
+- `MINIMAL_REGISTRY` + `FULL_REGISTRY` — static instances
+- Exhaustive compile-time assertions: every descriptor index == array position, prefix consistency between MINIMAL and FULL
+
+**2. Extended feature indices and pure functions** (`crates/types/src/features.rs`)
+- `extended_idx` module — constants for features 42-54, contiguous by group
+- `realized_volatility(candles, lookback)` — std of sequential 1-period log returns
+- `spread_bps(bid, ask, mid)` — spread in basis points
+
+**3. Group extraction functions** (`crates/agents/src/tier1/ml/group_extractors.rs`) — NEW
+- 8 free functions writing into `&mut [f64]` buffer at correct indices:
+  - V5 refactored: `extract_price`, `extract_technical`, `extract_news`
+  - V6.1 new: `extract_microstructure`, `extract_volatility`, `extract_fundamental`, `extract_momentum_quality`, `extract_volume_cross`
+- Equivalence test confirms V5 group functions produce identical output to monolithic `extract_features_raw()`
+- Dependency: `extract_fundamental` must run before `extract_volume_cross` (reads `fair_value_dev`)
+
+**4. FullFeatures extractor** (`crates/agents/src/tier1/ml/full_features.rs`) — NEW
+- `FullFeatures` struct implementing `FeatureExtractor` — calls all 8 group functions
+- Ablation API: `disable_group(group)` / `enable_group(group)` — disabled groups leave NaN, imputation fills neutrals
+- Returns `FULL_REGISTRY` from `registry()`
+
+**5. FeatureExtractor trait extended** (`crates/agents/src/tier1/ml/mod.rs`)
+- Added `fn registry(&self) -> &'static FeatureRegistry` — provides metadata to downstream consumers (V6.2 SHAP, V6.3 gym, V7.2 deep RL)
+- `MinimalFeatures` returns `&MINIMAL_REGISTRY`
+
+**6. CLI integration** (`src/main.rs`)
+- `--full-features` flag (env: `SIM_FULL_FEATURES`)
+- When set in `--headless-record` mode: uses `FullFeatures` extractor (55 columns in Parquet)
+- Default: `MinimalFeatures` (42 columns, V5 backward compat)
+
+### New V6.1 Features (13 candidates)
+
+| Index | Name | Group | Signal |
+|-------|------|-------|--------|
+| 42 | `f_spread_bps` | Microstructure | Liquidity cost |
+| 43 | `f_book_imbalance` | Microstructure | Buy/sell pressure |
+| 44 | `f_net_order_flow` | Microstructure | Tick-rule aggressor flow |
+| 45 | `f_realized_vol_8` | Volatility | Short-term regime |
+| 46 | `f_realized_vol_32` | Volatility | Medium-term regime |
+| 47 | `f_vol_ratio` | Volatility | Regime change (>1 expanding) |
+| 48 | `f_fair_value_dev` | Fundamental | Distance from fair value |
+| 49 | `f_price_to_fair` | Fundamental | Price/fair ratio |
+| 50 | `f_trend_strength` | MomentumQuality | abs(ema8-ema16)/atr8 |
+| 51 | `f_rsi_divergence` | MomentumQuality | RSI distance from neutral |
+| 52 | `f_volume_surge` | VolumeCross | Latest vol / avg vol |
+| 53 | `f_trade_intensity` | VolumeCross | Trade count / baseline |
+| 54 | `f_sentiment_price_gap` | VolumeCross | Sentiment * fair_value_dev |
+
+### Architecture: Declarative Feature Schema
+
+```
+types crate (declaration)              agents crate (computation)
+    │                                      │
+    ▼                                      ▼
+FeatureDescriptor ──► FeatureRegistry   group_extractors.rs
+  index: 42                │               extract_microstructure()
+  name: "f_spread_bps"     │               extract_volatility()
+  group: Microstructure    │               ...
+  neutral: 0.0             │                    │
+  valid_range: (0, 1000)   │                    ▼
+                           │            FullFeatures.extract_market()
+                           │                    │
+                           ▼                    ▼
+                    registry.names()     Runner Phase 3b ──► ML cache
+                    registry.neutrals()         │
+                    registry.group_indices()     ▼
+                           │            HookContext.features ──► Parquet
+                           ▼
+                    V6.2: SHAP group aggregation
+                    V6.3: gym observation bounds
+                    V7.2: NN normalization ranges
+```
+
+### Files Summary
+
+| File | Action | Change |
+|------|--------|--------|
+| `crates/types/src/features.rs` | MODIFY | `FeatureGroup`, `FeatureDescriptor`, `FeatureRegistry`, `FULL_DESCRIPTORS`, `extended_idx`, `realized_volatility`, `spread_bps`, compile-time assertions |
+| `crates/types/src/lib.rs` | MODIFY | Export V6.1 types |
+| `crates/agents/src/tier1/ml/group_extractors.rs` | CREATE | 8 group extraction functions |
+| `crates/agents/src/tier1/ml/full_features.rs` | CREATE | `FullFeatures` extractor with ablation |
+| `crates/agents/src/tier1/ml/mod.rs` | MODIFY | `registry()` on `FeatureExtractor`, register new modules, export `FullFeatures` |
+| `crates/agents/src/tier1/ml/feature_extractor.rs` | MODIFY | `MinimalFeatures.registry()` returns `&MINIMAL_REGISTRY` |
+| `crates/agents/src/tier1/mod.rs` | MODIFY | Re-export `FullFeatures` |
+| `crates/agents/src/lib.rs` | MODIFY | Re-export `FullFeatures` |
+| `src/main.rs` | MODIFY | `--full-features` CLI flag, feature extractor selection in recording mode |
+
+### Verification
+- `cargo build` — full workspace clean
+- `cargo test --workspace` — 395 passed, 0 failed
+- V5 equivalence: group extractors produce identical output to monolithic `extract_features_raw()`
+- Compile-time assertions verify all 55 descriptor indices, name/neutral array consistency
+
+### What V6.2 Needs
+- Record 55-feature training data with `--headless-record --full-features`
+- Train models on full candidate pool in Python
+- SHAP analysis using `FeatureRegistry.group_indices()` for per-group importance
+- Ablation validation using `FullFeatures::disable_group()`
+- Trim to final feature set based on SHAP signal, potentially engineer new candidates
+
 ## 2026-02-06: Pre-V6 Refactor — SoC Pipeline, Agent Factory, Tier 2 Budget
 
 ### Summary

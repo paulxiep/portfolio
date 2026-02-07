@@ -28,7 +28,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use agents::{DecisionTree, GradientBoosted, RandomForest};
+use agents::{DecisionTree, FullFeatures, GradientBoosted, RandomForest};
 use clap::Parser;
 use crossbeam_channel::{Receiver, Sender, bounded};
 use news::config::{
@@ -149,6 +149,14 @@ struct Args {
     /// Record every N ticks (1 = every tick)
     #[arg(long, env = "SIM_RECORD_INTERVAL", default_value = "1")]
     record_interval: u64,
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // V6.1: Full Feature Extraction
+    // ─────────────────────────────────────────────────────────────────────────────
+    /// Use V6.1 full features (55) instead of V5 minimal (42).
+    /// Requires new model training — V5 models are NOT compatible.
+    #[arg(long, env = "SIM_FULL_FEATURES")]
+    full_features: bool,
 }
 
 /// Calculate the number of digits needed to display a number.
@@ -914,6 +922,17 @@ fn run_headless_record(config: SimConfig, args: Args) {
     let mut rng = rand::thread_rng();
     simulation::agent_factory::spawn_all(&mut sim, &config, &ml_models, &mut rng);
 
+    // V6.1: Set feature extractor based on --full-features flag
+    let feature_names: &[&str] = if args.full_features {
+        eprintln!("  Feature mode: V6.1 full (55 features)");
+        sim.set_feature_extractor(Box::new(FullFeatures::new()));
+        types::FULL_FEATURE_NAMES
+    } else {
+        eprintln!("  Feature mode: V5 minimal (42 features)");
+        sim.set_feature_extractor(Box::new(agents::MinimalFeatures));
+        storage::MarketFeatures::default_feature_names()
+    };
+
     // Generate incremental output path: {base}_{NNN}.parquet
     let base_path = Path::new(&args.record_output);
     let parent = base_path.parent().unwrap_or(Path::new("."));
@@ -939,7 +958,7 @@ fn run_headless_record(config: SimConfig, args: Args) {
 
     match RecordingHook::new(
         recording_config,
-        storage::MarketFeatures::default_feature_names(),
+        feature_names,
     ) {
         Ok(hook) => {
             sim.add_hook(Arc::new(hook));

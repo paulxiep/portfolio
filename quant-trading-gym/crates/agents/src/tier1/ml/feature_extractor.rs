@@ -174,6 +174,10 @@ impl super::FeatureExtractor for MinimalFeatures {
     fn neutral_values(&self) -> &[f64] {
         &types::MINIMAL_FEATURE_NEUTRALS
     }
+
+    fn registry(&self) -> &'static types::FeatureRegistry {
+        &types::MINIMAL_REGISTRY
+    }
 }
 
 #[cfg(test)]

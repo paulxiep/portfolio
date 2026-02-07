@@ -65,6 +65,13 @@ pub use features::{
     price_change_from_candles, price_change_pct, required_indicators,
 };
 
+// V6.1 feature registry types
+pub use features::{
+    FULL_DESCRIPTORS, FULL_FEATURE_NAMES, FULL_FEATURE_NEUTRALS, FULL_REGISTRY,
+    FeatureDescriptor, FeatureGroup, FeatureRegistry, MINIMAL_DESCRIPTORS, MINIMAL_REGISTRY,
+    N_FULL_FEATURES, TRADE_INTENSITY_BASELINE, extended_idx, realized_volatility, spread_bps,
+};
+
 // =============================================================================
 // Tests
 // =============================================================================
