@@ -1,5 +1,92 @@
 # Development Log
 
+## 2026-02-07: V1.4 TypeScript Support
+
+### Summary
+Added TypeScript as a supported language using the V1.2 LanguageHandler trait. TypeScriptHandler uses the TSX grammar (superset of TS/JS/JSX/TSX) and captures 8 node types: functions, arrow functions (const/let/var), classes, methods, interfaces, type aliases, and enums. JSDoc extraction is implemented on the handler but remains unwired in parser.rs until V1.5 (SoC: handler declares capability, parser wires on its own schedule).
+
+### Changes
+
+| File | Change |
+|------|--------|
+| `crates/code-raptor/Cargo.toml` | Added `tree-sitter-typescript = "0.23"` |
+| `crates/code-raptor/src/ingestion/languages/typescript.rs` | **NEW** — TypeScriptHandler + 15 unit tests |
+| `crates/code-raptor/src/ingestion/languages/mod.rs` | Registered TypeScriptHandler in handler vec |
+| `crates/code-raptor/src/ingestion/parser.rs` | Fixed `.js` test assertion (`is_none()` → `is_some()`), added `.go` for `is_none()` |
+| `crates/code-raptor/src/ingestion/mod.rs` | Added `test_run_ingestion_typescript` integration test |
+| `portfolio-rag-chat/development_plan.md` | Fixed V1.4/V1.5 ordering (was swapped) |
+
+### TypeScript Query Patterns
+
+| Pattern | Captures | Example |
+|---------|----------|---------|
+| `function_declaration` | Named functions | `function foo() {}` |
+| `arrow_function` in `lexical_declaration` | Arrow functions (const/let) | `const foo = () => {}` |
+| `arrow_function` in `variable_declaration` | Arrow functions (var) | `var foo = () => {}` |
+| `class_declaration` | Classes | `class Foo {}` |
+| `method_definition` | Class methods | `class { foo() {} }` |
+| `interface_declaration` | Interfaces | `interface Foo {}` |
+| `type_alias_declaration` | Type aliases | `type Foo = ...` |
+| `enum_declaration` | Enums | `enum Foo { A, B }` |
+
+Exported items (`export function foo()`, `export class Foo`) are captured by the base patterns — no separate export patterns needed.
+
+### Key Design Decisions
+
+1. **TSX grammar for all JS/TS**: `LANGUAGE_TSX` is a superset that handles `.ts`, `.tsx`, `.js`, `.jsx` — avoids maintaining separate grammars
+2. **`language` field always "typescript"**: Accepted for V1.4. Not worth per-file language detection complexity
+3. **`extract_docstring` implemented but dead**: SoC — handler declares JSDoc extraction capability, parser.rs hardcodes `docstring: None` until V1.5 wires it
+4. **No redundant export patterns**: Tree-sitter queries match nested nodes, so `function_declaration` already matches inside `export_statement`. Dedup via `(identifier, start_line)` handles any duplicates
+
+### Gotchas Found During Implementation
+
+1. **`extract_docstring` is dead code until V1.5** — parser.rs line 96 hardcodes `docstring: None`. JSDoc tests must call `handler.extract_docstring()` directly, not expect docstrings in `CodeChunk` output from the pipeline
+2. **`tree-sitter-typescript` version** — v0.23.2 uses `tree-sitter-language = "0.1"` as bridge crate, compatible with `tree-sitter = "0.26"` (same pattern as rust 0.24 and python 0.25)
+3. **Existing test broke** — `parser.rs` had `assert!(handler_for_path(Path::new("test.js")).is_none())`, fixed to `is_some()` and added `test.go` for `is_none()`
+4. **Missing `enum_declaration`** — original plan omitted TypeScript enums, added to query patterns
+5. **Export patterns were redundant** — removed export-wrapped patterns, verified with `test_parse_exported_function`
+6. **Clippy: identical `if` branches** — consolidated `line.starts_with("//")` branch into general break condition in `extract_docstring`
+
+### Test Results
+
+All 51 tests pass (0 warnings):
+- code-raptor: 42 unit tests (15 new TypeScript + 27 existing)
+- code-raptor: 9 integration tests (1 new TypeScript)
+- `cargo fmt` clean
+- `cargo clippy` clean
+
+### Unit Tests (15 in `typescript.rs`)
+
+| Test | Validates |
+|------|-----------|
+| `test_extensions` | All 4 extensions: `.ts`, `.tsx`, `.js`, `.jsx` |
+| `test_parse_function_declaration` | `function foo()` → identifier "foo", node_type "function_declaration" |
+| `test_parse_arrow_function` | `const add = () => ...` → identifier "add" |
+| `test_parse_arrow_function_var` | `var legacy = () => {}` → identifier "legacy" |
+| `test_parse_class_with_methods` | Class + methods captured separately |
+| `test_parse_interface` | `interface User {}` → node_type "interface_declaration" |
+| `test_parse_type_alias` | `type Result<T> = ...` → node_type "type_alias_declaration" |
+| `test_parse_enum` | `enum Direction {}` → node_type "enum_declaration" |
+| `test_parse_exported_function` | `export function` captured by base pattern |
+| `test_parse_react_component` | TSX function component captured |
+| `test_parse_arrow_react_component` | TSX arrow component captured |
+| `test_jsdoc_single_line` | `/** text */` → extracts description (calls handler directly) |
+| `test_jsdoc_multiline` | Multi-line JSDoc → description only, `@param`/`@returns` excluded |
+| `test_jsdoc_no_doc` | No JSDoc → `None` |
+| `test_jsdoc_with_export` | JSDoc before `export function` → validates no panic |
+
+### Integration Test
+
+`test_run_ingestion_typescript`: Creates temp directory with `.ts`, `.tsx`, `.js` files, runs `run_ingestion()`, verifies all three files produce chunks with `language: "typescript"`, correct identifiers, and normalized paths.
+
+### Unblocks
+
+- V1.5: Docstring Extraction (wire `handler.extract_docstring()` into parser pipeline for Rust, Python, TypeScript)
+
+**Crate:** code-raptor
+
+---
+
 ## 2026-02-06: V1.3 Incremental Ingestion
 
 ### Summary
@@ -156,8 +243,8 @@ crates/code-raptor/src/ingestion/
 
 ### Unblocks
 
-- V1.4: Docstring Extraction (implement `extract_docstring()` per handler)
-- V1.5: TypeScript Support (implement `TypeScriptHandler` + register)
+- V1.4: TypeScript Support (implement `TypeScriptHandler` + register)
+- V1.5: Docstring Extraction (wire `extract_docstring()` into parser pipeline)
 
 **Crate:** code-raptor
 

@@ -1,8 +1,10 @@
 mod python;
 mod rust;
+mod typescript;
 
 pub use python::PythonHandler;
 pub use rust::RustHandler;
+pub use typescript::TypeScriptHandler;
 
 use super::language::LanguageHandler;
 use std::path::Path;
@@ -12,7 +14,13 @@ use std::sync::OnceLock;
 static HANDLERS: OnceLock<Vec<Box<dyn LanguageHandler>>> = OnceLock::new();
 
 fn get_handlers() -> &'static Vec<Box<dyn LanguageHandler>> {
-    HANDLERS.get_or_init(|| vec![Box::new(RustHandler), Box::new(PythonHandler)])
+    HANDLERS.get_or_init(|| {
+        vec![
+            Box::new(RustHandler),
+            Box::new(PythonHandler),
+            Box::new(TypeScriptHandler),
+        ]
+    })
 }
 
 /// Find handler for a file path based on extension

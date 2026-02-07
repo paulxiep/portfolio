@@ -84,8 +84,8 @@ Large function chunking ───────── independent (Track B)
 Incremental ingestion ─────────── V1.3 (uses V1.1 schema, tightens project_name/paths)
 
 LanguageHandler refactor ─────── V1.2 (pure refactor, unblocks V1.4 + V1.5)
-    ├──► Docstring extraction (V1.4)
-    └──► TypeScript support (V1.5, benefits from V1.4 pattern)
+    ├──► TypeScript support (V1.4)
+    └──► Docstring extraction (V1.5, wires extract_docstring for all handlers)
 
 RAPTOR clustering ─────────────── needs A2 enrichment + A1 hierarchy
     └──► Architecture comparison [requires A1 hierarchy]
@@ -177,8 +177,8 @@ For portfolio demonstrations, hirers ask architecture questions first:
 | V1.1 Schema Foundation | 2-3 days | UUID, content_hash, delete API, List deps, model version |
 | V1.2 LanguageHandler Refactor | 1-2 days | Pure refactor: trait + registry, docstring stays None |
 | V1.3 Incremental Ingestion | 3-5 days | File-level hashing, three-layer architecture, schema tightening |
-| V1.4 Docstring Extraction | 2-3 days | Implement extract_docstring() per handler (Rust, Python) |
-| V1.5 TypeScript Support | 2-3 days | Implement TypeScriptHandler with full docstring support |
+| V1.4 TypeScript Support | 2-3 days | Implement TypeScriptHandler with JSDoc extract_docstring |
+| V1.5 Docstring Extraction | 2-3 days | Wire extract_docstring() in parser, implement for Rust + Python |
 
 ### V1.1: Schema Foundation (FIRST)
 
@@ -236,28 +236,39 @@ For portfolio demonstrations, hirers ask architecture questions first:
 - **Essential:** Enables fast iteration for all subsequent work
 - **Crates:** coderag-types, coderag-store, code-raptor
 
-### V1.4: Docstring Extraction
-
-**Prerequisite:** V1.2 LanguageHandler refactor (docstring extraction is a trait method)
-
-- **Problem:** `docstring` field hardcoded to `None` in `analyze_with_handler()`
-- **Solution:** Implement `extract_docstring()` per LanguageHandler:
-  - `RustHandler`: `///` and `//!` preceding comments
-  - `PythonHandler`: `"""..."""` docstrings after def/class
-- Wire `handler.extract_docstring()` into CodeChunk creation in `analyze_with_handler()`
-- Handle multi-line aggregation
-- **Crate:** code-raptor
-
-### V1.5: TypeScript Support
+### V1.4: TypeScript Support
 
 **Prerequisite:** V1.2 LanguageHandler refactor
 
 - Implement `TypeScriptHandler` with full trait (including `extract_docstring` for `/** */` JSDoc)
 - Tree-sitter grammar integration (`tree-sitter-typescript`)
 - File detection: `.ts`, `.tsx`, `.js`, `.jsx`
-- Query patterns for: `function_declaration`, `arrow_function`, `method_definition`, `class_declaration`
+- Query patterns for: `function_declaration`, `arrow_function`, `method_definition`, `class_declaration`, `interface_declaration`, `type_alias_declaration`, `enum_declaration`
 - Register in `languages/mod.rs` handler list
+- Note: `extract_docstring` is implemented but remains unwired in parser.rs until V1.5
 - **Crate:** code-raptor
+
+### V1.5: Docstring Extraction
+
+**Prerequisite:** V1.2 LanguageHandler refactor (docstring extraction is a trait method), V1.4 (TypeScriptHandler)
+
+**Problem:** `docstring` field hardcoded to `None` in `analyze_with_handler()`. All three handlers need working extraction.
+
+**Two parts:**
+
+1. **Wire parser.rs** — Restructure `analyze_with_handler()` to call `handler.extract_docstring(source, &node, source_bytes)` during chunk creation. Currently the Node reference is lost in the `fold` closure before CodeChunk construction; must extract docstring inside the fold where nodes are still alive.
+
+2. **Implement per-handler extraction:**
+   - **RustHandler:** `///` outer doc comments (scan backwards, aggregate lines), `#[doc = "..."]` attribute form, skip `#[derive]`/`#[cfg]` attributes between doc and item, preserve empty lines within doc blocks
+   - **PythonHandler:** `"""..."""` and `'''...'''` triple-quoted docstrings as first statement in function/class body, find `block` child via `child_by_field_name("body")`, dedent multi-line content (PEP 257 style)
+   - **TypeScriptHandler:** `/** ... */` JSDoc (already implemented in V1.4, activated by the parser.rs wiring)
+
+**Testing:**
+- Unit tests per handler: simple doc, multi-line doc, doc with attributes/decorators, no doc → `None`
+- Integration test: ingest files with docstrings, verify `CodeChunk.docstring` is populated
+- Verify docstrings appear in embedding text via `format_code_for_embedding()`
+
+**Crate:** code-raptor
 
 **Deliverable:** Fast re-ingestion. Clean language abstraction. Docstrings in search results. TypeScript support with docstrings from day one.
 
@@ -625,8 +636,8 @@ Independent track. Can run in parallel with Track A and B.
 | Schema foundation (V1.1) | coderag-types, coderag-store |
 | LanguageHandler refactor (V1.2) | code-raptor |
 | Incremental ingestion (V1.3) | coderag-types, coderag-store, code-raptor |
-| Docstring extraction (V1.4) | code-raptor |
-| TypeScript support (V1.5) | code-raptor |
+| TypeScript support (V1.4) | code-raptor |
+| Docstring extraction (V1.5) | code-raptor |
 | Inline call context (V2.1) | code-raptor |
 | Intent classification (V2.2) | portfolio-rag-chat |
 | Query routing (V2.3) | portfolio-rag-chat |

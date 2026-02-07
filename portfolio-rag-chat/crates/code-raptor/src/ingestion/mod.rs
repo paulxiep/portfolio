@@ -484,6 +484,60 @@ mod tests {
     }
 
     #[test]
+    fn test_run_ingestion_typescript() {
+        let temp_dir = TempDir::new().unwrap();
+        let base = temp_dir.path();
+
+        fs::create_dir(base.join("webapp")).unwrap();
+        fs::write(
+            base.join("webapp/app.ts"),
+            "function greet(name: string): string { return `Hello ${name}`; }\n",
+        )
+        .unwrap();
+        fs::write(
+            base.join("webapp/utils.tsx"),
+            "const Button = (props: { label: string }) => { return <button>{props.label}</button>; };\n",
+        )
+        .unwrap();
+        fs::write(
+            base.join("webapp/legacy.js"),
+            "function oldHelper() { return 1; }\n",
+        )
+        .unwrap();
+
+        let path = base.to_str().unwrap();
+        let result = run_ingestion(path, None);
+
+        // All three files should produce chunks
+        assert!(
+            result
+                .code_chunks
+                .iter()
+                .any(|c| c.identifier == "greet" && c.language == "typescript")
+        );
+        assert!(
+            result
+                .code_chunks
+                .iter()
+                .any(|c| c.identifier == "Button" && c.language == "typescript")
+        );
+        assert!(
+            result
+                .code_chunks
+                .iter()
+                .any(|c| c.identifier == "oldHelper" && c.language == "typescript")
+        );
+
+        // Paths should be normalized
+        assert!(
+            result
+                .code_chunks
+                .iter()
+                .all(|c| !c.file_path.contains('\\') && !c.file_path.starts_with('/'))
+        );
+    }
+
+    #[test]
     fn test_run_ingestion_with_project_name_override() {
         let temp_dir = create_test_workspace();
         let path = temp_dir.path().to_str().unwrap();

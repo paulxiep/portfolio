@@ -384,11 +384,21 @@ fn deterministic_ids_stable_across_runs() {
     let mut ids2: Vec<_> = result2.code_chunks.iter().map(|c| &c.chunk_id).collect();
     ids1.sort();
     ids2.sort();
-    assert_eq!(ids1, ids2, "code chunk_ids must be deterministic across runs");
+    assert_eq!(
+        ids1, ids2,
+        "code chunk_ids must be deterministic across runs"
+    );
 
     // README chunk_ids too
     assert_eq!(result1.readme_chunks.len(), result2.readme_chunks.len());
-    for (a, b) in result1.readme_chunks.iter().zip(result2.readme_chunks.iter()) {
-        assert_eq!(a.chunk_id, b.chunk_id, "readme chunk_ids must be deterministic");
+    for (a, b) in result1
+        .readme_chunks
+        .iter()
+        .zip(result2.readme_chunks.iter())
+    {
+        assert_eq!(
+            a.chunk_id, b.chunk_id,
+            "readme chunk_ids must be deterministic"
+        );
     }
 }

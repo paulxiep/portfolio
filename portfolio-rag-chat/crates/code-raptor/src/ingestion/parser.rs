@@ -195,7 +195,8 @@ mod tests {
     fn test_handler_for_path() {
         assert!(handler_for_path(Path::new("test.rs")).is_some());
         assert!(handler_for_path(Path::new("test.py")).is_some());
-        assert!(handler_for_path(Path::new("test.js")).is_none());
+        assert!(handler_for_path(Path::new("test.js")).is_some());
+        assert!(handler_for_path(Path::new("test.go")).is_none());
         assert!(handler_for_path(Path::new("test")).is_none());
     }
 
