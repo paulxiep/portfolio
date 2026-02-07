@@ -160,29 +160,48 @@ Rich, structured retrieval amplifies *any* model—cheap or frontier. By offload
 ├─────────────────────────────────────────────────────────────┤
 │                                                              │
 │  ┌──────────────┐                                           │
-│  │   main.rs    │  CLI entry point                          │
-│  │              │  - ingest <repo_path> --db-path <path>    │
+│  │   main.rs    │  CLI entry point + orchestration           │
+│  │              │  - ingest <path> [--full] [--dry-run]      │
 │  │              │  - status                                  │
+│  │              │  - incremental/full ingestion modes        │
+│  │              │  - batch embedding (size: 25)              │
 │  └──────┬───────┘                                           │
 │         │                                                    │
 │         ▼                                                    │
 │  ┌──────────────────────────────────────────────────┐       │
 │  │              ingestion/mod.rs                     │       │
-│  │  run_ingestion() - orchestrates full pipeline     │       │
-│  │  - walkdir traversal                              │       │
+│  │  run_ingestion() - parse pipeline (sync, no DB)   │       │
+│  │  - walkdir traversal + file categorization        │       │
 │  │  - chunk extraction (code, readme, crate, docs)   │       │
-│  │  - batch embedding (size: 25)                     │       │
-│  │  - store upsert                                   │       │
+│  │  -> IngestionResult                               │       │
+│  └──────┬───────────────────────────────────────────┘       │
+│         │                                                    │
+│         ▼                                                    │
+│  ┌──────────────────────────────────────────────────┐       │
+│  │  ingestion/language.rs + languages/*.rs           │       │
+│  │  LanguageHandler trait:                           │       │
+│  │    name(), extensions(), grammar(),               │       │
+│  │    query_string(), extract_docstring()            │       │
+│  │  Implementations: RustHandler, PythonHandler,     │       │
+│  │    TypeScriptHandler                              │       │
+│  │  handler_for_path() registry                      │       │
 │  └──────┬───────────────────────────────────────────┘       │
 │         │                                                    │
 │         ▼                                                    │
 │  ┌──────────────────────────────────────────────────┐       │
 │  │              ingestion/parser.rs                  │       │
 │  │  CodeAnalyzer - tree-sitter wrapper               │       │
-│  │  - analyze_content(source, lang) -> Vec<CodeChunk>│       │
+│  │  - analyze_with_handler(source, handler)          │       │
 │  │  - extract_module_docs(source) -> Option<String>  │       │
-│  │  SupportedLanguage enum (Rust, Python)            │       │
 │  │  parse_cargo_toml() - crate metadata              │       │
+│  └──────┬───────────────────────────────────────────┘       │
+│         │                                                    │
+│         ▼                                                    │
+│  ┌──────────────────────────────────────────────────┐       │
+│  │              ingestion/reconcile.rs               │       │
+│  │  reconcile(current, existing) -> ReconcileResult  │       │
+│  │  Pure data comparison for incremental ingestion   │       │
+│  │  File-level hash comparison: skip/replace/delete  │       │
 │  └──────────────────────────────────────────────────┘       │
 │                                                              │
 └─────────────────────────────────────────────────────────────┘
@@ -221,9 +240,11 @@ Rich, structured retrieval amplifies *any* model—cheap or frontier. By offload
 │  │  │ retrieve() │  │build_ctx() │  │ generate() │  │      │
 │  │  │ embed+srch │  │format chunks│  │ Gemini API │  │      │
 │  │  └────────────┘  └────────────┘  └────────────┘  │      │
-│  │  ┌────────────┐                                   │      │
-│  │  │  config.rs │  RetrievalConfig (limits)        │      │
-│  │  └────────────┘                                   │      │
+│  │  ┌────────────┐  ┌────────────┐                   │      │
+│  │  │  config.rs │  │ intent.rs  │  (V2)            │      │
+│  │  │  Engine    │  │ classify() │                   │      │
+│  │  │  Config    │  │ route()    │                   │      │
+│  │  └────────────┘  └────────────┘                   │      │
 │  └───────────────────────────────────────────────────┘      │
 │                                                              │
 └─────────────────────────────────────────────────────────────┘
@@ -239,110 +260,82 @@ Rich, structured retrieval amplifies *any* model—cheap or frontier. By offload
 
 These types define the contract between producer (code-raptor) and consumer (portfolio-rag-chat). They contain **no business logic**, only serde serialization.
 
+**Helper functions** (also in `coderag-types`):
+
 ```rust
-/// A function-level code snippet extracted from source code.
-///
-/// This is the primary unit of semantic search. Each function, class,
-/// struct, trait, or other named code element becomes one CodeChunk.
-///
-/// # Example
-/// ```
-/// CodeChunk {
-///     file_path: "/project/src/lib.rs".into(),
-///     language: "rust".into(),
-///     identifier: "process_data".into(),
-///     node_type: "function_item".into(),
-///     code_content: "fn process_data(input: &str) -> Result<()> { ... }".into(),
-///     start_line: 42,
-///     project_name: Some("my_project".into()),
-///     docstring: Some("Processes input data and returns results.".into()),
-/// }
-/// ```
+/// Generate SHA256 hash of content.
+/// Normalizes CRLF → LF before hashing for cross-OS consistency.
+pub fn content_hash(content: &str) -> String;
+
+/// Generate new UUID v4
+pub fn new_chunk_id() -> String;
+
+/// Deterministic chunk ID from file path + content.
+/// Same function in same file = same ID across re-indexing runs.
+/// Stable foreign key for Track C call graph edges.
+pub fn deterministic_chunk_id(file_path: &str, content: &str) -> String;
+```
+
+**Chunk types:**
+
+```rust
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CodeChunk {
-    /// Absolute or relative path to the source file
     pub file_path: String,
+    pub language: String,        // "rust", "python", "typescript"
+    pub identifier: String,      // Function/class/struct/trait name
+    pub node_type: String,       // Tree-sitter node type
+    pub code_content: String,    // Complete source code of the element
+    pub start_line: usize,       // 1-indexed line number
+    pub project_name: String,    // e.g., "7_wonders", "catan"
+    pub docstring: Option<String>, // Extracted /// / docstrings (V1.5)
 
-    /// Programming language: "rust" or "python"
-    pub language: String,
-
-    /// Name of the function, class, struct, trait, etc.
-    pub identifier: String,
-
-    /// Tree-sitter node type: "function_item", "class_definition", etc.
-    pub node_type: String,
-
-    /// The complete source code of the element
-    pub code_content: String,
-
-    /// 1-indexed line number where the element starts
-    pub start_line: usize,
-
-    /// Parent project name (e.g., "7_wonders", "quant-trading-gym")
-    /// Used for filtering and attribution in responses
-    pub project_name: Option<String>,
-
-    /// Extracted documentation (/// for Rust, docstrings for Python)
-    /// NOTE: Currently always None (extraction not yet implemented - V1.3)
-    pub docstring: Option<String>,
+    // V1.1 fields:
+    pub chunk_id: String,        // Deterministic: hash(file_path, content)
+    pub content_hash: String,    // SHA256 of source file for change detection
+    pub embedding_model_version: String, // e.g., "BGESmallENV15_384"
 }
 
-/// A README.md file from a project.
-///
-/// Provides project-level context for overview queries.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ReadmeChunk {
-    /// Path to the README.md file
     pub file_path: String,
-
-    /// Project name (required, not optional)
     pub project_name: String,
-
-    /// Full content of the README
     pub content: String,
+    pub chunk_id: String,
+    pub content_hash: String,
+    pub embedding_model_version: String,
 }
 
-/// Rust crate metadata extracted from Cargo.toml.
-///
-/// Provides architectural context: what crates exist, their purposes,
-/// and their local dependencies (workspace relationships).
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CrateChunk {
-    /// Crate name from [package].name
     pub crate_name: String,
-
-    /// Path to the crate directory containing Cargo.toml
     pub crate_path: String,
-
-    /// Description from [package].description (optional)
     pub description: Option<String>,
-
-    /// Local/workspace dependencies only (path dependencies)
-    /// External crates.io dependencies are excluded
-    pub dependencies: Vec<String>,
-
-    /// Parent project context
-    pub project_name: Option<String>,
+    pub dependencies: Vec<String>,   // Workspace/local dependencies only
+    pub project_name: String,
+    pub chunk_id: String,
+    pub content_hash: String,
+    pub embedding_model_version: String,
 }
 
-/// Module-level documentation from //! comments.
-///
-/// Captures crate-level documentation typically found at the top of lib.rs.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ModuleDocChunk {
-    /// Path to the lib.rs or module file
     pub file_path: String,
-
-    /// Module/crate name
     pub module_name: String,
-
-    /// Concatenated //! doc comments
-    pub doc_content: String,
-
-    /// Parent project context
-    pub project_name: Option<String>,
+    pub doc_content: String,         // Concatenated //! doc comments
+    pub project_name: String,
+    pub chunk_id: String,
+    pub content_hash: String,
+    pub embedding_model_version: String,
 }
 ```
+
+**Key design notes:**
+- All `project_name` fields are `String` (required), not `Option<String>`
+- All chunk types carry `chunk_id`, `content_hash`, and `embedding_model_version` (V1.1)
+- `chunk_id` uses `deterministic_chunk_id()` — stable across re-indexing for unchanged code
+- `content_hash` enables incremental ingestion (V1.3): skip files whose hash hasn't changed
+- `coderag-types` also exports helper functions (`content_hash`, `new_chunk_id`, `deterministic_chunk_id`) but contains **no business logic**
 
 ### 4.2 coderag-store — Embedding & Storage
 
@@ -425,26 +418,29 @@ impl Embedder {
 ```rust
 /// Formats a code chunk for embedding.
 ///
-/// Concatenates identifier + language + docstring + code for richer semantic signal.
+/// Concatenates identifier + language + docstring + code + calls for richer semantic signal.
 ///
 /// # Output Format
 /// ```text
 /// identifier (language)
 /// docstring (if present)
 /// code_content
+/// Calls: foo, bar (if non-empty, V2.1)
 /// ```
 ///
 /// # Example
 /// ```text
-/// process_data (rust)
-/// Processes input data and returns results
-/// fn process_data(input: &str) -> Result<Output, Error> { ... }
+/// retrieve (rust)
+/// Embed the query text, search vector store for similar chunks
+/// fn retrieve(...) { ... }
+/// Calls: embed_one, search_all
 /// ```
 pub fn format_code_for_embedding(
     identifier: &str,
     language: &str,
     docstring: Option<&str>,
     code: &str,
+    calls: &[String],  // V2.1: ephemeral call context, not stored on CodeChunk
 ) -> String;
 
 /// Formats a README for embedding.
@@ -638,13 +634,16 @@ The LanceDB schema is the **sole coupling point** between code-raptor and portfo
 | Column | Type | Nullable | Purpose |
 |--------|------|----------|---------|
 | `file_path` | UTF8 | NO | Full path to source file |
-| `language` | UTF8 | NO | "rust" or "python" |
+| `language` | UTF8 | NO | "rust", "python", or "typescript" |
 | `identifier` | UTF8 | NO | Function/class name |
 | `node_type` | UTF8 | NO | Tree-sitter node type |
 | `code_content` | UTF8 | NO | Source code snippet |
 | `start_line` | UInt64 | NO | 1-indexed line number |
-| `project_name` | UTF8 | YES | Parent project name |
-| `docstring` | UTF8 | YES | Extracted documentation |
+| `project_name` | UTF8 | NO | Parent project name |
+| `docstring` | UTF8 | YES | Extracted documentation (V1.5) |
+| `chunk_id` | UTF8 | NO | Deterministic ID: hash(file_path, content) |
+| `content_hash` | UTF8 | NO | SHA256 of source file for change detection |
+| `embedding_model_version` | UTF8 | NO | e.g., "BGESmallENV15_384" |
 | `vector` | FixedSizeList(Float32, 384) | NO | Embedding vector |
 
 #### readme_chunks Table
@@ -654,6 +653,9 @@ The LanceDB schema is the **sole coupling point** between code-raptor and portfo
 | `file_path` | UTF8 | NO |
 | `project_name` | UTF8 | NO |
 | `content` | UTF8 | NO |
+| `chunk_id` | UTF8 | NO |
+| `content_hash` | UTF8 | NO |
+| `embedding_model_version` | UTF8 | NO |
 | `vector` | FixedSizeList(Float32, 384) | NO |
 
 #### crate_chunks Table
@@ -663,8 +665,11 @@ The LanceDB schema is the **sole coupling point** between code-raptor and portfo
 | `crate_name` | UTF8 | NO |
 | `crate_path` | UTF8 | NO |
 | `description` | UTF8 | YES |
-| `dependencies` | UTF8 | YES | Comma-separated string |
-| `project_name` | UTF8 | YES |
+| `dependencies` | List\<UTF8\> | NO | Array of workspace dependency names |
+| `project_name` | UTF8 | NO |
+| `chunk_id` | UTF8 | NO |
+| `content_hash` | UTF8 | NO |
+| `embedding_model_version` | UTF8 | NO |
 | `vector` | FixedSizeList(Float32, 384) | NO |
 
 #### module_doc_chunks Table
@@ -674,113 +679,99 @@ The LanceDB schema is the **sole coupling point** between code-raptor and portfo
 | `file_path` | UTF8 | NO |
 | `module_name` | UTF8 | NO |
 | `doc_content` | UTF8 | NO |
-| `project_name` | UTF8 | YES |
+| `project_name` | UTF8 | NO |
+| `chunk_id` | UTF8 | NO |
+| `content_hash` | UTF8 | NO |
+| `embedding_model_version` | UTF8 | NO |
 | `vector` | FixedSizeList(Float32, 384) | NO |
 
 ### 4.4 code-raptor — Ingestion Pipeline
 
 **Location:** [crates/code-raptor/src/](../crates/code-raptor/src/)
 
+#### LanguageHandler Trait (V1.2)
+
 ```rust
-/// Supported programming languages for parsing.
+/// Trait for language-specific code parsing behavior.
 ///
-/// Add new languages by:
-/// 1. Add variant to this enum
-/// 2. Implement `get_grammar()` with tree-sitter grammar
-/// 3. Implement `query_string()` with S-expression patterns
-#[derive(Debug, Clone, Copy)]
-pub enum SupportedLanguage {
-    Rust,
-    Python,
+/// Each supported language implements this trait. Adding a new language requires:
+/// 1. Create a new handler struct (e.g., `GoHandler`)
+/// 2. Implement 5 required methods
+/// 3. Register in `handler_for_path()` registry
+///
+/// No enum, no match arms — fully open for extension.
+pub trait LanguageHandler {
+    /// Language identifier (e.g., "rust", "python", "typescript")
+    fn name(&self) -> &'static str;
+
+    /// File extensions this handler supports (e.g., &["rs"] for Rust)
+    fn extensions(&self) -> &'static [&'static str];
+
+    /// Get the tree-sitter grammar for this language
+    fn grammar(&self) -> tree_sitter::Language;
+
+    /// Tree-sitter S-expression query for extracting code elements.
+    /// Must capture `@name` (identifier) and `@body` (full element node).
+    fn query_string(&self) -> &'static str;
+
+    /// Extract documentation from a code element.
+    /// Default returns None. Per-language implementations added in V1.5.
+    fn extract_docstring(
+        &self, _source: &str, _node: &Node, _source_bytes: &[u8],
+    ) -> Option<String> { None }
 }
 
-impl SupportedLanguage {
-    /// Detect language from file extension.
-    ///
-    /// # Supported Extensions
-    /// - `.rs` → Rust
-    /// - `.py` → Python
-    /// - Others → None
-    pub fn from_path(path: &Path) -> Option<Self>;
+/// Registry: returns the appropriate handler for a file path based on extension.
+pub fn handler_for_path(path: &Path) -> Option<Box<dyn LanguageHandler>>;
+```
 
-    /// Get tree-sitter grammar for this language.
-    pub fn get_grammar(&self) -> tree_sitter::Language;
+**Implementations:** `RustHandler`, `PythonHandler`, `TypeScriptHandler` (V1.4)
 
-    /// Get language name string ("rust" or "python").
-    pub fn name(&self) -> &'static str;
+#### CodeAnalyzer (parser.rs)
 
-    /// Get tree-sitter S-expression query for code elements.
-    ///
-    /// # Rust Query Patterns
-    /// - `function_item` - functions
-    /// - `struct_item` - structs
-    /// - `enum_item` - enums
-    /// - `trait_item` - traits
-    /// - `impl_item` - impl blocks
-    /// - `type_item` - type aliases
-    /// - `macro_definition` - macros
-    ///
-    /// # Python Query Patterns
-    /// - `function_definition` - functions
-    /// - `class_definition` - classes
-    pub fn query_string(&self) -> &'static str;
-}
-
+```rust
 /// Tree-sitter based code analyzer.
-///
-/// Extracts semantic code units (functions, classes, etc.) from source files.
 pub struct CodeAnalyzer {
     parser: Parser,
 }
 
 impl CodeAnalyzer {
-    /// Create a new analyzer with initialized parser.
     pub fn new() -> Self;
 
-    /// Analyze source code and extract code chunks.
-    ///
-    /// # Arguments
-    /// * `source` - Source code as string
-    /// * `lang` - Programming language for grammar selection
+    /// Analyze source code using a LanguageHandler.
     ///
     /// # Returns
     /// Vector of CodeChunk with `file_path` set to "<set_by_caller>".
     /// Caller must set `file_path` and `project_name` after extraction.
     ///
     /// # Deduplication
-    /// Results are deduplicated by (identifier, start_line) to handle
-    /// impl block methods being captured multiple times.
-    pub fn analyze_content(&mut self, source: &str, lang: SupportedLanguage) -> Vec<CodeChunk>;
+    /// Results are deduplicated by (identifier, start_line).
+    pub fn analyze_with_handler(
+        &mut self, source: &str, handler: &dyn LanguageHandler,
+    ) -> Vec<CodeChunk>;
 
     /// Extract module-level //! documentation from Rust source.
-    ///
-    /// Only processes Rust files. Returns None for Python.
-    ///
-    /// # Example
-    /// ```rust
-    /// //! This is module documentation.
-    /// //! It can span multiple lines.
-    /// ```
     pub fn extract_module_docs(&mut self, source: &str) -> Option<String>;
 }
 
 /// Parse Cargo.toml and extract crate metadata.
-///
-/// # Returns
-/// Tuple of (crate_name, description, local_dependencies)
-/// where local_dependencies are path/workspace dependencies only.
-///
-/// # Example
-/// ```toml
-/// [package]
-/// name = "my-crate"
-/// description = "A utility crate"
-///
-/// [dependencies]
-/// types = { path = "../types" }  # Included
-/// serde = "1.0"                   # Excluded (external)
-/// ```
 pub fn parse_cargo_toml(content: &str) -> Option<(String, Option<String>, Vec<String>)>;
+```
+
+#### Incremental Ingestion (reconcile.rs, V1.3)
+
+```rust
+/// Compare current ingestion results against existing DB state.
+/// Returns which chunks to insert, update, or delete.
+///
+/// Uses content_hash for file-level change detection:
+/// - Unchanged hash → skip (no re-embedding)
+/// - Changed hash → replace chunk
+/// - Missing from current → delete from DB
+pub fn reconcile(
+    current: &IngestionResult,
+    existing: &ExistingState,
+) -> ReconcileResult;
 ```
 
 ### 4.5 portfolio-rag-chat — Query Interface
@@ -800,9 +791,11 @@ pub fn parse_cargo_toml(content: &str) -> Option<(String, Option<String>, Vec<St
 
 ```rust
 /// RAG pipeline configuration.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct EngineConfig {
-    pub retrieval: RetrievalConfig,
+    pub retrieval: RetrievalConfig,  // Base/default retrieval limits
+    pub intent: IntentConfig,         // V2.2: intent classification rules
+    pub routing: RoutingTable,        // V2.3: intent → retrieval config mapping
 }
 
 /// Retrieval limits per chunk type.
@@ -931,23 +924,32 @@ readme_limit = 2
 crate_limit = 3
 module_doc_limit = 3
 
-# Future: V2.3 intent routing
-[retrieval.intent_routing]
-enabled = false
+# V2.3 intent routing (currently in-code via RoutingTable)
+# Future: load from config file
 [retrieval.intent_routing.overview]
+code = 2
 readme = 3
-crate = 5
-code = 1
-module_doc = 2
+crate = 4
+module_doc = 3
 [retrieval.intent_routing.implementation]
 code = 7
 readme = 1
 crate = 1
 module_doc = 2
+[retrieval.intent_routing.relationship]
+code = 6
+readme = 1
+crate = 2
+module_doc = 2
+[retrieval.intent_routing.comparison]
+code = 4
+readme = 2
+crate = 3
+module_doc = 2
 
 [ingestion]
 ignored_dirs = [".git", "target", "node_modules", "__pycache__", ".venv"]
-supported_languages = ["rust", "python"]  # Future: add "typescript"
+supported_languages = ["rust", "python", "typescript"]
 
 [llm]
 model = "gemini-2.0-flash"
@@ -971,60 +973,55 @@ Current environment configuration (`.env`):
 
 ## 6. Extension Points
 
-### 6.1 Adding New Languages (V1.2)
+### 6.1 Adding New Languages
 
-**Location:** [crates/code-raptor/src/ingestion/parser.rs](../crates/code-raptor/src/ingestion/parser.rs)
+**Location:** [crates/code-raptor/src/ingestion/languages/](../crates/code-raptor/src/ingestion/languages/)
+
+Since V1.2, language support uses the `LanguageHandler` trait — no enum, no match arms. Adding a new language is fully additive:
 
 ```rust
-// Step 1: Add variant to SupportedLanguage
-pub enum SupportedLanguage {
-    Rust,
-    Python,
-    TypeScript,  // Add new variant
-}
+// Step 1: Create new handler file (e.g., languages/go.rs)
+pub struct GoHandler;
 
-// Step 2: Implement from_path detection
-impl SupportedLanguage {
-    pub fn from_path(path: &Path) -> Option<Self> {
-        match path.extension()?.to_str()? {
-            "rs" => Some(Self::Rust),
-            "py" => Some(Self::Python),
-            "ts" | "tsx" => Some(Self::TypeScript),  // Add extensions
-            _ => None,
-        }
+impl LanguageHandler for GoHandler {
+    fn name(&self) -> &'static str { "go" }
+
+    fn extensions(&self) -> &'static [&'static str] { &["go"] }
+
+    fn grammar(&self) -> tree_sitter::Language {
+        tree_sitter_go::LANGUAGE.into()
+    }
+
+    fn query_string(&self) -> &'static str {
+        r#"(function_declaration name: (identifier) @name) @body
+(method_declaration name: (field_identifier) @name) @body"#
+    }
+
+    fn extract_docstring(
+        &self, source: &str, node: &Node, source_bytes: &[u8],
+    ) -> Option<String> {
+        // Language-specific doc extraction
     }
 }
 
-// Step 3: Add tree-sitter grammar
-impl SupportedLanguage {
-    pub fn get_grammar(&self) -> tree_sitter::Language {
-        match self {
-            Self::Rust => tree_sitter_rust::LANGUAGE.into(),
-            Self::Python => tree_sitter_python::LANGUAGE.into(),
-            Self::TypeScript => tree_sitter_typescript::LANGUAGE_TSX.into(),  // Add grammar
-        }
+// Step 2: Register in language.rs
+pub fn handler_for_path(path: &Path) -> Option<Box<dyn LanguageHandler>> {
+    let ext = path.extension()?.to_str()?;
+    match ext {
+        "rs" => Some(Box::new(RustHandler)),
+        "py" => Some(Box::new(PythonHandler)),
+        "ts" | "tsx" | "jsx" => Some(Box::new(TypeScriptHandler)),
+        "go" => Some(Box::new(GoHandler)),  // Add one line
+        _ => None,
     }
 }
 
-// Step 4: Add query patterns
-impl SupportedLanguage {
-    pub fn query_string(&self) -> &'static str {
-        match self {
-            Self::TypeScript => {
-                r#"(function_declaration name: (identifier) @name) @body
-(arrow_function) @body
-(method_definition name: (property_identifier) @name) @body
-(class_declaration name: (type_identifier) @name) @body"#
-            }
-            // ...
-        }
-    }
-}
-
-// Step 5: Add to Cargo.toml
+// Step 3: Add tree-sitter grammar to Cargo.toml
 // [dependencies]
-// tree-sitter-typescript = "0.23"
+// tree-sitter-go = "0.23"
 ```
+
+**No existing code changes needed** — fully additive. Existing handlers and tests are unaffected.
 
 ### 6.2 Adding New Chunk Types (A1: Hierarchy)
 
@@ -1062,54 +1059,55 @@ impl SupportedLanguage {
    - Add to `search_all()` call
    - Add `format_folder_section()` in `context.rs`
 
-### 6.3 Intent Classification (V2.2)
+### 6.3 Intent Classification & Routing (V2.2 + V2.3)
 
-**Proposed location:** `src/engine/intent.rs`
+**Location:** `src/engine/intent.rs`
+
+Classification and routing share one module — routing is parametric on classification output.
 
 ```rust
-/// Query intent categories for routing.
-#[derive(Debug, Clone, Copy)]
+/// Query intent categories. Derives Hash + Eq for use as RoutingTable key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum QueryIntent {
-    /// "What does this project do?" - README, CrateChunks
-    Overview,
+    Overview,        // "What is X?", "Tell me about Y"
+    Implementation,  // "How does X work?", "Show me the code"
+    Relationship,    // "What calls X?", "How does A relate to B?"
+    Comparison,      // "Compare A and B", "Differences between X and Y"
+}
 
-    /// "How does this function work?" - CodeChunks
-    Implementation,
+/// Declarative classification: keyword rules evaluated in specificity order.
+/// First match wins. No match → default (Implementation).
+pub struct IntentConfig {
+    pub rules: Vec<IntentRule>,   // Comparison > Relationship > Overview > Implementation
+    pub default: QueryIntent,
+}
 
-    /// "What calls this?" - Call graph (future)
-    Relationship,
-
-    /// "How does A compare to B?" - Cross-project
-    Comparison,
+pub struct ClassificationResult {
+    pub intent: QueryIntent,
+    pub match_count: usize,  // 0 = fell through to default
 }
 
 /// Classify query intent using keyword heuristics.
-///
-/// # Declarative Approach
-/// Rules should be loaded from config, not hardcoded.
-pub fn classify_intent(query: &str, config: &IntentConfig) -> QueryIntent {
-    // Data-driven: rules from config/intent_rules.toml
+pub fn classify(query: &str, config: &IntentConfig) -> ClassificationResult;
+
+/// Declarative routing table: maps each intent to retrieval limits.
+/// Data, not code. New intents = new entries.
+pub struct RoutingTable {
+    pub routes: HashMap<QueryIntent, RetrievalConfig>,
+    pub default: RetrievalConfig,  // Fallback: RetrievalConfig::default() (5/2/3/3)
 }
 
-/// Adjust retrieval limits based on intent.
-pub fn route_by_intent(intent: QueryIntent, base_config: &RetrievalConfig) -> RetrievalConfig {
-    match intent {
-        QueryIntent::Overview => RetrievalConfig {
-            readme_limit: 3,
-            crate_limit: 5,
-            code_limit: 1,
-            module_doc_limit: 2,
-        },
-        QueryIntent::Implementation => RetrievalConfig {
-            code_limit: 7,
-            readme_limit: 1,
-            crate_limit: 1,
-            module_doc_limit: 2,
-        },
-        // ...
-    }
-}
+/// Look up retrieval limits for a classified intent.
+pub fn route(intent: QueryIntent, table: &RoutingTable) -> RetrievalConfig;
 ```
+
+**Adding a new intent** requires:
+1. New `QueryIntent` variant (one line)
+2. New `IntentRule` in default config (one block of keywords)
+3. New entry in `RoutingTable::default()` (one `routes.insert()` call)
+
+No existing code changes needed — fully additive.
 
 ### 6.4 Hybrid Search (B1)
 
@@ -1334,16 +1332,16 @@ Use tree-sitter with per-language grammars:
          │                                                         │
          ▼                                                         ▼
 ┌─────────────────────┐  ┌─────────────────────┐  ┌─────────────────────┐
-│  is_readme?         │  │  is_cargo_toml?     │  │  SupportedLanguage? │
-│  README.md          │  │  Cargo.toml         │  │  .rs, .py           │
+│  is_readme?         │  │  is_cargo_toml?     │  │  handler_for_path() │
+│  README.md          │  │  Cargo.toml         │  │  .rs, .py, .ts/tsx  │
 └────────┬────────────┘  └────────┬────────────┘  └────────┬────────────┘
          │                        │                         │
          ▼                        ▼                         ▼
 ┌─────────────────────┐  ┌─────────────────────┐  ┌─────────────────────┐
 │  ReadmeChunk        │  │  parse_cargo_toml() │  │  CodeAnalyzer       │
-│  - file_path        │  │  -> CrateChunk      │  │  .analyze_content() │
-│  - project_name     │  │                     │  │  -> Vec<CodeChunk>  │
-│  - content          │  │  + extract_module   │  │                     │
+│  - file_path        │  │  -> CrateChunk      │  │  .analyze_with_     │
+│  - project_name     │  │                     │  │   handler()         │
+│  - content          │  │  + extract_module   │  │  -> Vec<CodeChunk>  │
 └────────┬────────────┘  │  _docs() for lib.rs │  └────────┬────────────┘
          │               └────────┬────────────┘           │
          │                        │                         │
@@ -1395,6 +1393,26 @@ Use tree-sitter with per-language grammars:
                  │
                  ▼
 ┌──────────────────────────────────┐
+│  intent::classify(query, config) │  (V2.2)
+│  -> ClassificationResult {       │
+│       intent: Implementation,    │
+│       match_count: 2             │
+│     }                            │
+└────────────────┬─────────────────┘
+                 │
+                 ▼
+┌──────────────────────────────────┐
+│  intent::route(intent, table)    │  (V2.3)
+│  -> RetrievalConfig {            │
+│       code_limit: 7,             │
+│       readme_limit: 1,           │
+│       crate_limit: 1,            │
+│       module_doc_limit: 2        │
+│     }                            │
+└────────────────┬─────────────────┘
+                 │
+                 ▼
+┌──────────────────────────────────┐
 │  Acquire Mutex<Embedder>         │
 │  embedder.embed_one(query)       │
 │  -> query_embedding [384]        │
@@ -1404,10 +1422,7 @@ Use tree-sitter with per-language grammars:
 ┌──────────────────────────────────┐
 │  VectorStore.search_all(         │
 │    query_embedding,              │
-│    code_limit: 5,                │
-│    readme_limit: 2,              │
-│    crate_limit: 3,               │
-│    module_doc_limit: 3           │
+│    routed config limits          │
 │  )                               │
 └────────────────┬─────────────────┘
                  │
@@ -1456,9 +1471,8 @@ Use tree-sitter with per-language grammars:
 ┌──────────────────────────────────┐
 │  ChatResponse {                  │
 │    answer: "The retriever...",   │
-│    sources: [                    │
-│      { file, line, identifier }  │
-│    ]                             │
+│    sources: [...],               │
+│    intent: "implementation"      │  (V2.4)
 │  }                               │
 └──────────────────────────────────┘
 ```
@@ -1549,3 +1563,4 @@ Use tree-sitter with per-language grammars:
 | Version | Date | Changes |
 |---------|------|---------|
 | 0.1 | 2026-02-01 | Initial architecture document |
+| 0.2 | 2026-02-07 | V1 completion: updated coderag-types with V1.1 fields (chunk_id, content_hash, embedding_model_version), fixed project_name to String, updated LanceDB schema (List\<UTF8\> dependencies, V1.1 columns), replaced SupportedLanguage enum with LanguageHandler trait (V1.2), added reconcile.rs for incremental ingestion (V1.3), added TypeScript support (V1.4), updated docstring extraction (V1.5). V2 design: added intent classification + routing to engine components (V2.2/V2.3), updated query pipeline with classify → route steps, updated format_code_for_embedding with calls parameter (V2.1), updated EngineConfig with intent + routing fields. |
