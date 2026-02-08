@@ -1,5 +1,99 @@
 # Development Log
 
+## 2026-02-08: MVP.3 Analysis Planning
+
+### Summary
+Implemented the analysis planning module (`autodash/planner.py`). Accepts a `DataProfile` and user questions, calls an LLM to produce structured `AnalysisStep` objects describing what to compute, validates column references and semantic compatibility, and returns validated steps ready for the explorer (MVP.4). This is the first LLM-calling node in the pipeline — patterns established here (closure factory DI, prompt separation, validation location) set precedent for MVP.4, 5, and 8.
+
+### Architecture
+
+```
+                   ┌──────────┐
+                   │  MVP.2   │  DataProfile
+                   │  data.py │──────────────┐
+                   └──────────┘              │
+                                             ▼
+                                      ┌─────────────┐
+                   user questions ───▶│   MVP.3     │
+                                      │ planner.py  │
+                                      └──────┬──────┘
+                                             │ list[AnalysisStep]
+                                             ▼
+                                      ┌─────────────┐
+                                      │   MVP.4     │
+                                      │ explorer.py │
+                                      └─────────────┘
+
+planner.py internals (SoC):
+
+    _profile_summary()          ← format profile for LLM prompt
+          │
+    build_planning_prompt()     ← assemble full user prompt
+          │
+    plan_analysis()             ← orchestrate: prompt → LLM → parse (async)
+          │
+    parse_analysis_response()   ← parse JSON, validate, build steps
+          │
+    ├── _parse_single_step()    ← validate fields, aggregation enum
+    └── _validate_step()        ← column existence + semantic compatibility
+```
+
+### New / Modified Files
+
+| File | Purpose |
+|------|---------|
+| `autodash/planner.py` | **New.** Core planning logic: `_profile_summary`, `build_planning_prompt`, `_validate_step`, `_check_semantic_compatibility`, `parse_analysis_response`, `_parse_single_step`, `plan_analysis` |
+| `autodash/prompts/analysis_planning.py` | **New.** `SYSTEM_PROMPT`, `OUTPUT_FORMAT`, `build_user_prompt()` — prompt templates separated from logic |
+| `plotlint/core/errors.py` | **Modified.** Added `PlanningError(PipelineError)` |
+| `autodash/pipeline.py` | **Modified.** Replaced `plan_node` stub with closure factory `_make_plan_node(config, llm_client)`. Fallback `plan_node` returns error dict when no LLM client |
+| `tests/test_planner.py` | **New.** 27 tests: prompt construction (4), validation (11), response parsing (11), async integration with MockLLMClient (4) |
+| `tests/test_planner_prompts.py` | **New.** 8 tests: template content, field coverage, assembly |
+| `tests/test_pipeline_graph.py` | **Modified.** Updated `test_plan_stub` → `test_plan_fallback_returns_error`. Added `test_pipeline_with_mock_llm_plans_successfully` integration test |
+
+### Key Design Decisions
+
+1. **Closure factory for LLM node injection**: `_make_plan_node(config, llm_client)` captures dependencies via closure. LangGraph nodes must have signature `(state) -> dict` — closure is the standard Python DI for fixed-signature functions. LangGraph configurables were ruled out because `LLMClient` isn't serializable. Matches existing `_make_should_continue(config)` pattern in `plotlint/loop.py`. Sets precedent for MVP.4, 5, 8.
+
+2. **All validation in `planner.py`, model stays pure data**: No `validate_columns` method on `AnalysisStep`. Column existence checks and semantic compatibility warnings all live in `_validate_step()` in `planner.py`. Models describe data, they don't validate against other models. Any module needing validation (e.g. DI-4.2 HITL) imports from `planner.py`.
+
+3. **Per-module prompt formatting**: `_profile_summary(profile)` in `planner.py`, not on `DataProfile`. MVP.4's explorer needs a different view of the profile (column names + sample data vs types + stats). Each LLM-calling module builds its own prompt representation.
+
+4. **Prompt templates separated from logic**: `autodash/prompts/analysis_planning.py` contains `SYSTEM_PROMPT`, `OUTPUT_FORMAT`, and `build_user_prompt()`. Prompt iteration doesn't touch `planner.py`. Aggregation type list is built from the `AggregationType` enum to stay in sync automatically.
+
+5. **Hard vs soft validation**: Missing columns → `PlanningError` (hard, blocks execution). Semantic mismatches (e.g. SUM on text column) → logged warning, not blocking. The LLM may have creative intent, and MVP.4's explorer will fail gracefully if the operation is truly invalid.
+
+6. **Reuse of `parse_json_from_response`**: `parse_analysis_response` delegates JSON extraction to the existing utility in `plotlint/core/parsing.py` rather than reimplementing fenced-block/embedded-JSON handling.
+
+7. **Fallback plan node**: When `llm_client is None`, `_make_plan_node` returns the module-level `plan_node` which adds an error to state. Keeps `build_pipeline_graph()` callable without args (topology tests pass). Pipeline continues with errors accumulated rather than crashing.
+
+### Validation Rules
+
+`_validate_step(step, profile)` returns `(missing_columns, warnings)`:
+
+| Check | Type | Columns Checked | Result |
+|-------|------|----------------|--------|
+| Column existence | Hard | `target_columns`, `group_by_columns`, `sort_by` | `PlanningError` if any missing |
+| SUM/MEAN/MEDIAN/MIN/MAX on non-numeric | Soft | `target_columns` | Warning logged |
+| CORRELATION on non-numeric | Soft | `target_columns` | Warning logged |
+| TIME_SERIES on non-datetime | Soft | `target_columns` | Warning logged |
+| COUNT/GROUP_BY/DISTRIBUTION/COMPARISON/CUSTOM | — | — | No semantic check |
+
+### Test Results
+
+All 159 tests pass (2.95s):
+- `test_planner.py`: 27 tests (prompt construction, validation, parsing, integration)
+- `test_planner_prompts.py`: 8 tests (template content, assembly)
+- Previous MVP.1 + MVP.2 tests: all still passing (124 tests)
+
+### Unblocks
+
+- **MVP.4** (Data Exploration): Consumes `list[AnalysisStep]` to generate pandas code. `AnalysisStep.description`, `target_columns`, `aggregation`, `group_by_columns` provide structured context for code generation prompts.
+- **MVP.5** (Chart Planning): Uses `AnalysisStep.description` and `rationale` for chart title context.
+- **DI-1.1** (Multi-step planning): `plan_analysis()` already returns `list[AnalysisStep]` and accepts `max_steps` parameter. DI-1.1 calls with `max_steps=N` — no API change needed.
+- **DI-4.2** (HITL checkpoints): `plan_analysis` returns data. The LangGraph pipeline node can `interrupt()` after this node and let the user modify the list. No change to `planner.py`.
+
+**Packages:** autodash
+
 ## 2026-02-08: MVP.2 Data Intelligence
 
 ### Summary

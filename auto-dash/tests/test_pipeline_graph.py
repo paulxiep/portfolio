@@ -37,8 +37,10 @@ class TestStubPassthrough:
         assert any("No source_path" in e for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_plan_stub(self):
-        assert await plan_node({}) == {}
+    async def test_plan_fallback_returns_error(self):
+        result = await plan_node({})
+        assert "errors" in result
+        assert any("No LLM client" in e for e in result["errors"])
 
     @pytest.mark.asyncio
     async def test_explore_stub(self):
@@ -60,7 +62,7 @@ class TestStubPassthrough:
 class TestPipelineExecution:
     @pytest.mark.asyncio
     async def test_full_pipeline_with_real_load(self):
-        """Run the full pipeline with real load node and stub downstream."""
+        """Run the full pipeline with real load node and fallback plan."""
         graph = build_pipeline_graph()
         initial_state = {
             "source_path": SAMPLE_CSV,
@@ -71,3 +73,34 @@ class TestPipelineExecution:
         assert result["questions"] == "What trends are there?"
         assert result["data_profile"] is not None
         assert result["data_profile"].row_count == 20
+        # Without llm_client, plan node adds an error
+        assert any("No LLM client" in e for e in result.get("errors", []))
+
+    @pytest.mark.asyncio
+    async def test_pipeline_with_mock_llm_plans_successfully(self):
+        """Plan node produces analysis steps with a mock LLM client."""
+        from autodash.config import PipelineConfig
+
+        class MockLLMClient:
+            async def complete(self, system, user, **kwargs):
+                return """[{
+                    "description": "Revenue trend",
+                    "target_columns": ["revenue"],
+                    "aggregation": "sum",
+                    "group_by_columns": [],
+                    "rationale": "Total revenue"
+                }]"""
+
+            async def complete_with_image(self, **kwargs):
+                return ""
+
+        config = PipelineConfig(max_analysis_steps=1)
+        graph = build_pipeline_graph(config=config, llm_client=MockLLMClient())
+        initial_state = {
+            "source_path": SAMPLE_CSV,
+            "questions": "What is total revenue?",
+        }
+        result = await graph.ainvoke(initial_state)
+        assert result["data_profile"] is not None
+        assert len(result.get("analysis_steps", [])) == 1
+        assert result["analysis_steps"][0].description == "Revenue trend"

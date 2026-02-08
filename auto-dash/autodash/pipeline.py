@@ -34,8 +34,58 @@ async def load_node(state: PipelineState) -> dict:
 
 
 async def plan_node(state: PipelineState) -> dict:
-    """Node: Plan analysis steps (MVP.3). Stub."""
-    return {}
+    """Fallback plan node when no LLM client is configured."""
+    return {"errors": state.get("errors", []) + ["No LLM client configured for planning"]}
+
+
+def _make_plan_node(config: Any, llm_client: Any):
+    """Create a plan node that captures config and llm_client via closure.
+
+    Matches the closure factory pattern in plotlint/loop.py.
+    LangGraph nodes must have signature (state) -> dict, so dependencies
+    are captured via closure rather than passed as arguments.
+    """
+    if llm_client is None:
+        return plan_node
+
+    async def _plan_node(state: PipelineState) -> dict:
+        """Node: Plan analysis steps (MVP.3)."""
+        from autodash.planner import plan_analysis
+
+        profile = state.get("data_profile")
+        questions = state.get("questions", "")
+
+        if not profile:
+            return {
+                "errors": state.get("errors", []) + [
+                    "No data_profile available for planning"
+                ]
+            }
+
+        if not questions:
+            return {
+                "errors": state.get("errors", []) + [
+                    "No questions provided for analysis planning"
+                ]
+            }
+
+        try:
+            max_steps = config.max_analysis_steps if config else 1
+            steps = await plan_analysis(
+                profile=profile,
+                questions=questions,
+                llm_client=llm_client,
+                max_steps=max_steps,
+            )
+            return {"analysis_steps": steps}
+        except Exception as e:
+            return {
+                "errors": state.get("errors", []) + [
+                    f"Analysis planning failed: {e}"
+                ]
+            }
+
+    return _plan_node
 
 
 async def explore_node(state: PipelineState) -> dict:
@@ -75,7 +125,7 @@ def build_pipeline_graph(
     graph = StateGraph(PipelineState)
 
     graph.add_node("load", load_node)
-    graph.add_node("plan", plan_node)
+    graph.add_node("plan", _make_plan_node(config, llm_client))
     graph.add_node("explore", explore_node)
     graph.add_node("chart", chart_node)
     graph.add_node("comply", comply_node)

@@ -54,6 +54,10 @@ class DataError(PipelineError):
     """Data loading or profiling failed."""
 
 
+class PlanningError(PipelineError):
+    """Analysis planning failures: invalid plan, validation failed."""
+
+
 class ExplorationError(PipelineError):
     """Data exploration step failed after retries."""
 
