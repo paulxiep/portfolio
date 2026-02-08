@@ -1,4 +1,6 @@
-use arrow_array::{Array, RecordBatch, RecordBatchIterator, StringArray, UInt64Array};
+use arrow_array::{
+    Array, Float32Array, RecordBatch, RecordBatchIterator, StringArray, UInt64Array,
+};
 use futures::TryStreamExt;
 use lancedb::{
     Connection, Table, connect,
@@ -129,12 +131,12 @@ impl VectorStore {
     // Read operations (used by portfolio-rag-chat)
     // ========================================================================
 
-    /// Search crate chunks by vector similarity.
+    /// Search crate chunks by vector similarity. Returns (chunk, distance) pairs.
     pub async fn search_crates(
         &self,
         query_embedding: &[f32],
         limit: usize,
-    ) -> Result<Vec<CrateChunk>, StoreError> {
+    ) -> Result<Vec<(CrateChunk, f32)>, StoreError> {
         let table = self.get_table(CRATE_TABLE).await?;
 
         let results = table
@@ -146,12 +148,12 @@ impl VectorStore {
         batches_to_crate_chunks(results).await
     }
 
-    /// Search module doc chunks by vector similarity.
+    /// Search module doc chunks by vector similarity. Returns (chunk, distance) pairs.
     pub async fn search_module_docs(
         &self,
         query_embedding: &[f32],
         limit: usize,
-    ) -> Result<Vec<ModuleDocChunk>, StoreError> {
+    ) -> Result<Vec<(ModuleDocChunk, f32)>, StoreError> {
         let table = self.get_table(MODULE_DOC_TABLE).await?;
 
         let results = table
@@ -163,12 +165,12 @@ impl VectorStore {
         batches_to_module_doc_chunks(results).await
     }
 
-    /// Search code chunks by vector similarity.
+    /// Search code chunks by vector similarity. Returns (chunk, distance) pairs.
     pub async fn search_code(
         &self,
         query_embedding: &[f32],
         limit: usize,
-    ) -> Result<Vec<CodeChunk>, StoreError> {
+    ) -> Result<Vec<(CodeChunk, f32)>, StoreError> {
         let table = self.get_table(CODE_TABLE).await?;
 
         let results = table
@@ -180,12 +182,12 @@ impl VectorStore {
         batches_to_code_chunks(results).await
     }
 
-    /// Search readme chunks by vector similarity.
+    /// Search readme chunks by vector similarity. Returns (chunk, distance) pairs.
     pub async fn search_readme(
         &self,
         query_embedding: &[f32],
         limit: usize,
-    ) -> Result<Vec<ReadmeChunk>, StoreError> {
+    ) -> Result<Vec<(ReadmeChunk, f32)>, StoreError> {
         let table = self.get_table(README_TABLE).await?;
 
         let results = table
@@ -197,7 +199,7 @@ impl VectorStore {
         batches_to_readme_chunks(results).await
     }
 
-    /// Search both code and readme, return combined results.
+    /// Search all chunk types, return combined results with distances.
     pub async fn search_all(
         &self,
         query_embedding: &[f32],
@@ -207,10 +209,10 @@ impl VectorStore {
         module_doc_limit: usize,
     ) -> Result<
         (
-            Vec<CodeChunk>,
-            Vec<ReadmeChunk>,
-            Vec<CrateChunk>,
-            Vec<ModuleDocChunk>,
+            Vec<(CodeChunk, f32)>,
+            Vec<(ReadmeChunk, f32)>,
+            Vec<(CrateChunk, f32)>,
+            Vec<(ModuleDocChunk, f32)>,
         ),
         StoreError,
     > {
@@ -896,7 +898,7 @@ fn module_doc_chunks_to_batch(
 
 async fn batches_to_code_chunks(
     stream: impl futures::Stream<Item = Result<RecordBatch, lancedb::Error>> + Unpin,
-) -> Result<Vec<CodeChunk>, StoreError> {
+) -> Result<Vec<(CodeChunk, f32)>, StoreError> {
     use futures::TryStreamExt;
 
     stream
@@ -908,7 +910,9 @@ async fn batches_to_code_chunks(
         .await
 }
 
-fn extract_code_chunks_from_batch(batch: &RecordBatch) -> Result<Vec<CodeChunk>, StoreError> {
+fn extract_code_chunks_from_batch(
+    batch: &RecordBatch,
+) -> Result<Vec<(CodeChunk, f32)>, StoreError> {
     let col = |name: &str| -> Result<&StringArray, StoreError> {
         batch
             .column_by_name(name)
@@ -937,24 +941,32 @@ fn extract_code_chunks_from_batch(batch: &RecordBatch) -> Result<Vec<CodeChunk>,
         .column_by_name("docstring")
         .and_then(|c| c.as_any().downcast_ref::<StringArray>());
 
+    let distances = batch
+        .column_by_name("_distance")
+        .and_then(|c| c.as_any().downcast_ref::<Float32Array>());
+
     let nullable_string = |arr: Option<&StringArray>, i: usize| -> Option<String> {
         arr.filter(|a| !a.is_null(i))
             .map(|a| a.value(i).to_string())
     };
 
     let chunks = (0..batch.num_rows())
-        .map(|i| CodeChunk {
-            file_path: file_paths.value(i).to_string(),
-            language: languages.value(i).to_string(),
-            identifier: identifiers.value(i).to_string(),
-            node_type: node_types.value(i).to_string(),
-            code_content: code_contents.value(i).to_string(),
-            start_line: start_lines.value(i) as usize,
-            project_name: project_names.value(i).to_string(),
-            docstring: nullable_string(docstrings, i),
-            chunk_id: chunk_ids.value(i).to_string(),
-            content_hash: content_hashes.value(i).to_string(),
-            embedding_model_version: model_versions.value(i).to_string(),
+        .map(|i| {
+            let chunk = CodeChunk {
+                file_path: file_paths.value(i).to_string(),
+                language: languages.value(i).to_string(),
+                identifier: identifiers.value(i).to_string(),
+                node_type: node_types.value(i).to_string(),
+                code_content: code_contents.value(i).to_string(),
+                start_line: start_lines.value(i) as usize,
+                project_name: project_names.value(i).to_string(),
+                docstring: nullable_string(docstrings, i),
+                chunk_id: chunk_ids.value(i).to_string(),
+                content_hash: content_hashes.value(i).to_string(),
+                embedding_model_version: model_versions.value(i).to_string(),
+            };
+            let dist = distances.map(|d| d.value(i)).unwrap_or(0.0);
+            (chunk, dist)
         })
         .collect();
 
@@ -963,7 +975,7 @@ fn extract_code_chunks_from_batch(batch: &RecordBatch) -> Result<Vec<CodeChunk>,
 
 async fn batches_to_readme_chunks(
     stream: impl futures::Stream<Item = Result<RecordBatch, lancedb::Error>> + Unpin,
-) -> Result<Vec<ReadmeChunk>, StoreError> {
+) -> Result<Vec<(ReadmeChunk, f32)>, StoreError> {
     use futures::TryStreamExt;
 
     stream
@@ -975,7 +987,9 @@ async fn batches_to_readme_chunks(
         .await
 }
 
-fn extract_readme_chunks_from_batch(batch: &RecordBatch) -> Result<Vec<ReadmeChunk>, StoreError> {
+fn extract_readme_chunks_from_batch(
+    batch: &RecordBatch,
+) -> Result<Vec<(ReadmeChunk, f32)>, StoreError> {
     let col = |name: &str| -> Result<&StringArray, StoreError> {
         batch
             .column_by_name(name)
@@ -990,14 +1004,22 @@ fn extract_readme_chunks_from_batch(batch: &RecordBatch) -> Result<Vec<ReadmeChu
     let content_hashes = col("content_hash")?;
     let model_versions = col("embedding_model_version")?;
 
+    let distances = batch
+        .column_by_name("_distance")
+        .and_then(|c| c.as_any().downcast_ref::<Float32Array>());
+
     let chunks = (0..batch.num_rows())
-        .map(|i| ReadmeChunk {
-            file_path: file_paths.value(i).to_string(),
-            project_name: project_names.value(i).to_string(),
-            content: contents.value(i).to_string(),
-            chunk_id: chunk_ids.value(i).to_string(),
-            content_hash: content_hashes.value(i).to_string(),
-            embedding_model_version: model_versions.value(i).to_string(),
+        .map(|i| {
+            let chunk = ReadmeChunk {
+                file_path: file_paths.value(i).to_string(),
+                project_name: project_names.value(i).to_string(),
+                content: contents.value(i).to_string(),
+                chunk_id: chunk_ids.value(i).to_string(),
+                content_hash: content_hashes.value(i).to_string(),
+                embedding_model_version: model_versions.value(i).to_string(),
+            };
+            let dist = distances.map(|d| d.value(i)).unwrap_or(0.0);
+            (chunk, dist)
         })
         .collect();
 
@@ -1006,7 +1028,7 @@ fn extract_readme_chunks_from_batch(batch: &RecordBatch) -> Result<Vec<ReadmeChu
 
 async fn batches_to_crate_chunks(
     stream: impl futures::Stream<Item = Result<RecordBatch, lancedb::Error>> + Unpin,
-) -> Result<Vec<CrateChunk>, StoreError> {
+) -> Result<Vec<(CrateChunk, f32)>, StoreError> {
     use futures::TryStreamExt;
 
     stream
@@ -1018,7 +1040,9 @@ async fn batches_to_crate_chunks(
         .await
 }
 
-fn extract_crate_chunks_from_batch(batch: &RecordBatch) -> Result<Vec<CrateChunk>, StoreError> {
+fn extract_crate_chunks_from_batch(
+    batch: &RecordBatch,
+) -> Result<Vec<(CrateChunk, f32)>, StoreError> {
     use arrow_array::ListArray;
 
     let col = |name: &str| -> Result<&StringArray, StoreError> {
@@ -1043,6 +1067,10 @@ fn extract_crate_chunks_from_batch(batch: &RecordBatch) -> Result<Vec<CrateChunk
     let dependencies_list = batch
         .column_by_name("dependencies")
         .and_then(|c| c.as_any().downcast_ref::<ListArray>());
+
+    let distances = batch
+        .column_by_name("_distance")
+        .and_then(|c| c.as_any().downcast_ref::<Float32Array>());
 
     let nullable_string = |arr: Option<&StringArray>, i: usize| -> Option<String> {
         arr.filter(|a| !a.is_null(i))
@@ -1073,7 +1101,7 @@ fn extract_crate_chunks_from_batch(batch: &RecordBatch) -> Result<Vec<CrateChunk
                 })
                 .unwrap_or_default();
 
-            CrateChunk {
+            let chunk = CrateChunk {
                 crate_name: crate_names.value(i).to_string(),
                 crate_path: crate_paths.value(i).to_string(),
                 description: nullable_string(descriptions, i),
@@ -1082,7 +1110,9 @@ fn extract_crate_chunks_from_batch(batch: &RecordBatch) -> Result<Vec<CrateChunk
                 chunk_id: chunk_ids.value(i).to_string(),
                 content_hash: content_hashes.value(i).to_string(),
                 embedding_model_version: model_versions.value(i).to_string(),
-            }
+            };
+            let dist = distances.map(|d| d.value(i)).unwrap_or(0.0);
+            (chunk, dist)
         })
         .collect();
 
@@ -1091,7 +1121,7 @@ fn extract_crate_chunks_from_batch(batch: &RecordBatch) -> Result<Vec<CrateChunk
 
 async fn batches_to_module_doc_chunks(
     stream: impl futures::Stream<Item = Result<RecordBatch, lancedb::Error>> + Unpin,
-) -> Result<Vec<ModuleDocChunk>, StoreError> {
+) -> Result<Vec<(ModuleDocChunk, f32)>, StoreError> {
     use futures::TryStreamExt;
 
     stream
@@ -1105,7 +1135,7 @@ async fn batches_to_module_doc_chunks(
 
 fn extract_module_doc_chunks_from_batch(
     batch: &RecordBatch,
-) -> Result<Vec<ModuleDocChunk>, StoreError> {
+) -> Result<Vec<(ModuleDocChunk, f32)>, StoreError> {
     let col = |name: &str| -> Result<&StringArray, StoreError> {
         batch
             .column_by_name(name)
@@ -1121,15 +1151,23 @@ fn extract_module_doc_chunks_from_batch(
     let content_hashes = col("content_hash")?;
     let model_versions = col("embedding_model_version")?;
 
+    let distances = batch
+        .column_by_name("_distance")
+        .and_then(|c| c.as_any().downcast_ref::<Float32Array>());
+
     let chunks = (0..batch.num_rows())
-        .map(|i| ModuleDocChunk {
-            file_path: file_paths.value(i).to_string(),
-            module_name: module_names.value(i).to_string(),
-            doc_content: doc_contents.value(i).to_string(),
-            project_name: project_names.value(i).to_string(),
-            chunk_id: chunk_ids.value(i).to_string(),
-            content_hash: content_hashes.value(i).to_string(),
-            embedding_model_version: model_versions.value(i).to_string(),
+        .map(|i| {
+            let chunk = ModuleDocChunk {
+                file_path: file_paths.value(i).to_string(),
+                module_name: module_names.value(i).to_string(),
+                doc_content: doc_contents.value(i).to_string(),
+                project_name: project_names.value(i).to_string(),
+                chunk_id: chunk_ids.value(i).to_string(),
+                content_hash: content_hashes.value(i).to_string(),
+                embedding_model_version: model_versions.value(i).to_string(),
+            };
+            let dist = distances.map(|d| d.value(i)).unwrap_or(0.0);
+            (chunk, dist)
         })
         .collect();
 
@@ -1229,6 +1267,6 @@ mod tests {
 
         let results = store.search_code(&fake_embedding(384), 10).await.unwrap();
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].identifier, "test_func");
+        assert_eq!(results[0].0.identifier, "test_func");
     }
 }

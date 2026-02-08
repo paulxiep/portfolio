@@ -1,5 +1,93 @@
 # Development Log
 
+## 2026-02-08: V2.3 Retrieval Traces (V2 Phase 3)
+
+### Summary
+
+Made retrieval quality visible by surfacing all 4 chunk types (code, readme, crate, module_doc) with relevance scores in API responses and the htmx UI. Portfolio differentiator: the system shows its work instead of acting as a black box. Redesigned `SourceInfo` from code-only to universal, extracted shared source-building logic into `dto.rs` to eliminate handler duplication, and switched search API to scored-only (Option B) since the distance column is already computed by LanceDB on every vector search.
+
+### Architecture
+
+```
+LanceDB vector_search()
+    |
+    v
+RecordBatch with _distance column (Float32Array, L2 distance)
+    |
+    v
+vector_store.rs: extract_*_from_batch() -> Vec<(ChunkType, f32)>
+    |
+    v
+retriever.rs: distance -> relevance (1.0 / (1.0 + dist)) -> ScoredChunk<T>
+    |
+    v
+RetrievalResult { Vec<ScoredChunk<T>>..., intent: QueryIntent }
+    |
+    +-- context.rs: build LLM context (accesses scored.chunk.field, ignores score)
+    |
+    +-- dto.rs: build_sources() -> Vec<SourceInfo>, sorted by relevance
+        |
+        v
+    ChatResponse { answer, sources, intent }
+```
+
+Two-consumer split: context builder uses chunk content only (SoC — LLM doesn't need relevance metadata). Source builder maps all chunk types to uniform `SourceInfo` with scores for API/UI display.
+
+### Changes
+
+| File | Change |
+|------|--------|
+| `crates/coderag-store/src/vector_store.rs` | All 4 `extract_*_from_batch()` return `Vec<(T, f32)>` with `_distance` column (fallback 0.0). All `batches_to_*()` and `search_*()` methods return scored tuples. `search_all()` returns 4-tuple of `Vec<(T, f32)>`. Scored-only API (Option B). |
+| `src/engine/retriever.rs` | Added `ScoredChunk<T> { chunk, score }`, `distance_to_relevance()`, `to_scored()`. `RetrievalResult` now contains `Vec<ScoredChunk<T>>` + `intent: QueryIntent`. `retrieve()` takes `intent` param (passed through). 3 unit tests for distance→relevance conversion. |
+| `src/engine/context.rs` | All `format_*_section()` accept `&[ScoredChunk<T>]`. Mechanical `chunk.field` → `scored.chunk.field`. All 8 test fixtures updated with `scored()` helper. |
+| `src/api/dto.rs` | Redesigned `SourceInfo` (chunk_type, path, label, project, relevance, relevance_pct, line). `ChatResponse.intent: QueryIntent` (direct serde, not String). Extracted `build_sources()` + 4 `SourceInfo::from_scored_*()` constructors. 7 unit tests. |
+| `src/api/handlers.rs` | Simplified to: `retrieve(..., intent)` → `dto::build_sources(&result)` → `ChatResponse { answer, sources, intent }`. No inline source-mapping loops. |
+| `src/api/web.rs` | Same pattern using shared `build_sources()`. Added `intent: String` to `MessageFragment` (Askama boundary conversion). |
+| `templates/partials/message.html` | Chunk type badges with CSS classes, relevance %, intent in summary, conditional line numbers. |
+
+### Key Design Decisions
+
+1. **Scored-only search API (Option B)**: Modified existing `search_code()`, `search_all()` in-place to return `Vec<(T, f32)>` instead of adding `_scored()` variants alongside. Rationale: only `retriever.rs` calls these methods (code-raptor never searches), zero performance cost (LanceDB computes `_distance` on every vector search anyway), single code path.
+2. **`build_sources()` in dto.rs**: Source-mapping logic extracted from handlers into `dto.rs` with `SourceInfo::from_scored_*()` constructors. Eliminates duplication between `handlers.rs` and `web.rs`. Handler becomes pure orchestration.
+3. **`ChatResponse.intent: QueryIntent`**: Direct serde serialization instead of converting to String. `QueryIntent` already derives `Serialize` with `#[serde(rename_all = "snake_case")]`.
+4. **`relevance_pct: u8` pre-computed**: Askama templates can't do inline arithmetic (`{{ val * 100.0 }}`). Pre-computed as `(score * 100.0).round() as u8` in `from_scored_*()` constructors.
+5. **Context builder ignores scores**: `format_*_section()` functions access `scored.chunk.field` but never use `scored.score`. Correct SoC — context is about content for the LLM, not ranking metadata for the user.
+6. **Distance → relevance formula**: `1.0 / (1.0 + dist)` — simple, monotonically decreasing, metric-agnostic. Maps [0, ∞) → (0, 1]. No assumptions about distance metric.
+
+### Refinements vs Original Spec
+
+| Issue | Original Spec | Implementation |
+|-------|--------------|----------------|
+| Source-building duplication | 4 `for` loops copy-pasted in handlers.rs + web.rs | Single `build_sources()` in dto.rs |
+| Intent serialization | `serde_json::to_value()` dance → String | Direct `QueryIntent` on `ChatResponse` |
+| Search API duplication | 8 new `_scored()` functions alongside 8 existing | Scored-only (Option B) — modified in-place |
+| `SourceInfo` mapping | Procedural in handler | `from_scored_*()` constructors on `impl SourceInfo` |
+
+### API Breaking Changes
+
+`ChatResponse` gains `intent` field. `SourceInfo` redesigned: `file` → `path`, `function` → `label`, new fields `chunk_type`, `relevance`, `relevance_pct`. Acceptable: pre-v1.0, single consumer (htmx frontend, updated simultaneously).
+
+### Test Results
+
+All 132 tests pass (12 ignored):
+- code-raptor: 78 unit + 9 integration tests (unchanged)
+- coderag-store: 8 unit tests (1 updated for tuple destructuring)
+- coderag-types: 9 tests (unchanged)
+- portfolio-rag-chat: 28 unit tests (3 new retriever + 7 new dto + 8 updated context)
+- `cargo fmt --all` clean
+- `cargo clippy --workspace` clean (0 warnings)
+
+### What This Enables
+
+- Users see all retrieved sources (not just code) with chunk type badges and relevance percentages
+- Cross-type ranking: a highly relevant README can rank above a less relevant code chunk
+- Intent visible in response: users understand how their query was classified
+- Foundation for V3 quality harness: relevance scores enable recall@K measurement
+
+**Crates:** coderag-store, portfolio-rag-chat
+
+---
+
 ## 2026-02-08: V2.2 Intent Classification + Query Routing (V2 Phase 2)
 
 ### Summary

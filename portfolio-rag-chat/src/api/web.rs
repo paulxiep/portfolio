@@ -7,7 +7,7 @@ use axum::{
 };
 use std::sync::Arc;
 
-use crate::api::dto::SourceInfo;
+use crate::api::dto::{self, SourceInfo};
 use crate::api::state::AppState;
 use crate::engine::{context, generator, intent, retriever};
 
@@ -47,6 +47,7 @@ pub struct MessageFragment {
     pub query: String,
     pub answer: String,
     pub sources: Vec<SourceInfo>,
+    pub intent: String,
 }
 
 pub async fn chat_html(State(state): State<Arc<AppState>>, Form(form): Form<ChatForm>) -> Response {
@@ -77,8 +78,14 @@ pub async fn chat_html(State(state): State<Arc<AppState>>, Form(form): Form<Chat
     let retrieval_config = intent::route(classification.intent, &state.config.routing);
     tracing::info!(intent = ?classification.intent, confidence = classification.confidence, "query classified");
 
-    // Retrieve with pre-computed embedding (no re-embedding)
-    let result = match retriever::retrieve(&query_embedding, &state.store, &retrieval_config).await
+    // Retrieve with pre-computed embedding and intent
+    let result = match retriever::retrieve(
+        &query_embedding,
+        &state.store,
+        &retrieval_config,
+        classification.intent,
+    )
+    .await
     {
         Ok(r) => r,
         Err(e) => {
@@ -103,21 +110,17 @@ pub async fn chat_html(State(state): State<Arc<AppState>>, Form(form): Form<Chat
         }
     };
 
-    let sources: Vec<SourceInfo> = result
-        .code_chunks
-        .into_iter()
-        .map(|c| SourceInfo {
-            file: c.file_path,
-            function: c.identifier,
-            project: c.project_name,
-            line: c.start_line,
-        })
-        .collect();
+    let sources = dto::build_sources(&result);
+    let intent = serde_json::to_value(result.intent)
+        .ok()
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_else(|| "unknown".into());
 
     render_template(&MessageFragment {
         query,
         answer,
         sources,
+        intent,
     })
 }
 
