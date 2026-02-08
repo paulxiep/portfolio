@@ -1,7 +1,9 @@
+use super::intent::RoutingTable;
+
 /// RAG pipeline configuration
 #[derive(Clone, Debug, Default)]
 pub struct EngineConfig {
-    pub retrieval: RetrievalConfig,
+    pub routing: RoutingTable,
 }
 
 /// How many chunks to retrieve

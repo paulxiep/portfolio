@@ -94,9 +94,8 @@ RAPTOR clustering ─────────────── needs A2 enrichm
 ### portfolio-rag-chat (Query) Dependencies
 
 ```
-Intent classification
-    └──► Query routing to chunk types
-        └──► Hierarchical query routing [requires folder/file chunks]
+Intent classification + query routing
+    └──► Hierarchical query routing [requires folder/file chunks]
 
 Hybrid search ─────────────────── independent (query-side)
 
@@ -109,7 +108,7 @@ Graph query interface ─────────── requires call graph data
 |---------------------|-----------|
 | Track A + Track B + Track C | Independent after V3 |
 | A1 + B1 + C1 | All can start after V3 completes |
-| V2.2 + V2.3 + V2.4 | All portfolio-rag-chat, no dependencies |
+| V2.2 + V2.3 | All portfolio-rag-chat, no dependencies |
 | Folder/File embeddings + Hybrid search | Indexing vs query |
 
 ---
@@ -283,14 +282,13 @@ For portfolio demonstrations, hirers ask architecture questions first:
 | Item | Effort | Notes |
 |------|--------|-------|
 | V2.1 Inline Call Context | 1 day | Ephemeral call extraction via tree-sitter, enriches embedding text (code-raptor) |
-| V2.2 Intent Classification | 1-2 days | Declarative keyword rules, `QueryIntent` enum (portfolio-rag-chat) |
-| V2.3 Query Routing | 1-2 days | `RoutingTable` HashMap maps intent → `RetrievalConfig` (portfolio-rag-chat) |
-| V2.4 Retrieval Traces | 1-2 days | `ScoredChunk<T>`, all chunk types as sources, relevance scores (both crates) |
+| V2.2 Intent Classification + Query Routing | 1-2 days | Declarative keyword rules, `QueryIntent` enum, `RoutingTable` HashMap (portfolio-rag-chat) |
+| V2.3 Retrieval Traces | 1-2 days | `ScoredChunk<T>`, all chunk types as sources, relevance scores (both crates) |
 
 ### V2 Architecture Decisions
 
 - **Calls are ephemeral**: `extract_calls()` returns `Vec<String>` alongside the parser fold tuple. Calls enrich embedding text via `format_code_for_embedding(id, lang, doc, code, calls)`, then are discarded. No `CodeChunk` struct change, no LanceDB schema change.
-- **V2.2 + V2.3 share `engine/intent.rs`**: Classification produces `QueryIntent`; routing maps it to `RetrievalConfig` via `RoutingTable`. Tightly coupled by design — one module, two functions.
+- **V2.2 classification + routing share `engine/intent.rs`**: Classification produces `QueryIntent`; routing maps it to `RetrievalConfig` via `RoutingTable`. Tightly coupled by design — one module, two functions.
 - **Retriever stays intent-agnostic**: Handlers classify → route → pass `RetrievalConfig` to `retrieve()`. SoC preserved.
 - **`ScoredChunk<T>` wrapper**: `RetrievalResult` wraps all chunks with relevance scores. Distance → relevance conversion happens once in the retriever.
 - **Breaking `ChatResponse` API**: `SourceInfo` redesigned with `chunk_type`, `path`, `label`, `relevance`. All 4 chunk types surfaced, sorted by relevance. Acceptable pre-v1.0.
@@ -326,20 +324,20 @@ For portfolio demonstrations, hirers ask architecture questions first:
 
 **Crates affected:** code-raptor (`language.rs`, `languages/*.rs`, `parser.rs`, `mod.rs`, `main.rs`), coderag-store (`embedder.rs`)
 
-### V2.2: Basic Intent Classification
-- Declarative keyword rules (`IntentRule` structs), evaluated in specificity order
+### V2.2: Intent Classification + Query Routing [COMPLETE]
+- Embedding-based classification: cosine similarity against pre-computed prototype query embeddings
+- `IntentClassifier` built at startup (~200ms), holds `HashMap<QueryIntent, Vec<Vec<f32>>>` prototypes
 - `QueryIntent` enum: `Overview`, `Implementation`, `Relationship`, `Comparison`
 - Default fallback: `Implementation` (most common code question type)
-- `ClassificationResult` includes `match_count` as weak confidence signal
-- **Crate:** portfolio-rag-chat
-
-### V2.3: Query Routing
+- `ClassificationResult` includes `confidence: f32` (cosine similarity score)
+- Embed-once pipeline: query embedding reused for both classification and retrieval
+- `retrieve()` takes `&[f32]` directly — no re-embedding, Mutex held ~5ms not ~50ms
 - `RoutingTable`: `HashMap<QueryIntent, RetrievalConfig>` with default fallback
-- Overview → code:2, readme:3, crate:4, module_doc:3
-- Implementation → code:7, readme:1, crate:1, module_doc:2
+- code_limit fixed at 5 across all intents; differentiation in supplementary context only
+- `EngineConfig.intent` removed; classifier lives in `AppState` as peer of `EngineConfig`
 - **Crate:** portfolio-rag-chat
 
-### V2.4: Retrieval Traces
+### V2.3: Retrieval Traces
 - Extract `_distance` from LanceDB, convert to relevance: `1.0 / (1.0 + distance)`
 - `ScoredChunk<T>` generic wrapper pairs each chunk with relevance score
 - Redesigned `SourceInfo`: `chunk_type`, `path`, `label`, `project`, `relevance`, `line`
@@ -672,9 +670,8 @@ Independent track. Can run in parallel with Track A and B.
 | TypeScript support (V1.4) | code-raptor |
 | Docstring extraction (V1.5) | code-raptor |
 | Inline call context (V2.1) | code-raptor |
-| Intent classification (V2.2) | portfolio-rag-chat |
-| Query routing (V2.3) | portfolio-rag-chat |
-| Retrieval traces (V2.4) | portfolio-rag-chat |
+| Intent classification + query routing (V2.2) | portfolio-rag-chat |
+| Retrieval traces (V2.3) | portfolio-rag-chat |
 | Quality harness (V3) | portfolio-rag-chat |
 | Docstring generation | code-raptor |
 | Hierarchical embeddings | code-raptor |

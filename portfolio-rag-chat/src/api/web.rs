@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use crate::api::dto::SourceInfo;
 use crate::api::state::AppState;
-use crate::engine::{context, generator, retriever};
+use crate::engine::{context, generator, intent, retriever};
 
 /// Helper to render templates into axum responses
 fn render_template<T: Template>(template: &T) -> Response {
@@ -56,21 +56,38 @@ pub async fn chat_html(State(state): State<Arc<AppState>>, Form(form): Form<Chat
         return Html("<div class=\"message assistant\"><div class=\"message-content\"><strong>Assistant:</strong><p>Please enter a question.</p></div></div>".to_string()).into_response();
     }
 
-    // Retrieve relevant chunks
-    let result = {
+    // Embed query once (lock held ~5ms only)
+    let query_embedding = {
         let mut embedder = state.embedder.lock().await;
-        match retriever::retrieve(&query, &mut embedder, &state.store, &state.config.retrieval)
-            .await
-        {
-            Ok(r) => r,
+        match embedder.embed_one(&query) {
+            Ok(emb) => emb,
             Err(e) => {
-                tracing::error!("Retrieval error: {}", e);
+                tracing::error!("Embedding error: {}", e);
                 return Html(format!(
                     "<div class=\"message user\"><div class=\"message-content\"><strong>You:</strong><p>{}</p></div></div>\
-                     <div class=\"message assistant\"><div class=\"message-content\"><strong>Assistant:</strong><p>Sorry, I encountered an error retrieving context.</p></div></div>",
+                     <div class=\"message assistant\"><div class=\"message-content\"><strong>Assistant:</strong><p>Sorry, I encountered an error processing your query.</p></div></div>",
                     query
                 )).into_response();
             }
+        }
+    };
+
+    // Classify using prototype similarity (no lock needed)
+    let classification = intent::classify(&query_embedding, &state.classifier);
+    let retrieval_config = intent::route(classification.intent, &state.config.routing);
+    tracing::info!(intent = ?classification.intent, confidence = classification.confidence, "query classified");
+
+    // Retrieve with pre-computed embedding (no re-embedding)
+    let result = match retriever::retrieve(&query_embedding, &state.store, &retrieval_config).await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("Retrieval error: {}", e);
+            return Html(format!(
+                "<div class=\"message user\"><div class=\"message-content\"><strong>You:</strong><p>{}</p></div></div>\
+                 <div class=\"message assistant\"><div class=\"message-content\"><strong>Assistant:</strong><p>Sorry, I encountered an error retrieving context.</p></div></div>",
+                query
+            )).into_response();
         }
     };
 

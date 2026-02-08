@@ -1,5 +1,111 @@
 # Development Log
 
+## 2026-02-08: V2.2 Intent Classification + Query Routing (V2 Phase 2)
+
+### Summary
+
+Embedding-based intent classification with query routing. Replaced initial keyword-based classifier with cosine-similarity classification against pre-computed prototype query embeddings. Restructured the handler pipeline to embed once and reuse the vector for both classification and retrieval, reducing Mutex hold time from ~50ms to ~5ms.
+
+**Iteration history:** Initially implemented with keyword heuristics (substring matching). Discovered regression — Overview's `code_limit: 2` starved code chunks, causing wrong answers. Fixed code_limit to 5 across all intents, then upgraded classification mechanism from keywords to embeddings.
+
+### Architecture
+
+```
+User Query
+    │
+    ▼
+lock embedder
+    embed_one(query)                         ← ~5ms, produces Vec<f32> (384-dim)
+unlock embedder
+    │
+    ▼
+intent::classify(query_vec, &IntentClassifier)  ← cosine similarity vs prototype embeddings
+    │
+    ▼
+ClassificationResult { intent, confidence: f32 }
+    │
+    ▼
+intent::route(intent, &RoutingTable)          ← HashMap lookup, fallback to default
+    │
+    ▼
+RetrievalConfig { code_limit, readme_limit, crate_limit, module_doc_limit }
+    │
+    ▼
+retriever::retrieve(query_vec, store, &config)   ← pure vector search, no re-embedding
+```
+
+Three wins from the restructure:
+1. **Semantic classification** — cosine similarity against prototype embeddings, not substring matching
+2. **Mutex held ~5ms** — down from ~50ms+ (embedding was inside retriever)
+3. **Retriever is pure search** — takes `&[f32]`, no `&mut Embedder` dependency
+
+### Changes
+
+| File | Change |
+|------|--------|
+| `src/engine/intent.rs` | Removed `IntentRule`, `IntentConfig`, keyword `classify()`. Added `IntentClassifier` (prototype embeddings), `cosine_similarity()`, prototype constants, embedding-based `classify()`. 17 tests (4 cosine + 5 routing + 1 serialization + 7 embedding). |
+| `src/engine/config.rs` | Removed `intent: IntentConfig` field. `EngineConfig` now contains only `routing: RoutingTable`. `#[derive(Default)]`. |
+| `src/engine/retriever.rs` | Signature: `(&[f32], &VectorStore, &RetrievalConfig)` instead of `(&str, &mut Embedder, &VectorStore, &RetrievalConfig)`. Removed internal embed step. |
+| `src/api/state.rs` | Added `classifier: IntentClassifier` to `AppState`. Built at startup before Mutex wraps embedder. |
+| `src/api/handlers.rs` | Embed once → classify → route → retrieve pipeline. Mutex held only for `embed_one()`. |
+| `src/api/web.rs` | Same pipeline restructure with `match`-based error handling for embed_one. |
+
+### Classification Mechanism
+
+**Prototype queries** — ~5-6 static `&str` per intent, embedded at startup (~200ms one-time cost):
+
+| Intent | Prototype examples |
+|--------|-------------------|
+| Overview | "What is this project?", "Give me an overview", "What is the architecture?" |
+| Implementation | "How does this function work?", "Show me the implementation" |
+| Relationship | "What calls this function?", "What depends on this?" |
+| Comparison | "Compare A and B", "What are the differences between X and Y?" |
+
+**Algorithm:** For each intent, compute max cosine similarity between query embedding and that intent's prototype embeddings. Highest max wins. Threshold 0.3 — below this, falls back to Implementation default.
+
+**Advantage over keywords:** "Explain how the retriever implements caching" — keywords would match "explain" → Overview. Embedding similarity correctly classifies as Implementation.
+
+### Routing Table
+
+| Intent | code | readme | crate | module_doc | Total |
+|--------|------|--------|-------|------------|-------|
+| Overview | 5 | 3 | 3 | 3 | 14 |
+| Implementation | 5 | 1 | 1 | 2 | 9 |
+| Relationship | 5 | 1 | 2 | 2 | 10 |
+| Comparison | 5 | 2 | 3 | 2 | 12 |
+| Default | 5 | 2 | 3 | 3 | 13 |
+
+`code_limit` fixed at 5 across all intents. Differentiation in supplementary context only. Revisit once V3 quality harness measures recall@5 per intent.
+
+### Key Design Decisions
+
+1. **Embed once, reuse everywhere**: Query embedding computed once in handler, passed to both `classify()` and `retrieve()`. Eliminates redundant embedding inside retriever.
+2. **`IntentClassifier` as runtime object**: Holds `Vec<Vec<f32>>` prototypes. Requires `&mut Embedder` to construct → lives in `AppState`, not `EngineConfig`.
+3. **Retriever becomes pure search**: `retrieve()` takes `&[f32]`, no longer owns embedding responsibility. SoC improved.
+4. **Prototype queries as static data**: Same declarative pattern as keywords — `&[&str]` constants, not if-else chains.
+5. **`confidence: f32`** replaces `match_count: usize`: Cosine similarity score enables future threshold tuning and analytics.
+
+### Test Results
+
+All 19 unconditional tests pass (8 ignored):
+- engine::intent: 4 cosine similarity + 5 routing + 1 serialization (unconditional)
+- engine::intent: 7 embedding classification tests (`#[ignore]`, require model download) — all pass
+- engine::context: 9 tests (existing, unchanged)
+- engine::generator: 1 test (ignored, requires GEMINI_API_KEY)
+
+Key regression test: `test_classify_paraphrase_implementation` — "Explain how the retriever implements caching" → Implementation (not Overview). This would FAIL with keyword matching.
+
+### What This Enables
+
+- Semantic understanding of query intent, not brittle substring matching
+- Paraphrased queries classify correctly (the key weakness of keywords)
+- Confidence scores for future analytics and multi-intent exploration
+- Foundation for V3 quality harness correlation: do high-confidence classifications produce better recall?
+
+**Crate:** portfolio-rag-chat
+
+---
+
 ## 2026-02-07: V2.1 Inline Call Context (V2 Phase 1)
 
 ### Summary

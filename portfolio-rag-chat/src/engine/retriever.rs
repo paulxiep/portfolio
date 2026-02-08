@@ -1,5 +1,5 @@
 use crate::models::{CodeChunk, CrateChunk, ModuleDocChunk, ReadmeChunk};
-use crate::store::{Embedder, VectorStore};
+use crate::store::VectorStore;
 
 use super::EngineError;
 use super::config::RetrievalConfig;
@@ -13,22 +13,15 @@ pub struct RetrievalResult {
     pub module_doc_chunks: Vec<ModuleDocChunk>,
 }
 
-/// 1. Embed the query text
-/// 2. Search vector store for similar chunks
-/// 3. Return structured results
+/// Search vector store for similar chunks using a pre-computed query embedding.
 pub async fn retrieve(
-    query: &str,
-    embedder: &mut Embedder,
+    query_embedding: &[f32],
     store: &VectorStore,
     config: &RetrievalConfig,
 ) -> Result<RetrievalResult, EngineError> {
-    // Embed the query
-    let query_embedding = embedder.embed_one(query)?;
-
-    // Search all tables
     let (code_chunks, readme_chunks, crate_chunks, module_doc_chunks) = store
         .search_all(
-            &query_embedding,
+            query_embedding,
             config.code_limit,
             config.readme_limit,
             config.crate_limit,
