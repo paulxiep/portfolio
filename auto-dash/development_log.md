@@ -1,5 +1,113 @@
 # Development Log
 
+## 2026-02-08: MVP.4 Data Exploration
+
+### Summary
+Implemented the data exploration module (`autodash/explorer.py`). Accepts an `AnalysisStep` and a DataFrame, uses an LLM to generate pandas code, executes it in the subprocess sandbox with retry (up to 3 attempts), normalizes the result, and produces an `InsightResult` containing the computed DataFrame, a template-based summary, and the generated code. This is the second LLM-calling node in the pipeline and the first to use the subprocess sandbox for code execution. Also created the shared sandbox execution pattern that MVP.6 (renderer) will reuse.
+
+### Architecture
+
+```
+                   ┌──────────┐   ┌──────────┐
+                   │  MVP.2   │   │  MVP.3   │
+                   │  data.py │   │ planner  │
+                   └────┬─────┘   └────┬─────┘
+                        │ DataFrame     │ AnalysisStep
+                        └───────┬───────┘
+                                ▼
+                         ┌─────────────┐       ┌──────────────────┐
+                         │   MVP.4     │──────▶│ plotlint/core/   │
+                         │ explorer.py │       │  sandbox.py      │
+                         └──────┬──────┘       └──────────────────┘
+                                │                            ▲
+                                │ InsightResult       reused by │
+                                ▼                              │
+                         ┌─────────────┐       ┌─────────────┐
+                         │   MVP.5     │       │   MVP.6     │
+                         │  charts.py  │       │ renderer.py │
+                         └─────────────┘       └─────────────┘
+
+explorer.py internals (SoC):
+
+    _exploration_profile_summary()  ← format profile with pandas dtypes
+          │
+    _step_details()                 ← serialize AnalysisStep fields
+          │
+    build_exploration_prompt()      ← assemble full user prompt (+ error context on retry)
+          │
+    explore_step()                  ← orchestrate: prompt → LLM → parse → sandbox → normalize (async)
+          │
+    ├── parse_code_from_response()  ← reused from plotlint.core.parsing
+    ├── execute_code()              ← reused from plotlint.core.sandbox
+    ├── _normalize_result()         ← DataFrame/Series/scalar → DataFrame
+    └── summarize_result()          ← template-based summary
+```
+
+### New / Modified Files
+
+| File | Purpose |
+|------|---------|
+| `autodash/explorer.py` | **New.** Core exploration logic: `_exploration_profile_summary`, `_step_details`, `build_exploration_prompt`, `_normalize_result`, `summarize_result`, `explore_step` |
+| `autodash/prompts/data_exploration.py` | **New.** `SYSTEM_PROMPT`, `ERROR_RETRY_BLOCK`, `build_user_prompt()` — prompt templates separated from logic |
+| `autodash/pipeline.py` | **Modified.** Replaced `explore_node` stub with closure factory `_make_explore_node(config, llm_client)`. Fallback `explore_node` returns error dict when no LLM client. Re-loads DataFrame from `source_path` to keep state serializable |
+| `tests/test_explorer.py` | **New.** 25 tests: profile summary (5), step details (3), prompt construction (5), result normalization (8), summarization (4), async integration with MockLLMClient (10 — success, retry, failure, edge cases) |
+| `tests/test_explorer_prompts.py` | **New.** 8 tests: template content, placeholder coverage, assembly |
+| `tests/test_pipeline_graph.py` | **Modified.** Updated `test_explore_stub` → `test_explore_fallback_returns_error` |
+
+### Explore Step Retry Flow
+
+`explore_step(step, df, profile, llm_client, max_attempts=3)`:
+
+```
+for attempt in 1..max_attempts:
+  1. Build prompt (+ error context if retry)
+  2. LLM generates pandas code
+  3. Parse code from response (parse_code_from_response)
+  4. Execute in sandbox (inject_globals={"df": df})
+  5. Check result:
+     - SUCCESS + __result__ set     → normalize → summarize → return InsightResult
+     - SUCCESS + __result__ missing → retry with "assign to __result__" hint
+     - RUNTIME_ERROR/SYNTAX_ERROR   → retry with error message + failed code
+     - CODE_PARSE_FAILURE           → retry with raw response snippet
+  6. LLM call failure → raise immediately (LLMClient has its own retries)
+
+All attempts exhausted → raise ExplorationError
+```
+
+### Key Design Decisions
+
+1. **Closure factory for explore node**: `_make_explore_node(config, llm_client)` follows the precedent set by `_make_plan_node` in MVP.3. Captures dependencies via closure for LangGraph's `(state) -> dict` node signature.
+
+2. **DataFrame re-loaded from `source_path`**: The explore node calls `load_dataframe(Path(source_path))` rather than carrying the DataFrame in `PipelineState`. Keeps state serializable for LangGraph checkpointing (DI-4.2). Double I/O is negligible for MVP-scale data.
+
+3. **Template-based summarization**: `summarize_result()` uses string formatting, not an LLM call. Cheaper, faster, deterministic, and sufficient for MVP since MVP.5 uses `InsightResult.to_prompt_context()` (shape + sample data) for chart planning context. DI-1.2 can wrap with LLM summarization without modifying `explore_step`.
+
+4. **Result normalization accepts Series and scalars**: `_normalize_result()` converts `pd.Series` → `.to_frame()` and scalars → 1x1 DataFrame. LLMs frequently produce Series from `groupby().agg()` and scalar from `.sum()`. Unsupported types raise `ExplorationError`.
+
+5. **`previous_code` in retry prompt**: Added beyond the spec's function signature. The spec's pitfall #5 explicitly requires the failed code in retry context so the LLM avoids repeating the same mistake. `ERROR_RETRY_BLOCK` template includes `{error_type}`, `{error_message}`, and `{previous_code}`.
+
+6. **Per-module profile summary**: `_exploration_profile_summary()` includes pandas dtypes (not just semantic types) because the LLM needs correct dtype information for pandas code generation. Different emphasis from `_profile_summary()` in planner.py which focuses on semantic types and stats for analysis choice.
+
+7. **LLM failure is not retried in the explore loop**: The `LLMClient` protocol implementations already have retry logic (`max_retries` with exponential backoff in `AnthropicClient`/`GeminiClient`). Retrying at the explore level would create double-retry. Only code execution failures trigger the retry loop.
+
+8. **Sandbox remains pandas-agnostic**: The explorer passes the DataFrame via `inject_globals={"df": df}`. The sandbox pickles and unpickles it without knowing it's a DataFrame. No pandas-specific logic in `sandbox.py` (spec pitfall #1).
+
+### Test Results
+
+All 202 tests pass (9.34s):
+- `test_explorer.py`: 25 tests (profile summary, step details, prompt construction, normalization, summarization, integration)
+- `test_explorer_prompts.py`: 8 tests (template content, placeholders, assembly)
+- Previous MVP.1 + MVP.2 + MVP.3 tests: all still passing (169 tests)
+
+### Unblocks
+
+- **MVP.5** (Chart Planning): Consumes `InsightResult`. `to_prompt_context()` provides shape, columns, summary, and sample data for chart type selection and code generation prompts.
+- **MVP.6** (Renderer): Reuses `plotlint/core/sandbox.py` — the `execute_code()` function with `inject_globals` pattern is now proven end-to-end.
+- **DI-1.2** (Agent loop exploration): `explore_step()` handles one step. DI-1.2 iterates over `list[AnalysisStep]` and calls it for each. Retry/review loop can be extended by wrapping `explore_step()`.
+- **DI-1.2** (LLM summarization): Replace `summarize_result()` call without modifying `explore_step`.
+
+**Packages:** autodash
+
 ## 2026-02-08: MVP.3 Analysis Planning
 
 ### Summary

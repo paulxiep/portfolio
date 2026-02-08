@@ -89,8 +89,84 @@ def _make_plan_node(config: Any, llm_client: Any):
 
 
 async def explore_node(state: PipelineState) -> dict:
-    """Node: Execute analysis and produce insights (MVP.4). Stub."""
-    return {}
+    """Fallback explore node when no LLM client is configured."""
+    return {"errors": state.get("errors", []) + ["No LLM client configured for exploration"]}
+
+
+def _make_explore_node(config: Any, llm_client: Any):
+    """Create an explore node that captures config and llm_client via closure.
+
+    Matches the closure factory pattern used by _make_plan_node.
+    The node re-loads the DataFrame from source_path because PipelineState
+    does not carry the raw DataFrame (keeping state serializable).
+    """
+    if llm_client is None:
+        return explore_node
+
+    async def _explore_node(state: PipelineState) -> dict:
+        """Node: Execute analysis steps and produce insights (MVP.4)."""
+        from pathlib import Path
+
+        from autodash.data import load_dataframe
+        from autodash.explorer import explore_step
+
+        profile = state.get("data_profile")
+        steps = state.get("analysis_steps", [])
+        source_path = state.get("source_path")
+
+        if not profile:
+            return {
+                "errors": state.get("errors", []) + [
+                    "No data_profile available for exploration"
+                ]
+            }
+
+        if not steps:
+            return {
+                "errors": state.get("errors", []) + [
+                    "No analysis_steps available for exploration"
+                ]
+            }
+
+        if not source_path:
+            return {
+                "errors": state.get("errors", []) + [
+                    "No source_path available for exploration"
+                ]
+            }
+
+        try:
+            df, _ = load_dataframe(Path(source_path))
+        except Exception as e:
+            return {
+                "errors": state.get("errors", []) + [
+                    f"Failed to reload data for exploration: {e}"
+                ]
+            }
+
+        max_attempts = config.max_exploration_attempts if config else 3
+
+        insights: list = []
+        errors: list = list(state.get("errors", []))
+        for step in steps:
+            try:
+                insight = await explore_step(
+                    step=step,
+                    df=df,
+                    profile=profile,
+                    llm_client=llm_client,
+                    max_attempts=max_attempts,
+                )
+                insights.append(insight)
+            except Exception as e:
+                errors.append(f"Exploration failed for step '{step.description}': {e}")
+
+        result: dict = {"insights": insights}
+        if errors != list(state.get("errors", [])):
+            result["errors"] = errors
+        return result
+
+    return _explore_node
 
 
 async def chart_node(state: PipelineState) -> dict:
@@ -126,7 +202,7 @@ def build_pipeline_graph(
 
     graph.add_node("load", load_node)
     graph.add_node("plan", _make_plan_node(config, llm_client))
-    graph.add_node("explore", explore_node)
+    graph.add_node("explore", _make_explore_node(config, llm_client))
     graph.add_node("chart", chart_node)
     graph.add_node("comply", comply_node)
     graph.add_node("output", output_node)
