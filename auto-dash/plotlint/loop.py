@@ -4,12 +4,11 @@ Graph topology:
     render -> inspect -> decide
                             ├── "patch" -> patch -> render (loop back)
                             └── "stop"  -> END
-
-Stub nodes return empty dicts. Real implementations replace them in MVP.6-8.
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Optional
 
 from langgraph.graph import StateGraph, START, END
@@ -17,14 +16,33 @@ from langgraph.graph.state import CompiledStateGraph
 
 from plotlint.config import ConvergenceConfig
 from plotlint.models import ConvergenceState
+from plotlint.renderer import Renderer
 
 
-async def render_node(state: ConvergenceState) -> dict:
-    """Stub: Execute chart code and capture figure + PNG.
+def _make_render_node(renderer: Renderer):
+    """Create a render node that closes over a Renderer instance.
 
-    Replaced by real implementation in MVP.6.
+    Follows the same factory pattern as _make_should_continue(config).
+    asyncio.to_thread keeps the event loop non-blocking while the
+    subprocess renders.
     """
-    return {}
+
+    async def render_node(state: ConvergenceState) -> dict:
+        """Execute chart code and capture figure + PNG."""
+        code = state.get("source_code", "")
+        result = await asyncio.to_thread(renderer.render, code)
+        if result.succeeded:
+            return {
+                "png_bytes": result.png_bytes,
+                "figure_pickle": result.figure_data,
+                "render_error": None,
+            }
+        return {
+            "render_error": result.error_message
+            or f"Render failed: {result.status.value}",
+        }
+
+    return render_node
 
 
 async def inspect_node(state: ConvergenceState) -> dict:
@@ -108,9 +126,14 @@ def build_convergence_graph(
 
     Returns a compiled StateGraph ready to invoke.
     """
+    if bundle is None:
+        from plotlint.renderer import matplotlib_bundle
+
+        bundle = matplotlib_bundle()
+
     graph = StateGraph(ConvergenceState)
 
-    graph.add_node("render", render_node)
+    graph.add_node("render", _make_render_node(bundle.renderer))
     graph.add_node("inspect", inspect_node)
     graph.add_node("patch", patch_node)
 

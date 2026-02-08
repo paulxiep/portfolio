@@ -8,9 +8,9 @@ from plotlint.loop import (
     build_convergence_graph,
     inspect_node,
     patch_node,
-    render_node,
 )
 from plotlint.models import ConvergenceState
+from plotlint.renderer import matplotlib_bundle
 
 
 class TestGraphTopology:
@@ -26,13 +26,13 @@ class TestGraphTopology:
         graph = build_convergence_graph()
         assert graph is not None
 
+    def test_graph_with_explicit_bundle(self):
+        bundle = matplotlib_bundle(dpi=150, timeout_seconds=10)
+        graph = build_convergence_graph(bundle=bundle)
+        assert graph is not None
+
 
 class TestStubPassthrough:
-    @pytest.mark.asyncio
-    async def test_render_stub_returns_empty(self):
-        result = await render_node({})
-        assert result == {}
-
     @pytest.mark.asyncio
     async def test_inspect_stub_returns_empty(self):
         result = await inspect_node({})

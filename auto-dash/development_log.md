@@ -1,5 +1,124 @@
 # Development Log
 
+## 2026-02-08: MVP.6 Renderer (matplotlib Sandbox)
+
+### Summary
+Implemented the matplotlib renderer (`plotlint/renderer.py`). Defines a `Renderer` protocol for chart renderers, a `MatplotlibRenderer` that executes chart code in a subprocess sandbox with Agg backend, captures the rendered Figure object (pickled) and PNG bytes, and returns a `RenderResult`. Wired the real `render_node` into the convergence loop, replacing the MVP.1 stub. The renderer reuses `plotlint/core/sandbox.py` for subprocess isolation — no separate worker script needed. The `RendererBundle` stub from MVP.1 is now functional with typed `Renderer` field and a working `matplotlib_bundle()` factory.
+
+### Architecture
+
+```
+                     ┌──────────┐
+                     │  MVP.5   │
+                     │ charts.py│  ChartPlan.code
+                     └────┬─────┘
+                          │ source_code (str)
+                          ▼
+                   ┌─────────────┐       ┌──────────────────┐
+                   │   MVP.6     │──────▶│ plotlint/core/   │
+                   │ renderer.py │       │  sandbox.py      │
+                   └──────┬──────┘       └──────────────────┘
+                          │ RenderResult
+                          │  ├─ png_bytes
+                          │  ├─ figure_data (pickled Figure)
+                          │  └─ status
+                          ▼
+                   ┌─────────────┐
+                   │   MVP.7     │
+                   │  inspector  │  unpickles Figure for bbox extraction
+                   └─────────────┘
+
+renderer.py internals (SoC):
+
+    Renderer (Protocol)              ← interface for all renderers
+          │
+    MatplotlibRenderer               ← concrete implementation
+    ├── render(code) → RenderResult  ← public API
+    ├── _prepare_worker_code(code)   ← wraps user code with Agg + figure capture
+    └── _to_render_result(exec)      ← maps ExecutionResult → RenderResult
+          │
+    RendererBundle                   ← pairs Renderer + Extractor
+    matplotlib_bundle()              ← factory function
+```
+
+### New / Modified Files
+
+| File | Purpose |
+|------|---------|
+| `plotlint/renderer.py` | **Rewritten.** `Renderer` protocol, `MatplotlibRenderer` dataclass, `_STATUS_MAP`, `RendererBundle` (typed `renderer` field), `matplotlib_bundle()` factory |
+| `plotlint/loop.py` | **Modified.** Replaced `render_node` stub with `_make_render_node(renderer)` factory. `build_convergence_graph()` now creates default `matplotlib_bundle()` when no bundle provided. Added `asyncio.to_thread` for non-blocking subprocess execution |
+| `tests/test_renderer.py` | **New.** 22 tests: protocol conformance (2), successful rendering (6), figure integrity + bbox thesis (4), error handling (5), monkey-patching safety (2), DPI validation (1), bundle construction (2) |
+| `tests/test_convergence_graph.py` | **Modified.** Removed `test_render_stub_returns_empty`. Added `test_graph_with_explicit_bundle` |
+
+### Code Wrapping Strategy
+
+`_prepare_worker_code(user_code)` sandwiches user code between a preamble and postamble:
+
+**Preamble** (before user code):
+- `matplotlib.use('Agg')` — force headless backend before any matplotlib import
+- `plt.show = lambda: None` — prevent blocking (defensive, no-op on Agg)
+- `plt.close = lambda: None` — prevent figure loss before capture
+
+**Postamble** (after user code):
+- `fig = plt.gcf()` — get current figure
+- Guard: `if not fig.get_axes()` → `__result__ = {"status": "no_figure"}`
+- `fig.set_dpi(dpi)` — standardize DPI
+- `pickle.dumps(fig)` → figure bytes
+- `fig.savefig(buf, format='png', dpi=dpi)` → PNG bytes (no `bbox_inches='tight'`)
+- Set `__result__` dict → captured by sandbox's `_WORKER_TEMPLATE`
+
+Preamble and postamble are `textwrap.dedent`'ed separately from user code to avoid indentation conflicts with multi-line user code.
+
+### ExecutionResult → RenderResult Mapping
+
+Declarative `_STATUS_MAP` dict maps sandbox statuses to render statuses:
+
+| ExecutionStatus | RenderStatus | Meaning |
+|----------------|-------------|---------|
+| `SUCCESS` + `__result__["status"]=="success"` | `SUCCESS` | Chart rendered, PNG + Figure captured |
+| `SUCCESS` + `__result__["status"]=="no_figure"` | `NO_FIGURE` | Code ran but no axes created |
+| `SUCCESS` + `return_value is None` | `RUNTIME_ERROR` | Wrapper failed to set `__result__` |
+| `SYNTAX_ERROR` | `SYNTAX_ERROR` | Code has syntax error |
+| `RUNTIME_ERROR` | `RUNTIME_ERROR` | Exception during execution |
+| `TIMEOUT` | `TIMEOUT` | Exceeded `timeout_seconds` |
+| `IMPORT_ERROR` | `IMPORT_ERROR` | Missing module |
+
+### Key Design Decisions
+
+1. **Reuse `sandbox.execute_code()` with code wrapping**: The spec suggested a separate `_render_worker.py` subprocess script. Instead, `_prepare_worker_code()` wraps user code with matplotlib instrumentation and passes the wrapped code to the existing sandbox. This reuses all of sandbox's infrastructure (temp-file IPC, timeout, error categorization, cleanup) without duplication. SoC is maintained by composition: sandbox handles process isolation, renderer handles matplotlib specifics.
+
+2. **Factory pattern for `render_node`**: `_make_render_node(renderer)` follows the established `_make_should_continue(config)` closure pattern. The renderer instance is injected at graph construction time via `build_convergence_graph(bundle=...)`. OCP: passing a different bundle (future Plotly) requires no changes to `loop.py`.
+
+3. **Sync `Renderer` protocol, async `render_node`**: The `Renderer.render()` method is synchronous — simpler interface, portable across contexts. The convergence loop's `render_node` wraps it in `asyncio.to_thread()` to avoid blocking the event loop. Async is the loop's concern, not the renderer's.
+
+4. **No `bbox_inches='tight'`**: Using fixed figsize/dpi means PNG pixel dimensions = `figsize_inches * dpi`, making coordinate mapping to MVP.7's bounding boxes predictable. `bbox_inches='tight'` would alter dimensions and break the mapping.
+
+5. **Defensive monkey-patching of `plt.show`/`plt.close`**: Even though LLM-generated code (from MVP.5) shouldn't call these, the wrapper neutralizes them to prevent subtle figure loss. Low cost, prevents a class of hard-to-debug failures.
+
+6. **`extractor=None` in `matplotlib_bundle()`**: MVP.7 will provide the real `MatplotlibExtractor`. Acceptable because MVP.6 doesn't use the extractor field, and the factory signature won't change when MVP.7 adds it.
+
+7. **`matplotlib.use('Agg')` in test module**: Unpickling a matplotlib Figure in the test process triggers backend initialization. Without forcing Agg, the default TkAgg backend tries to create a Tk window, which fails in headless/CI environments.
+
+### Test Results
+
+All 313 tests pass (20.75s):
+- `test_renderer.py`: 22 tests (protocol, rendering, figure integrity, bbox thesis, errors, monkey-patching, DPI, bundle)
+- `test_convergence_graph.py`: 13 tests (topology, stubs, stop conditions, explicit bundle)
+- Previous MVP.1 + MVP.2 + MVP.3 + MVP.4 + MVP.5 tests: all still passing (278 tests)
+
+### Core Thesis Validation
+
+`test_bbox_thesis` proves the fundamental plotlint approach works: after rendering in a subprocess and unpickling the Figure, `fig.canvas.draw()` → `ax.get_xticklabels()[0].get_window_extent(renderer)` returns non-degenerate bounding boxes. This confirms that MVP.7's element extraction strategy (walking the artist tree for bboxes) is viable.
+
+### Unblocks
+
+- **MVP.7** (Inspector): Receives `RenderResult.figure_data` — pickled Figure with intact artist tree. Unpickle → `fig.canvas.draw()` → extract bboxes. `RendererBundle.extractor` field is ready for `MatplotlibExtractor`.
+- **MVP.8** (Patcher): Render errors populate `ConvergenceState.render_error`, triggering stop condition. Patched code re-enters `render_node` on the next iteration.
+- **PL-1.5** (Convergence GIF): `RenderResult.png_bytes` captured at each iteration. GIF generator reads from `ConvergenceState.png_bytes` history.
+- **PL-1.6** (Plotly): Implement `Renderer` protocol with Playwright backend. `RendererBundle` and convergence loop are renderer-agnostic — no modifications needed.
+
+**Packages:** plotlint
+
 ## 2026-02-08: MVP.5 Chart Planning + Code Generation
 
 ### Summary
