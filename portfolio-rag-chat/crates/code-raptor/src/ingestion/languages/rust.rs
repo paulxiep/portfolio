@@ -1,5 +1,5 @@
 use super::super::language::LanguageHandler;
-use tree_sitter::{Language, Node};
+use tree_sitter::{Language, Node, TreeCursor};
 
 pub struct RustHandler;
 
@@ -93,12 +93,83 @@ impl LanguageHandler for RustHandler {
             Some(doc_lines.join("\n"))
         }
     }
+
+    fn extract_calls(&self, _source: &str, node: &Node, source_bytes: &[u8]) -> Vec<String> {
+        let mut calls = Vec::new();
+        let mut cursor = node.walk();
+        collect_calls_recursive(&mut cursor, source_bytes, &mut calls);
+        calls.sort();
+        calls.dedup();
+        calls
+    }
+}
+
+/// Walk tree-sitter AST collecting call identifiers.
+/// Rust call expressions:
+/// - Direct: `call_expression > function: identifier` → `foo()`
+/// - Method: `call_expression > function: field_expression > field: field_identifier` → `self.bar()`
+fn collect_calls_recursive(cursor: &mut TreeCursor, source_bytes: &[u8], calls: &mut Vec<String>) {
+    let node = cursor.node();
+
+    if node.kind() == "call_expression"
+        && let Some(func) = node.child_by_field_name("function")
+    {
+        match func.kind() {
+            "identifier" => {
+                if let Ok(name) = func.utf8_text(source_bytes) {
+                    calls.push(name.to_string());
+                }
+            }
+            "field_expression" => {
+                if let Some(field) = func.child_by_field_name("field")
+                    && let Ok(name) = field.utf8_text(source_bytes)
+                {
+                    calls.push(name.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if cursor.goto_first_child() {
+        collect_calls_recursive(cursor, source_bytes, calls);
+        while cursor.goto_next_sibling() {
+            collect_calls_recursive(cursor, source_bytes, calls);
+        }
+        cursor.goto_parent();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ingestion::parser::CodeAnalyzer;
+
+    /// Helper: parse source with RustHandler, extract calls from first body node
+    fn extract_calls_from(source: &str) -> Vec<String> {
+        let handler = RustHandler;
+        let mut parser = tree_sitter::Parser::new();
+        let grammar = handler.grammar();
+        parser.set_language(&grammar).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+
+        let query = tree_sitter::Query::new(&grammar, handler.query_string()).unwrap();
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let body_idx = query.capture_index_for_name("body");
+
+        let source_bytes = source.as_bytes();
+        let mut matches = cursor.captures(&query, tree.root_node(), source_bytes);
+        use tree_sitter::StreamingIterator;
+        if let Some((m, _)) = matches.next() {
+            if let Some(body) = m.captures.iter().find(|c| Some(c.index) == body_idx) {
+                handler.extract_calls(source, &body.node, source_bytes)
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        }
+    }
 
     /// Helper: parse source with RustHandler, extract docstring from first body node
     fn extract_doc(source: &str) -> Option<String> {
@@ -164,15 +235,47 @@ mod tests {
         assert_eq!(doc, None);
     }
 
+    // V2.1: Call extraction tests
+
+    #[test]
+    fn test_rust_extract_calls_simple() {
+        let calls = extract_calls_from("fn foo() { bar(); baz(); }");
+        assert_eq!(calls, vec!["bar", "baz"]);
+    }
+
+    #[test]
+    fn test_rust_extract_calls_method() {
+        let calls = extract_calls_from("fn foo() { self.bar(); x.baz(); }");
+        assert_eq!(calls, vec!["bar", "baz"]);
+    }
+
+    #[test]
+    fn test_rust_extract_calls_nested() {
+        let calls = extract_calls_from("fn foo() { bar(baz()); }");
+        assert_eq!(calls, vec!["bar", "baz"]);
+    }
+
+    #[test]
+    fn test_rust_extract_calls_empty() {
+        let calls = extract_calls_from("fn foo() { let x = 1; }");
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn test_rust_extract_calls_dedup() {
+        let calls = extract_calls_from("fn foo() { bar(); bar(); }");
+        assert_eq!(calls, vec!["bar"]);
+    }
+
     #[test]
     fn test_rust_doc_pipeline() {
         let handler = RustHandler;
         let source = "/// Pipeline test.\nfn foo() {}";
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_with_handler(source, &handler);
+        let pairs = analyzer.analyze_with_handler(source, &handler);
 
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0].docstring, Some("Pipeline test.".to_string()));
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].0.docstring, Some("Pipeline test.".to_string()));
     }
 }

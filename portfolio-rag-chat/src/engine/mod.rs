@@ -1,6 +1,7 @@
 mod config;
 pub mod context;
 pub mod generator;
+pub mod intent;
 pub mod retriever;
 
 pub use config::EngineConfig;

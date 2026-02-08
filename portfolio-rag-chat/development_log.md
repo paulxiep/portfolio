@@ -1,5 +1,301 @@
 # Development Log
 
+## 2026-02-08: V2.3 Retrieval Traces (V2 Phase 3)
+
+### Summary
+
+Made retrieval quality visible by surfacing all 4 chunk types (code, readme, crate, module_doc) with relevance scores in API responses and the htmx UI. Portfolio differentiator: the system shows its work instead of acting as a black box. Redesigned `SourceInfo` from code-only to universal, extracted shared source-building logic into `dto.rs` to eliminate handler duplication, and switched search API to scored-only (Option B) since the distance column is already computed by LanceDB on every vector search.
+
+### Architecture
+
+```
+LanceDB vector_search()
+    |
+    v
+RecordBatch with _distance column (Float32Array, L2 distance)
+    |
+    v
+vector_store.rs: extract_*_from_batch() -> Vec<(ChunkType, f32)>
+    |
+    v
+retriever.rs: distance -> relevance (1.0 / (1.0 + dist)) -> ScoredChunk<T>
+    |
+    v
+RetrievalResult { Vec<ScoredChunk<T>>..., intent: QueryIntent }
+    |
+    +-- context.rs: build LLM context (accesses scored.chunk.field, ignores score)
+    |
+    +-- dto.rs: build_sources() -> Vec<SourceInfo>, sorted by relevance
+        |
+        v
+    ChatResponse { answer, sources, intent }
+```
+
+Two-consumer split: context builder uses chunk content only (SoC — LLM doesn't need relevance metadata). Source builder maps all chunk types to uniform `SourceInfo` with scores for API/UI display.
+
+### Changes
+
+| File | Change |
+|------|--------|
+| `crates/coderag-store/src/vector_store.rs` | All 4 `extract_*_from_batch()` return `Vec<(T, f32)>` with `_distance` column (fallback 0.0). All `batches_to_*()` and `search_*()` methods return scored tuples. `search_all()` returns 4-tuple of `Vec<(T, f32)>`. Scored-only API (Option B). |
+| `src/engine/retriever.rs` | Added `ScoredChunk<T> { chunk, score }`, `distance_to_relevance()`, `to_scored()`. `RetrievalResult` now contains `Vec<ScoredChunk<T>>` + `intent: QueryIntent`. `retrieve()` takes `intent` param (passed through). 3 unit tests for distance→relevance conversion. |
+| `src/engine/context.rs` | All `format_*_section()` accept `&[ScoredChunk<T>]`. Mechanical `chunk.field` → `scored.chunk.field`. All 8 test fixtures updated with `scored()` helper. |
+| `src/api/dto.rs` | Redesigned `SourceInfo` (chunk_type, path, label, project, relevance, relevance_pct, line). `ChatResponse.intent: QueryIntent` (direct serde, not String). Extracted `build_sources()` + 4 `SourceInfo::from_scored_*()` constructors. 7 unit tests. |
+| `src/api/handlers.rs` | Simplified to: `retrieve(..., intent)` → `dto::build_sources(&result)` → `ChatResponse { answer, sources, intent }`. No inline source-mapping loops. |
+| `src/api/web.rs` | Same pattern using shared `build_sources()`. Added `intent: String` to `MessageFragment` (Askama boundary conversion). |
+| `templates/partials/message.html` | Chunk type badges with CSS classes, relevance %, intent in summary, conditional line numbers. |
+
+### Key Design Decisions
+
+1. **Scored-only search API (Option B)**: Modified existing `search_code()`, `search_all()` in-place to return `Vec<(T, f32)>` instead of adding `_scored()` variants alongside. Rationale: only `retriever.rs` calls these methods (code-raptor never searches), zero performance cost (LanceDB computes `_distance` on every vector search anyway), single code path.
+2. **`build_sources()` in dto.rs**: Source-mapping logic extracted from handlers into `dto.rs` with `SourceInfo::from_scored_*()` constructors. Eliminates duplication between `handlers.rs` and `web.rs`. Handler becomes pure orchestration.
+3. **`ChatResponse.intent: QueryIntent`**: Direct serde serialization instead of converting to String. `QueryIntent` already derives `Serialize` with `#[serde(rename_all = "snake_case")]`.
+4. **`relevance_pct: u8` pre-computed**: Askama templates can't do inline arithmetic (`{{ val * 100.0 }}`). Pre-computed as `(score * 100.0).round() as u8` in `from_scored_*()` constructors.
+5. **Context builder ignores scores**: `format_*_section()` functions access `scored.chunk.field` but never use `scored.score`. Correct SoC — context is about content for the LLM, not ranking metadata for the user.
+6. **Distance → relevance formula**: `1.0 / (1.0 + dist)` — simple, monotonically decreasing, metric-agnostic. Maps [0, ∞) → (0, 1]. No assumptions about distance metric.
+
+### Refinements vs Original Spec
+
+| Issue | Original Spec | Implementation |
+|-------|--------------|----------------|
+| Source-building duplication | 4 `for` loops copy-pasted in handlers.rs + web.rs | Single `build_sources()` in dto.rs |
+| Intent serialization | `serde_json::to_value()` dance → String | Direct `QueryIntent` on `ChatResponse` |
+| Search API duplication | 8 new `_scored()` functions alongside 8 existing | Scored-only (Option B) — modified in-place |
+| `SourceInfo` mapping | Procedural in handler | `from_scored_*()` constructors on `impl SourceInfo` |
+
+### API Breaking Changes
+
+`ChatResponse` gains `intent` field. `SourceInfo` redesigned: `file` → `path`, `function` → `label`, new fields `chunk_type`, `relevance`, `relevance_pct`. Acceptable: pre-v1.0, single consumer (htmx frontend, updated simultaneously).
+
+### Test Results
+
+All 132 tests pass (12 ignored):
+- code-raptor: 78 unit + 9 integration tests (unchanged)
+- coderag-store: 8 unit tests (1 updated for tuple destructuring)
+- coderag-types: 9 tests (unchanged)
+- portfolio-rag-chat: 28 unit tests (3 new retriever + 7 new dto + 8 updated context)
+- `cargo fmt --all` clean
+- `cargo clippy --workspace` clean (0 warnings)
+
+### What This Enables
+
+- Users see all retrieved sources (not just code) with chunk type badges and relevance percentages
+- Cross-type ranking: a highly relevant README can rank above a less relevant code chunk
+- Intent visible in response: users understand how their query was classified
+- Foundation for V3 quality harness: relevance scores enable recall@K measurement
+
+**Crates:** coderag-store, portfolio-rag-chat
+
+---
+
+## 2026-02-08: V2.2 Intent Classification + Query Routing (V2 Phase 2)
+
+### Summary
+
+Embedding-based intent classification with query routing. Replaced initial keyword-based classifier with cosine-similarity classification against pre-computed prototype query embeddings. Restructured the handler pipeline to embed once and reuse the vector for both classification and retrieval, reducing Mutex hold time from ~50ms to ~5ms.
+
+**Iteration history:** Initially implemented with keyword heuristics (substring matching). Discovered regression — Overview's `code_limit: 2` starved code chunks, causing wrong answers. Fixed code_limit to 5 across all intents, then upgraded classification mechanism from keywords to embeddings.
+
+### Architecture
+
+```
+User Query
+    │
+    ▼
+lock embedder
+    embed_one(query)                         ← ~5ms, produces Vec<f32> (384-dim)
+unlock embedder
+    │
+    ▼
+intent::classify(query_vec, &IntentClassifier)  ← cosine similarity vs prototype embeddings
+    │
+    ▼
+ClassificationResult { intent, confidence: f32 }
+    │
+    ▼
+intent::route(intent, &RoutingTable)          ← HashMap lookup, fallback to default
+    │
+    ▼
+RetrievalConfig { code_limit, readme_limit, crate_limit, module_doc_limit }
+    │
+    ▼
+retriever::retrieve(query_vec, store, &config)   ← pure vector search, no re-embedding
+```
+
+Three wins from the restructure:
+1. **Semantic classification** — cosine similarity against prototype embeddings, not substring matching
+2. **Mutex held ~5ms** — down from ~50ms+ (embedding was inside retriever)
+3. **Retriever is pure search** — takes `&[f32]`, no `&mut Embedder` dependency
+
+### Changes
+
+| File | Change |
+|------|--------|
+| `src/engine/intent.rs` | Removed `IntentRule`, `IntentConfig`, keyword `classify()`. Added `IntentClassifier` (prototype embeddings), `cosine_similarity()`, prototype constants, embedding-based `classify()`. 17 tests (4 cosine + 5 routing + 1 serialization + 7 embedding). |
+| `src/engine/config.rs` | Removed `intent: IntentConfig` field. `EngineConfig` now contains only `routing: RoutingTable`. `#[derive(Default)]`. |
+| `src/engine/retriever.rs` | Signature: `(&[f32], &VectorStore, &RetrievalConfig)` instead of `(&str, &mut Embedder, &VectorStore, &RetrievalConfig)`. Removed internal embed step. |
+| `src/api/state.rs` | Added `classifier: IntentClassifier` to `AppState`. Built at startup before Mutex wraps embedder. |
+| `src/api/handlers.rs` | Embed once → classify → route → retrieve pipeline. Mutex held only for `embed_one()`. |
+| `src/api/web.rs` | Same pipeline restructure with `match`-based error handling for embed_one. |
+
+### Classification Mechanism
+
+**Prototype queries** — ~5-6 static `&str` per intent, embedded at startup (~200ms one-time cost):
+
+| Intent | Prototype examples |
+|--------|-------------------|
+| Overview | "What is this project?", "Give me an overview", "What is the architecture?" |
+| Implementation | "How does this function work?", "Show me the implementation" |
+| Relationship | "What calls this function?", "What depends on this?" |
+| Comparison | "Compare A and B", "What are the differences between X and Y?" |
+
+**Algorithm:** For each intent, compute max cosine similarity between query embedding and that intent's prototype embeddings. Highest max wins. Threshold 0.3 — below this, falls back to Implementation default.
+
+**Advantage over keywords:** "Explain how the retriever implements caching" — keywords would match "explain" → Overview. Embedding similarity correctly classifies as Implementation.
+
+### Routing Table
+
+| Intent | code | readme | crate | module_doc | Total |
+|--------|------|--------|-------|------------|-------|
+| Overview | 5 | 3 | 3 | 3 | 14 |
+| Implementation | 5 | 1 | 1 | 2 | 9 |
+| Relationship | 5 | 1 | 2 | 2 | 10 |
+| Comparison | 5 | 2 | 3 | 2 | 12 |
+| Default | 5 | 2 | 3 | 3 | 13 |
+
+`code_limit` fixed at 5 across all intents. Differentiation in supplementary context only. Revisit once V3 quality harness measures recall@5 per intent.
+
+### Key Design Decisions
+
+1. **Embed once, reuse everywhere**: Query embedding computed once in handler, passed to both `classify()` and `retrieve()`. Eliminates redundant embedding inside retriever.
+2. **`IntentClassifier` as runtime object**: Holds `Vec<Vec<f32>>` prototypes. Requires `&mut Embedder` to construct → lives in `AppState`, not `EngineConfig`.
+3. **Retriever becomes pure search**: `retrieve()` takes `&[f32]`, no longer owns embedding responsibility. SoC improved.
+4. **Prototype queries as static data**: Same declarative pattern as keywords — `&[&str]` constants, not if-else chains.
+5. **`confidence: f32`** replaces `match_count: usize`: Cosine similarity score enables future threshold tuning and analytics.
+
+### Test Results
+
+All 19 unconditional tests pass (8 ignored):
+- engine::intent: 4 cosine similarity + 5 routing + 1 serialization (unconditional)
+- engine::intent: 7 embedding classification tests (`#[ignore]`, require model download) — all pass
+- engine::context: 9 tests (existing, unchanged)
+- engine::generator: 1 test (ignored, requires GEMINI_API_KEY)
+
+Key regression test: `test_classify_paraphrase_implementation` — "Explain how the retriever implements caching" → Implementation (not Overview). This would FAIL with keyword matching.
+
+### What This Enables
+
+- Semantic understanding of query intent, not brittle substring matching
+- Paraphrased queries classify correctly (the key weakness of keywords)
+- Confidence scores for future analytics and multi-intent exploration
+- Foundation for V3 quality harness correlation: do high-confidence classifications produce better recall?
+
+**Crate:** portfolio-rag-chat
+
+---
+
+## 2026-02-07: V2.1 Inline Call Context (V2 Phase 1)
+
+### Summary
+Enriched embedding text with `Calls: foo, bar` lines so functions become semantically closer to relationship queries in vector space. Implemented `extract_calls()` on the `LanguageHandler` trait for all three languages (Rust, Python, TypeScript), extended the parser fold to return `(CodeChunk, Vec<String>)` tuples, and threaded an ephemeral `HashMap<String, Vec<String>>` side-channel from `run_ingestion` through `embed_and_store_code`. Calls bypass reconcile and are discarded after embedding — they never touch `coderag-types` or the database schema.
+
+### Architecture: Ephemeral Side-Channel
+
+```
+run_ingestion()
+  ├─ IngestionResult     → reconcile → embed_and_store_all
+  └─ HashMap<chunk_id,   ─────────────────────┐
+       Vec<calls>>                             │
+                                               ▼
+                              embed_and_store_code() enriches embedding text:
+                                "foo (rust)\nfn foo() { bar(); }\nCalls: bar"
+                              then HashMap is discarded
+```
+
+Calls are ephemeral enrichment data — they don't belong on `CodeChunk` (the cross-crate contract in `coderag-types`). Track C will have its own persistent `call_edges` table for structured graph queries.
+
+### Continuity with V1.5
+
+Follows the same four-step extension pattern:
+1. Trait method (`extract_calls` on `LanguageHandler`)
+2. Per-handler implementation (Rust, Python, TypeScript)
+3. Fold extension (`parser.rs` 5-tuple → 6-tuple)
+4. Downstream consumption
+
+Diverges at step 4: V1.5 stored docstrings on `CodeChunk` (persistent), V2.1 uses an ephemeral HashMap (transient enrichment only).
+
+### Changes
+
+| File | Change |
+|------|--------|
+| `crates/code-raptor/src/ingestion/language.rs` | Added `extract_calls()` default trait method returning `Vec::new()` |
+| `crates/code-raptor/src/ingestion/languages/rust.rs` | Implemented `extract_calls` + `collect_calls_recursive` helper, 5 unit tests |
+| `crates/code-raptor/src/ingestion/languages/python.rs` | Implemented `extract_calls` + `collect_calls_recursive` helper, 4 unit tests |
+| `crates/code-raptor/src/ingestion/languages/typescript.rs` | Implemented `extract_calls` + `collect_calls_recursive` helper, 4 unit tests |
+| `crates/code-raptor/src/ingestion/parser.rs` | Extended fold 5-tuple → 6-tuple with `Vec<String>`, `analyze_with_handler` returns `Vec<(CodeChunk, Vec<String>)>`, added `type RawMatch` alias, added `test_calls_pipeline`, updated ~11 existing tests with `chunks_only()` helper |
+| `crates/code-raptor/src/ingestion/mod.rs` | `process_code_file` returns `(Vec<CodeChunk>, HashMap)`, `run_ingestion` returns `(IngestionResult, HashMap)`, added `type CallsMap` alias, updated 4 tests |
+| `crates/code-raptor/src/main.rs` | Threaded `calls_map` through `run_full_ingestion`, `run_incremental_ingestion`, `embed_and_store_all`, `embed_and_store_code`; lookup by `chunk_id` in embedding loop |
+| `crates/coderag-store/src/embedder.rs` | Added `calls: &[String]` parameter to `format_code_for_embedding`, appends `Calls:` line if non-empty, 2 new tests + 2 updated tests |
+| `crates/code-raptor/tests/incremental_ingestion.rs` | Updated all 9 integration tests to destructure `(result, _)` from `run_ingestion` |
+
+### Per-Language Call Extraction
+
+| Language | AST Node | Direct Call | Method Call |
+|----------|----------|-------------|-------------|
+| Rust | `call_expression` | `function: identifier` → `foo()` | `function: field_expression > field: field_identifier` → `self.bar()` |
+| Python | `call` | `function: identifier` → `foo()` | `function: attribute > attribute: identifier` → `self.bar()` |
+| TypeScript | `call_expression` | `function: identifier` → `foo()` | `function: member_expression > property: property_identifier` → `obj.bar()` |
+
+Each handler walks the body node descendants via `TreeCursor` recursion, sorts + dedups results.
+
+### Scope Exclusions
+
+- No macro invocations (Rust `macro_rules!` calls)
+- No variable-bound calls (`let f = bar; f()`)
+- No cross-file resolution (Track C scope)
+- No generic/template specialization calls
+
+### Breaking Change: `analyze_with_handler` Return Type
+
+`Vec<CodeChunk>` → `Vec<(CodeChunk, Vec<String>)>`
+
+This broke ~30 tests across the codebase. All were mechanical fixes: add a `chunks_only()` helper per test module that strips the calls via `.map(|(c, _)| c).collect()`, or destructure `let (result, _) = run_ingestion(...)`.
+
+### Key Design Decisions
+
+1. **Ephemeral HashMap, not on CodeChunk**: SoC — `coderag-types` is the cross-crate data contract. Embedding enrichment data doesn't belong on the shared type. Track C will have its own persistent storage.
+2. **`type CallsMap` and `type RawMatch` aliases**: Introduced to satisfy `clippy::type_complexity` without structural changes.
+3. **Declarative `unzip` in `run_ingestion`**: Preferred over imperative `fold` at file-count scale. `embed_and_store_code` keeps its imperative batching (EMBEDDING_BATCH_SIZE = 25) where memory matters.
+4. **Calls appended to embedding text, not prepended**: Embedding models weight earlier text more heavily — identifier, docstring, and code content should dominate the vector, with calls as supplementary signal.
+
+### Gotchas Found During Implementation
+
+1. **Missing closing brace in typescript.rs**: `collect_calls_recursive` was missing its `}` before `#[cfg(test)]` — caught by compilation.
+2. **`flat_map(|m| m)` → `flatten()`**: Clippy flagged `flat_map_identity` in `run_ingestion`'s call map merge.
+3. **6 `collapsible_if` warnings**: All three handler `collect_calls_recursive` functions had nested `if node.kind() == X { if let Some(func) = ... }` — collapsed with `&&` let chains.
+4. **Integration tests not updated**: `tests/incremental_ingestion.rs` called `run_ingestion` without destructuring the new tuple return — 26 compilation errors, all fixed by `let (result, _) = ...`.
+
+### Test Results
+
+All 95 tests pass (0 warnings):
+- code-raptor: 78 unit tests (13 new call extraction + 1 pipeline + mechanical updates)
+- code-raptor: 9 integration tests (updated for tuple return)
+- coderag-store: 8 tests (2 new call format + 2 updated signature)
+- `cargo fmt --all` clean
+- `cargo clippy --workspace` clean (0 warnings)
+
+### Deployment
+
+Requires `code-raptor ingest <repo> --full` after deployment. Content hashes are file-level — call context changes the embedding text but not the hash, so incremental mode won't detect the change.
+
+### What This Enables
+
+Queries like "what functions call process_data?" or "show me callers of authenticate" will produce better vector matches because the embedding text now contains `Calls: process_data` or `Calls: authenticate`. This is a probabilistic improvement — not a precise graph query (that's Track C + V2.3 query routing).
+
+**Crates:** code-raptor, coderag-store
+
+---
+
 ## 2026-02-07: V1.5 Docstring Extraction (V1 Milestone Complete)
 
 ### Summary

@@ -13,6 +13,7 @@ use self::parser::{CodeAnalyzer, parse_cargo_toml};
 use coderag_types::{
     CodeChunk, CrateChunk, ModuleDocChunk, ReadmeChunk, content_hash, deterministic_chunk_id,
 };
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tracing::warn;
 use walkdir::{DirEntry, WalkDir};
@@ -172,43 +173,60 @@ fn process_module_docs(
     })
 }
 
-/// Process a single code file
+/// Process a single code file.
+/// Returns (chunks, calls_map) where calls_map is keyed by chunk_id.
 fn process_code_file(
     entry: &DirEntry,
     repo_root: &Path,
     analyzer: &mut CodeAnalyzer,
     project_name_override: Option<&str>,
-) -> Vec<CodeChunk> {
+) -> (Vec<CodeChunk>, HashMap<String, Vec<String>>) {
     // Skip files with unsupported extensions before reading (avoids UTF-8 errors on binary files)
     if handler_for_path(entry.path()).is_none() {
-        return Vec::new();
+        return (Vec::new(), HashMap::new());
     }
 
     let content = match std::fs::read_to_string(entry.path()) {
         Ok(c) => c,
         Err(e) => {
             warn!(path = %entry.path().display(), error = %e, "Failed to read file");
-            return Vec::new();
+            return (Vec::new(), HashMap::new());
         }
     };
 
-    let mut chunks = analyzer.analyze_file(entry.path(), &content);
+    let pairs = analyzer.analyze_file(entry.path(), &content);
 
-    // Set file-level metadata on each chunk
-    if !chunks.is_empty() {
-        let path_str = normalize_path(entry.path(), repo_root);
-        let project_name = resolve_project_name(entry.path(), repo_root, project_name_override);
-        let file_hash = content_hash(&content); // file-level hash for change detection
+    if pairs.is_empty() {
+        return (Vec::new(), HashMap::new());
+    }
 
-        for chunk in &mut chunks {
+    let path_str = normalize_path(entry.path(), repo_root);
+    let project_name = resolve_project_name(entry.path(), repo_root, project_name_override);
+    let file_hash = content_hash(&content);
+
+    // Enrich metadata, then split into chunks and calls map
+    let enriched: Vec<_> = pairs
+        .into_iter()
+        .map(|(mut chunk, calls)| {
             chunk.file_path.clone_from(&path_str);
             chunk.project_name.clone_from(&project_name);
             chunk.content_hash.clone_from(&file_hash);
             chunk.chunk_id = deterministic_chunk_id(&path_str, &chunk.code_content);
-        }
-    }
+            (chunk, calls)
+        })
+        .collect();
 
-    chunks
+    let (chunks, call_entries): (Vec<_>, Vec<_>) = enriched
+        .into_iter()
+        .map(|(chunk, calls)| {
+            let entry = (!calls.is_empty()).then(|| (chunk.chunk_id.clone(), calls));
+            (chunk, entry)
+        })
+        .unzip();
+
+    let calls_map: HashMap<String, Vec<String>> = call_entries.into_iter().flatten().collect();
+
+    (chunks, calls_map)
 }
 
 /// Directories to skip during ingestion
@@ -253,7 +271,13 @@ pub struct IngestionResult {
 /// This orchestrates the flow from Disk -> Parser -> Data.
 /// `project_name_override`: if Some, all chunks get this project name.
 /// If None, project name is inferred from directory structure.
-pub fn run_ingestion(repo_path: &str, project_name_override: Option<&str>) -> IngestionResult {
+///
+/// Returns `(IngestionResult, calls_map)` where `calls_map` is an ephemeral
+/// side-channel mapping `chunk_id → call identifiers` for embedding enrichment.
+pub fn run_ingestion(
+    repo_path: &str,
+    project_name_override: Option<&str>,
+) -> (IngestionResult, HashMap<String, Vec<String>>) {
     let repo_root = PathBuf::from(repo_path);
     let mut analyzer = CodeAnalyzer::new();
 
@@ -271,10 +295,14 @@ pub fn run_ingestion(repo_path: &str, project_name_override: Option<&str>) -> In
         .filter_map(|e| process_readme(e, &repo_root, project_name_override))
         .collect();
 
-    let code_chunks: Vec<CodeChunk> = entries
+    type CallsMap = HashMap<String, Vec<String>>;
+    let (chunk_vecs, call_maps): (Vec<Vec<CodeChunk>>, Vec<CallsMap>) = entries
         .iter()
-        .flat_map(|e| process_code_file(e, &repo_root, &mut analyzer, project_name_override))
-        .collect();
+        .map(|e| process_code_file(e, &repo_root, &mut analyzer, project_name_override))
+        .unzip();
+
+    let code_chunks: Vec<CodeChunk> = chunk_vecs.into_iter().flatten().collect();
+    let all_calls: CallsMap = call_maps.into_iter().flatten().collect();
 
     let crate_chunks: Vec<CrateChunk> = entries
         .iter()
@@ -288,12 +316,15 @@ pub fn run_ingestion(repo_path: &str, project_name_override: Option<&str>) -> In
         .filter_map(|e| process_module_docs(e, &repo_root, &mut analyzer, project_name_override))
         .collect();
 
-    IngestionResult {
-        code_chunks,
-        readme_chunks,
-        crate_chunks,
-        module_doc_chunks,
-    }
+    (
+        IngestionResult {
+            code_chunks,
+            readme_chunks,
+            crate_chunks,
+            module_doc_chunks,
+        },
+        all_calls,
+    )
 }
 
 #[cfg(test)]
@@ -380,7 +411,7 @@ mod tests {
         let temp_dir = create_test_workspace();
         let path = temp_dir.path().to_str().unwrap();
 
-        let result = run_ingestion(path, None);
+        let (result, _calls_map) = run_ingestion(path, None);
 
         // Should find 2 code files (main.py and lib.rs)
         assert_eq!(result.code_chunks.len(), 2);
@@ -447,7 +478,7 @@ mod tests {
             .unwrap();
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = process_code_file(&entry, base, &mut analyzer, None);
+        let (chunks, _calls_map) = process_code_file(&entry, base, &mut analyzer, None);
 
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].file_path, "myproj/code.py");
@@ -506,7 +537,7 @@ mod tests {
         .unwrap();
 
         let path = base.to_str().unwrap();
-        let result = run_ingestion(path, None);
+        let (result, _calls_map) = run_ingestion(path, None);
 
         // All three files should produce chunks
         assert!(
@@ -542,7 +573,7 @@ mod tests {
         let temp_dir = create_test_workspace();
         let path = temp_dir.path().to_str().unwrap();
 
-        let result = run_ingestion(path, Some("my-app"));
+        let (result, _calls_map) = run_ingestion(path, Some("my-app"));
 
         // All chunks should have the override name
         assert!(

@@ -1,5 +1,5 @@
 use super::super::language::LanguageHandler;
-use tree_sitter::{Language, Node};
+use tree_sitter::{Language, Node, TreeCursor};
 
 pub struct TypeScriptHandler;
 
@@ -122,12 +122,63 @@ impl LanguageHandler for TypeScriptHandler {
             Some(jsdoc_lines.join("\n"))
         }
     }
+
+    fn extract_calls(&self, _source: &str, node: &Node, source_bytes: &[u8]) -> Vec<String> {
+        let mut calls = Vec::new();
+        let mut cursor = node.walk();
+        collect_calls_recursive(&mut cursor, source_bytes, &mut calls);
+        calls.sort();
+        calls.dedup();
+        calls
+    }
+}
+
+/// Walk tree-sitter AST collecting call identifiers.
+/// TypeScript/JavaScript call expressions:
+/// - Direct: `call_expression > function: identifier` → `foo()`
+/// - Method: `call_expression > function: member_expression > property: property_identifier` → `obj.bar()`
+fn collect_calls_recursive(cursor: &mut TreeCursor, source_bytes: &[u8], calls: &mut Vec<String>) {
+    let node = cursor.node();
+
+    if node.kind() == "call_expression"
+        && let Some(func) = node.child_by_field_name("function")
+    {
+        match func.kind() {
+            "identifier" => {
+                if let Ok(name) = func.utf8_text(source_bytes) {
+                    calls.push(name.to_string());
+                }
+            }
+            "member_expression" => {
+                if let Some(prop) = func.child_by_field_name("property")
+                    && let Ok(name) = prop.utf8_text(source_bytes)
+                {
+                    calls.push(name.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if cursor.goto_first_child() {
+        collect_calls_recursive(cursor, source_bytes, calls);
+        while cursor.goto_next_sibling() {
+            collect_calls_recursive(cursor, source_bytes, calls);
+        }
+        cursor.goto_parent();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ingestion::parser::CodeAnalyzer;
+
+    fn chunks_only(
+        pairs: Vec<(coderag_types::CodeChunk, Vec<String>)>,
+    ) -> Vec<coderag_types::CodeChunk> {
+        pairs.into_iter().map(|(c, _)| c).collect()
+    }
 
     #[test]
     fn test_extensions() {
@@ -145,7 +196,7 @@ mod tests {
         let source = "function foo() { return 1; }";
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_with_handler(source, &handler);
+        let chunks = chunks_only(analyzer.analyze_with_handler(source, &handler));
 
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].identifier, "foo");
@@ -159,7 +210,7 @@ mod tests {
         let source = "const add = (a: number, b: number) => a + b;";
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_with_handler(source, &handler);
+        let chunks = chunks_only(analyzer.analyze_with_handler(source, &handler));
 
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].identifier, "add");
@@ -171,7 +222,7 @@ mod tests {
         let source = "var legacy = () => {};";
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_with_handler(source, &handler);
+        let chunks = chunks_only(analyzer.analyze_with_handler(source, &handler));
 
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].identifier, "legacy");
@@ -188,7 +239,7 @@ class UserService {
 "#;
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_with_handler(source, &handler);
+        let chunks = chunks_only(analyzer.analyze_with_handler(source, &handler));
 
         assert!(
             chunks
@@ -213,7 +264,7 @@ class UserService {
         let source = "interface User { name: string; age: number; }";
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_with_handler(source, &handler);
+        let chunks = chunks_only(analyzer.analyze_with_handler(source, &handler));
 
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].identifier, "User");
@@ -226,7 +277,7 @@ class UserService {
         let source = "type Result<T> = Success<T> | Failure;";
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_with_handler(source, &handler);
+        let chunks = chunks_only(analyzer.analyze_with_handler(source, &handler));
 
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].identifier, "Result");
@@ -239,7 +290,7 @@ class UserService {
         let source = "enum Direction { Up, Down, Left, Right }";
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_with_handler(source, &handler);
+        let chunks = chunks_only(analyzer.analyze_with_handler(source, &handler));
 
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].identifier, "Direction");
@@ -252,7 +303,7 @@ class UserService {
         let source = "export function handler(req: Request) { return new Response(); }";
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_with_handler(source, &handler);
+        let chunks = chunks_only(analyzer.analyze_with_handler(source, &handler));
 
         // Base function_declaration pattern captures inside export_statement
         assert!(chunks.iter().any(|c| c.identifier == "handler"));
@@ -268,7 +319,7 @@ function MyComponent(props: { name: string }) {
 "#;
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_with_handler(source, &handler);
+        let chunks = chunks_only(analyzer.analyze_with_handler(source, &handler));
 
         assert!(chunks.iter().any(|c| c.identifier == "MyComponent"));
     }
@@ -283,7 +334,7 @@ const Card = (props: CardProps) => {
 "#;
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_with_handler(source, &handler);
+        let chunks = chunks_only(analyzer.analyze_with_handler(source, &handler));
 
         assert!(chunks.iter().any(|c| c.identifier == "Card"));
     }
@@ -394,6 +445,58 @@ function add(a: number, b: number): number {
         None
     }
 
+    // V2.1: Call extraction tests
+
+    /// Helper: parse source with TypeScriptHandler, extract calls from first body node
+    fn extract_calls_from(source: &str) -> Vec<String> {
+        let handler = TypeScriptHandler;
+        let mut parser = tree_sitter::Parser::new();
+        let grammar = handler.grammar();
+        parser.set_language(&grammar).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+
+        let query = tree_sitter::Query::new(&grammar, handler.query_string()).unwrap();
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let body_idx = query.capture_index_for_name("body");
+
+        let source_bytes = source.as_bytes();
+        let mut matches = cursor.captures(&query, tree.root_node(), source_bytes);
+        use tree_sitter::StreamingIterator;
+        if let Some((m, _)) = matches.next() {
+            if let Some(body) = m.captures.iter().find(|c| Some(c.index) == body_idx) {
+                handler.extract_calls(source, &body.node, source_bytes)
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn test_ts_extract_calls_simple() {
+        let calls = extract_calls_from("function foo() { bar(); baz(); }");
+        assert_eq!(calls, vec!["bar", "baz"]);
+    }
+
+    #[test]
+    fn test_ts_extract_calls_member() {
+        let calls = extract_calls_from("function foo() { obj.bar(); this.baz(); }");
+        assert_eq!(calls, vec!["bar", "baz"]);
+    }
+
+    #[test]
+    fn test_ts_extract_calls_empty() {
+        let calls = extract_calls_from("function foo() { const x = 1; }");
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn test_ts_extract_calls_dedup() {
+        let calls = extract_calls_from("function foo() { bar(); bar(); }");
+        assert_eq!(calls, vec!["bar"]);
+    }
+
     // V1.5 pipeline tests — verify JSDoc flows through analyze_with_handler
 
     #[test]
@@ -402,7 +505,7 @@ function add(a: number, b: number): number {
         let source = "/** Fetches data */\nfunction fetchData() {}";
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_with_handler(source, &handler);
+        let chunks = chunks_only(analyzer.analyze_with_handler(source, &handler));
 
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].docstring, Some("Fetches data".to_string()));
@@ -414,7 +517,7 @@ function add(a: number, b: number): number {
         let source = "/** Adds two numbers */\nconst add = (a: number, b: number) => a + b;";
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_with_handler(source, &handler);
+        let chunks = chunks_only(analyzer.analyze_with_handler(source, &handler));
 
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].identifier, "add");
@@ -432,7 +535,7 @@ class Service {
 "#;
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_with_handler(source, &handler);
+        let chunks = chunks_only(analyzer.analyze_with_handler(source, &handler));
 
         let method = chunks.iter().find(|c| c.identifier == "getUser").unwrap();
         assert_eq!(method.docstring, Some("Gets the user".to_string()));
@@ -444,7 +547,7 @@ class Service {
         let source = "/** User data model */\ninterface User { name: string; }";
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_with_handler(source, &handler);
+        let chunks = chunks_only(analyzer.analyze_with_handler(source, &handler));
 
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].docstring, Some("User data model".to_string()));
@@ -456,7 +559,7 @@ class Service {
         let source = "function helper() { return 1; }";
 
         let mut analyzer = CodeAnalyzer::new();
-        let chunks = analyzer.analyze_with_handler(source, &handler);
+        let chunks = chunks_only(analyzer.analyze_with_handler(source, &handler));
 
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].docstring, None);

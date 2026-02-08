@@ -1,4 +1,4 @@
-use super::retriever::RetrievalResult;
+use super::retriever::{RetrievalResult, ScoredChunk};
 use crate::models::{CrateChunk, ModuleDocChunk};
 
 /// System prompt - instructs the LLM how to behave
@@ -42,10 +42,11 @@ pub fn build_context(result: &RetrievalResult) -> String {
     sections.join("\n\n")
 }
 
-fn format_code_section(chunks: &[crate::models::CodeChunk]) -> String {
+fn format_code_section(chunks: &[ScoredChunk<crate::models::CodeChunk>]) -> String {
     let mut out = String::from("## Relevant Code\n");
 
-    for chunk in chunks {
+    for scored in chunks {
+        let chunk = &scored.chunk;
         out.push_str(&format!(
             "\n### `{}` in {} ({}:{})\n",
             chunk.identifier, chunk.project_name, chunk.file_path, chunk.start_line,
@@ -63,10 +64,11 @@ fn format_code_section(chunks: &[crate::models::CodeChunk]) -> String {
     out
 }
 
-fn format_readme_section(chunks: &[crate::models::ReadmeChunk]) -> String {
+fn format_readme_section(chunks: &[ScoredChunk<crate::models::ReadmeChunk>]) -> String {
     let mut out = String::from("## Project Documentation\n");
 
-    for chunk in chunks {
+    for scored in chunks {
+        let chunk = &scored.chunk;
         out.push_str(&format!(
             "\n### {}\n{}\n",
             chunk.project_name,
@@ -77,10 +79,11 @@ fn format_readme_section(chunks: &[crate::models::ReadmeChunk]) -> String {
     out
 }
 
-fn format_crate_section(chunks: &[CrateChunk]) -> String {
+fn format_crate_section(chunks: &[ScoredChunk<CrateChunk>]) -> String {
     let mut out = String::from("## Crate Structure\n");
 
-    for chunk in chunks {
+    for scored in chunks {
+        let chunk = &scored.chunk;
         let desc = chunk
             .description
             .as_deref()
@@ -100,10 +103,11 @@ fn format_crate_section(chunks: &[CrateChunk]) -> String {
     out
 }
 
-fn format_module_doc_section(chunks: &[ModuleDocChunk]) -> String {
+fn format_module_doc_section(chunks: &[ScoredChunk<ModuleDocChunk>]) -> String {
     let mut out = String::from("## Module Documentation\n");
 
-    for chunk in chunks {
+    for scored in chunks {
+        let chunk = &scored.chunk;
         out.push_str(&format!(
             "\n### Module `{}` ({})\n{}\n",
             chunk.module_name,
@@ -141,7 +145,12 @@ fn truncate(s: &str, max_chars: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::intent::QueryIntent;
     use crate::models::{CodeChunk, CrateChunk, ModuleDocChunk, ReadmeChunk};
+
+    fn scored<T>(chunk: T, score: f32) -> ScoredChunk<T> {
+        ScoredChunk { chunk, score }
+    }
 
     fn sample_code_chunk() -> CodeChunk {
         CodeChunk {
@@ -199,10 +208,11 @@ mod tests {
     #[test]
     fn test_build_context_with_code() {
         let result = RetrievalResult {
-            code_chunks: vec![sample_code_chunk()],
+            code_chunks: vec![scored(sample_code_chunk(), 0.9)],
             readme_chunks: vec![],
             crate_chunks: vec![],
             module_doc_chunks: vec![],
+            intent: QueryIntent::Implementation,
         };
 
         let context = build_context(&result);
@@ -217,9 +227,10 @@ mod tests {
     fn test_build_context_with_readme() {
         let result = RetrievalResult {
             code_chunks: vec![],
-            readme_chunks: vec![sample_readme_chunk()],
+            readme_chunks: vec![scored(sample_readme_chunk(), 0.8)],
             crate_chunks: vec![],
             module_doc_chunks: vec![],
+            intent: QueryIntent::Overview,
         };
 
         let context = build_context(&result);
@@ -233,8 +244,9 @@ mod tests {
         let result = RetrievalResult {
             code_chunks: vec![],
             readme_chunks: vec![],
-            crate_chunks: vec![sample_crate_chunk()],
+            crate_chunks: vec![scored(sample_crate_chunk(), 0.7)],
             module_doc_chunks: vec![],
+            intent: QueryIntent::Overview,
         };
 
         let context = build_context(&result);
@@ -250,7 +262,8 @@ mod tests {
             code_chunks: vec![],
             readme_chunks: vec![],
             crate_chunks: vec![],
-            module_doc_chunks: vec![sample_module_doc_chunk()],
+            module_doc_chunks: vec![scored(sample_module_doc_chunk(), 0.6)],
+            intent: QueryIntent::Implementation,
         };
 
         let context = build_context(&result);
@@ -267,6 +280,7 @@ mod tests {
             readme_chunks: vec![],
             crate_chunks: vec![],
             module_doc_chunks: vec![],
+            intent: QueryIntent::Implementation,
         };
 
         let context = build_context(&result);
@@ -289,10 +303,11 @@ mod tests {
         chunk.docstring = Some("Processes input data and returns results.".into());
 
         let result = RetrievalResult {
-            code_chunks: vec![chunk],
+            code_chunks: vec![scored(chunk, 0.9)],
             readme_chunks: vec![],
             crate_chunks: vec![],
             module_doc_chunks: vec![],
+            intent: QueryIntent::Implementation,
         };
 
         let context = build_context(&result);

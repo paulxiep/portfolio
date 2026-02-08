@@ -4,10 +4,10 @@
 *Extracted by GitHub Copilot*
 
 - **Language:** `Rust`
-- **Architecture & Patterns:** `Layered Architecture (API/Store/Ingestion)` · `Trait-Based Abstraction (LanguageHandler)` · `Registry Pattern (OnceLock)` · `Three-Layer Pipeline (Parse→Reconcile→Orchestrate)` · `Router Pattern` · `Handler Pattern` · `Shared State (Arc)` · `Repository Pattern` · `DTO Pattern` · `Modular Design` · `Pipeline Pattern (Ingest→Embed→Store)` · `Visitor Pattern (WalkDir)` · `Error Propagation (thiserror)`
-- **LLM & RAG:** `RAG (Retrieval-Augmented Generation)` · `LLM Integration` · `Google Gemini API` · `rig-core` · `Semantic Search` · `Chatbot`
+- **Architecture & Patterns:** `Layered Architecture (API/Store/Ingestion)` · `Trait-Based Abstraction (LanguageHandler)` · `Registry Pattern (OnceLock)` · `Three-Layer Pipeline (Parse→Reconcile→Orchestrate)` · `Router Pattern` · `Handler Pattern` · `Shared State (Arc)` · `Repository Pattern` · `DTO Pattern` · `Modular Design` · `Pipeline Pattern (Ingest→Embed→Store)` · `Visitor Pattern (WalkDir)` · `Error Propagation (thiserror)` · `Ephemeral Side-Channel Pattern` · `Declarative Routing Table` · `Scored Search API` · `ScoredChunk<T> (Generic Wrapper)` · `Retrieval Traces`
+- **LLM & RAG:** `RAG (Retrieval-Augmented Generation)` · `LLM Integration` · `Google Gemini API` · `rig-core` · `Semantic Search` · `Chatbot` · `Intent Classification (Cosine Similarity)` · `Prototype Query Embeddings` · `Intent-Aware Retrieval` · `Cross-Type Source Ranking` · `Distance-to-Relevance Scoring` · `Retrieval Transparency`
 - **Vector Database:** `LanceDB` · `FastEmbed` · `BGE Embeddings`
-- **Code Analysis:** `Tree-sitter` · `AST Parsing` · `Code Chunking` · `Docstring Extraction` · `JSDoc Parsing` · `Multi-Language (Rust, Python, TypeScript)` · `Incremental Ingestion (SHA256)`
+- **Code Analysis:** `Tree-sitter` · `AST Parsing` · `Code Chunking` · `Docstring Extraction` · `JSDoc Parsing` · `Multi-Language (Rust, Python, TypeScript)` · `Incremental Ingestion (SHA256)` · `Call Graph Extraction (AST-based)` · `Function Call Detection (Direct + Method)`
 - **Web Framework:** `Axum` · `htmx` · `Askama Templates` · `Tower HTTP` · `CORS`
 - **Async & Runtime:** `Tokio Runtime` · `Async Programming`
 - **DevOps:** `Docker` · `Docker Compose`
@@ -15,7 +15,7 @@
 
 ---
 
-A RAG chatbot that answers questions about code repositories. Parses Rust, Python, and TypeScript codebases with tree-sitter, extracts docstrings, generates embeddings, and responds via Google Gemini. Incremental ingestion skips unchanged files for fast iteration.
+A RAG chatbot that answers questions about code repositories. Parses Rust, Python, and TypeScript codebases with tree-sitter, extracts docstrings and call graphs, generates embeddings, and responds via Google Gemini. Intent classification routes queries to optimized retrieval strategies. Retrieval traces surface all sources with relevance scores — the system shows its work.
 
 - [Executive Summary](docs/executive_summary.md)
 - [Technical Summary](docs/technical_summary.md)
@@ -43,6 +43,9 @@ To clean, run `sh clean_docker.sh`.
 | **V1.3** | 2026-02-06 | Incremental ingestion (SHA256, three-layer architecture) |
 | **V1.4** | 2026-02-07 | TypeScript support (TSX grammar, JSDoc) |
 | **V1.5** | 2026-02-07 | Docstring extraction (Rust, Python, TypeScript) |
+| **V2.1** | 2026-02-07 | Inline call context (AST-based call extraction) |
+| **V2.2** | 2026-02-08 | Intent classification + query routing (cosine similarity) |
+| **V2.3** | 2026-02-08 | Retrieval traces (scored sources, cross-type ranking) |
 
 ## Purpose
 
@@ -82,19 +85,22 @@ To clean, run `sh clean_docker.sh`.
 | `coderag-types` | Shared types — no logic |
 | `portfolio-rag-chat` | Query API — retrieval, LLM, web UI |
 
-## Current State (V1 Complete)
+## Current State (V2 Complete)
 
 - Function-level chunking: 1 function/class → 1 vector (BGE-small, 384 dim)
 - Supports Rust, Python, and TypeScript via tree-sitter AST parsing
 - Docstrings extracted: `///` (Rust), `"""` (Python), `/** */` (TypeScript JSDoc)
+- Call graph extraction: direct + method calls enriched into embeddings
+- Intent classification: cosine similarity against prototype query embeddings
+- Query routing: declarative routing table maps intent → retrieval limits
+- Retrieval traces: all 4 chunk types surfaced with relevance scores, sorted by relevance
 - Incremental ingestion: SHA256 file hashing, skips unchanged files
-- 97 tests, 0 warnings
+- 132 tests, 0 warnings
 
 ## Known Limitations
 
 - **Granularity**: Cannot search within functions or at file/module level
-- **Relationships**: No call graph — cannot answer "What calls X?"
-- **Intent**: No query classification — all queries use the same retrieval strategy
+- **Relationships**: Call enrichment is probabilistic — no structured graph queries yet
 
 ## Planned Features
 
