@@ -5,6 +5,7 @@ target/
 sim.db*
 *.parquet
 *.pkl
+*.pyc
 
 # Frontend (quant-trading-gym)
 quant-trading-gym/frontend/node_modules/
