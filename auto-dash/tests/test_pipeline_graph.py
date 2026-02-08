@@ -49,8 +49,10 @@ class TestStubPassthrough:
         assert any("No LLM client" in e for e in result["errors"])
 
     @pytest.mark.asyncio
-    async def test_chart_stub(self):
-        assert await chart_node({}) == {}
+    async def test_chart_fallback_returns_error(self):
+        result = await chart_node({})
+        assert "errors" in result
+        assert any("No LLM client" in e for e in result["errors"])
 
     @pytest.mark.asyncio
     async def test_comply_stub(self):

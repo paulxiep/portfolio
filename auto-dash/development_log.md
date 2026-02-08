@@ -1,5 +1,129 @@
 # Development Log
 
+## 2026-02-08: MVP.5 Chart Planning + Code Generation
+
+### Summary
+Implemented the chart planning and code generation module (`autodash/charts.py`). Accepts `InsightResult`(s) and user questions, uses two LLM calls — one to produce a renderer-agnostic `ChartSpec` (JSON), one to generate self-contained matplotlib code — and returns `ChartPlan`(s) pairing spec with code. The two-step split is critical: DI-1.3 (multi-chart) needs to intervene between planning and generation to assign priorities and avoid duplicate charts. All data models and error types were already defined in MVP.1; no model/config changes needed.
+
+### Architecture
+
+```
+               ┌──────────┐   ┌──────────┐
+               │  MVP.4   │   │  user     │
+               │ explorer │   │ questions │
+               └────┬─────┘   └────┬─────┘
+                    │ InsightResult │
+                    └───────┬───────┘
+                            ▼
+                     ┌─────────────┐
+                     │   MVP.5     │
+                     │  charts.py  │
+                     └──────┬──────┘
+                            │ list[ChartPlan]
+                            ▼
+                     ┌─────────────┐
+                     │   MVP.6     │
+                     │ renderer.py │  executes the code
+                     └─────────────┘
+
+charts.py internals (SoC):
+
+    _serialize_df_for_prompt()        ← DataFrame → Python dict literal (NaN→None, datetime→ISO)
+    _to_python_native()               ← single value → JSON-safe native type
+          │
+    build_chart_planning_prompt()     ← assemble user prompt for spec generation
+    build_code_generation_prompt()    ← assemble user prompt for code generation
+          │
+    plan_charts()                     ← Step 1: prompt → LLM → JSON → ChartSpec list (async)
+          │
+    ├── parse_chart_specs()           ← parse JSON, validate, build specs
+    ├── _parse_single_spec()          ← validate fields, chart type enum, source_step_index
+    └── _validate_data_mapping()      ← per-chart-type structural + column existence checks
+          │
+    generate_chart_code()             ← Step 2: spec + data → LLM → Python code → ChartPlan (async)
+          │
+    └── parse_code_from_response()    ← reused from plotlint.core.parsing
+          │
+    plan_and_generate()               ← combined entry point for pipeline node
+```
+
+### New / Modified Files
+
+| File | Purpose |
+|------|---------|
+| `autodash/charts.py` | **New.** Core logic: `_serialize_df_for_prompt`, `_to_python_native`, `_validate_data_mapping`, `build_chart_planning_prompt`, `build_code_generation_prompt`, `parse_chart_specs`, `_parse_single_spec`, `plan_charts`, `generate_chart_code`, `plan_and_generate` |
+| `autodash/prompts/chart_planning.py` | **New.** `SYSTEM_PROMPT` (chart type guidance, DataMapping rules per type), `OUTPUT_FORMAT` (JSON schema), `build_user_prompt()` — enum values built from `ChartType`/`ChartPriority` to stay in sync |
+| `autodash/prompts/code_generation.py` | **New.** `SYSTEM_PROMPT` (matplotlib code rules: no savefig/show/close, no backend, tight_layout, self-contained), `build_user_prompt()` — `renderer_type` param enables PL-1.6 Plotly with new template |
+| `autodash/pipeline.py` | **Modified.** Replaced `chart_node` stub with closure factory `_make_chart_node(config, llm_client)`. Fallback `chart_node` returns error dict when no LLM client. Wired into `build_pipeline_graph()` |
+| `tests/test_charts.py` | **New.** 67 tests: native conversion (10), serialization (6), data mapping validation (20), spec parsing (13), prompt construction (7), async integration with MockLLMClient (11) |
+| `tests/test_chart_prompts.py` | **New.** 22 tests: system prompt content (chart types, priorities, mapping rules), output format fields, user prompt assembly, code gen rules (no savefig, no backend, tight_layout) |
+| `tests/test_pipeline_graph.py` | **Modified.** Updated `test_chart_stub` → `test_chart_fallback_returns_error` |
+
+### Two-Step LLM Process
+
+```
+Step 1: plan_charts(insights, questions, llm_client, max_charts)
+  → build_chart_planning_prompt()
+  → LLM call (JSON response)
+  → parse_chart_specs() with validation
+  → list[ChartSpec]
+
+Step 2: generate_chart_code(spec, insight, llm_client, renderer_type)
+  → build_code_generation_prompt()  (embeds data as dict literal)
+  → LLM call (Python code response)
+  → parse_code_from_response()
+  → ChartPlan(spec=spec, code=code)
+
+Combined: plan_and_generate() calls Step 1 then Step 2 for each spec.
+```
+
+### DataMapping Validation Rules
+
+`_validate_data_mapping(mapping, chart_type, available_columns)` returns error list:
+
+| Chart Type | Required Fields | Optional |
+|-----------|----------------|----------|
+| BAR, LINE, AREA, SCATTER, HEATMAP | x, y | color, size, label |
+| GROUPED_BAR, STACKED_BAR | x, y, color | label |
+| PIE | values, categories | label |
+| HISTOGRAM | x OR y | color |
+| BOX | y | x (grouping) |
+
+All non-None column references validated against `InsightResult.column_names`.
+
+### Key Design Decisions
+
+1. **Dict literal for data embedding**: Generated code uses `pd.DataFrame({...})` with inline dict. `_serialize_df_for_prompt()` handles NaN→None, datetime→ISO string, numpy→Python native. `PipelineConfig.inline_data_max_rows=50` as size guard. Cleaner than CSV string, no file path dependency (result_df doesn't exist as a file).
+
+2. **Fully self-contained generated code**: No `inject_globals`, no variables expected in scope. Code is copy-pasteable and debuggable. Conventions: `fig, ax = plt.subplots(figsize=...)`, no `plt.savefig()`/`plt.show()`/`plt.close()` (MVP.6 renderer captures `gcf()`), no `matplotlib.use('Agg')` (renderer worker sets backend), `plt.tight_layout()` at end.
+
+3. **Single-shot code generation, no retry**: Unlike explorer.py which retries on execution errors, chart code generation just produces a string — there's no execution feedback within MVP.5. The convergence loop (MVP.6-8: render→inspect→patch) handles execution failures. Adding retry here would duplicate that responsibility.
+
+4. **`source_step_index` for insight→spec linking**: `ChartSpec.source_step_index` (int) references the insight that produced the data. `parse_chart_specs()` validates it's in range. `plan_and_generate()` uses it to pair each spec with the correct `InsightResult` for code generation.
+
+5. **Per-module profile view**: `_serialize_df_for_prompt()` produces a dict literal + column info for code generation context. Different from planner's `_profile_summary()` (types + stats) and explorer's `_exploration_profile_summary()` (dtypes for code gen). Each LLM-calling module formats data for its specific needs.
+
+6. **Enum values auto-synced in prompts**: `SYSTEM_PROMPT` in `chart_planning.py` builds chart type and priority lists from the enums (`", ".join(t.value for t in ChartType)`), matching the pattern in `analysis_planning.py`. Adding a new `ChartType` variant automatically appears in prompts.
+
+7. **Sequential code generation**: `plan_and_generate()` generates code for each spec sequentially. For MVP (max_charts=1), moot. DI-1.3 can trivially switch to `asyncio.gather()` without changing function signatures.
+
+### Test Results
+
+All 291 tests pass (11.95s):
+- `test_charts.py`: 67 tests (native conversion, serialization, validation, parsing, prompt construction, integration)
+- `test_chart_prompts.py`: 22 tests (system prompt content, output format, user prompt assembly)
+- Previous MVP.1 + MVP.2 + MVP.3 + MVP.4 tests: all still passing (202 tests)
+
+### Unblocks
+
+- **MVP.6** (Renderer): Receives `ChartPlan.code` — a self-contained matplotlib script. Executes in subprocess sandbox, captures `plt.gcf()`. No coupling to how the code was generated.
+- **MVP.8** (Patcher): Replaces `ChartPlan.code` after patching. `ChartPlan` is mutable; `ChartSpec` is frozen (spec doesn't change, only implementation).
+- **DI-1.3** (Multi-chart): `plan_charts()` already returns `list[ChartSpec]`. `ChartPriority` enum exists from day one. DI-1.3 calls with `max_charts=N` and intervenes between plan and generate steps.
+- **PL-1.6** (Plotly): `generate_chart_code(renderer_type=RendererType.PLOTLY)` selects a different prompt template. No logic change in `charts.py`.
+- **DI-2.2** (Style harmonizer): Optional `color_palette` field already on `ChartSpec`. Harmonizer populates it before code generation.
+
+**Packages:** autodash
+
 ## 2026-02-08: MVP.4 Data Exploration
 
 ### Summary

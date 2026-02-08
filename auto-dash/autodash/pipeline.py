@@ -170,8 +170,54 @@ def _make_explore_node(config: Any, llm_client: Any):
 
 
 async def chart_node(state: PipelineState) -> dict:
-    """Node: Plan charts and generate code (MVP.5). Stub."""
-    return {}
+    """Fallback chart node when no LLM client is configured."""
+    return {"errors": state.get("errors", []) + ["No LLM client configured for chart generation"]}
+
+
+def _make_chart_node(config: Any, llm_client: Any):
+    """Create a chart node that captures config and llm_client via closure.
+
+    Matches the closure factory pattern used by _make_plan_node and
+    _make_explore_node. The node reads insights and questions from state,
+    calls plan_and_generate(), and writes chart_plans to state.
+    """
+    if llm_client is None:
+        return chart_node
+
+    async def _chart_node(state: PipelineState) -> dict:
+        """Node: Plan charts and generate code (MVP.5)."""
+        from autodash.charts import plan_and_generate
+
+        insights = state.get("insights", [])
+        questions = state.get("questions", "")
+
+        if not insights:
+            return {
+                "errors": state.get("errors", []) + [
+                    "No insights available for chart generation"
+                ]
+            }
+
+        max_charts = config.max_charts if config else 1
+        max_rows = config.inline_data_max_rows if config else 50
+
+        try:
+            chart_plans = await plan_and_generate(
+                insights=insights,
+                questions=questions,
+                llm_client=llm_client,
+                max_charts=max_charts,
+                max_rows=max_rows,
+            )
+            return {"chart_plans": chart_plans}
+        except Exception as e:
+            return {
+                "errors": state.get("errors", []) + [
+                    f"Chart generation failed: {e}"
+                ]
+            }
+
+    return _chart_node
 
 
 async def comply_node(state: PipelineState) -> dict:
@@ -203,7 +249,7 @@ def build_pipeline_graph(
     graph.add_node("load", load_node)
     graph.add_node("plan", _make_plan_node(config, llm_client))
     graph.add_node("explore", _make_explore_node(config, llm_client))
-    graph.add_node("chart", chart_node)
+    graph.add_node("chart", _make_chart_node(config, llm_client))
     graph.add_node("comply", comply_node)
     graph.add_node("output", output_node)
 
