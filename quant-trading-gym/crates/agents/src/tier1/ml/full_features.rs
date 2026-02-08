@@ -227,13 +227,14 @@ mod tests {
         let full = FullFeatures::new();
         let full_features = full.extract_market(&symbol, &ctx);
 
-        // Minimal extractor (monolithic)
-        let minimal_raw = super::super::extract_features_raw(&symbol, &ctx);
+        // Minimal extractor
+        let minimal = super::super::MinimalFeatures;
+        let minimal_features = minimal.extract_market(&symbol, &ctx);
 
         // First 42 features should match exactly
         for i in 0..42 {
             let f = full_features[i];
-            let m = minimal_raw[i];
+            let m = minimal_features[i];
             if f.is_nan() {
                 assert!(m.is_nan(), "feature {i}: full=NaN, minimal={m}");
             } else {

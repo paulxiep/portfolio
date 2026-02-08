@@ -310,6 +310,7 @@ pub fn extract_volume_cross(symbol: &Symbol, ctx: &StrategyContext<'_>, buf: &mu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tier1::ml::FeatureExtractor;
     use types::{N_FULL_FEATURES, N_MARKET_FEATURES};
 
     fn make_test_ctx() -> (
@@ -407,10 +408,11 @@ mod tests {
 
         let symbol = "ACME".to_string();
 
-        // Monolithic extraction
-        let expected = super::super::extract_features_raw(&symbol, &ctx);
+        // MinimalFeatures extraction (uses group extractors internally)
+        let minimal = super::super::MinimalFeatures;
+        let expected = minimal.extract_market(&symbol, &ctx);
 
-        // Group extraction
+        // Group extraction into full-size buffer
         let mut actual = [f64::NAN; N_FULL_FEATURES];
         extract_price(&symbol, &ctx, &mut actual);
         extract_technical(&symbol, &ctx, &mut actual);

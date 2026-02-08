@@ -50,9 +50,14 @@ V0 (MVP Simulation)
  │
  ├──► V5: Machine Learning (price realism, feature recording, tree training)
  │
- ├──► V6: Feature Engineering (full features, gym env, PyO3, ensemble)
+ ├──► V6: Feature Engineering (full features, SHAP trimming, ensemble) ✅ COMPLETE
  │
- ├──► V7: Reinforcement Learning (reward shaping, optional deep RL)
+ ├──► V7: Reinforcement Learning
+ │    ├──► V7.1: Gym Environment + PyO3 Bindings
+ │    ├──► V7.2: Reward Function Design & Baseline Testing
+ │    ├──► V7.3: RL Training (PPO/A2C)
+ │    ├──► V7.4: Deployment & Evaluation
+ │    └──► V7.5: (Optional) Deep RL
  │
  └──► V8: Portfolio Manager Game (Services, API)
 ```
@@ -777,11 +782,13 @@ crates/agents/src/
 
 **Total V5** ~2.5 weeks (V5.1: 2d, V5.2: 3-4d, V5.3: 2d, V5.4: 3d, V5.5: 2d, V5.6: 2d)
 
-## V6: Feature Engineering & Training Infrastructure
+## V6: Feature Engineering & Training Infrastructure ✅ COMPLETE
 
-**Philosophy** Expand V5 minimal proof into full ML infrastructure. Centralized market features, ensemble models as V7 baseline, gym environment for RL readiness, and PyO3 bindings for Python training.
+**Philosophy** Expand V5 minimal proof into full ML infrastructure. Centralized market features, ensemble models, and SHAP-validated canonical features as the V7 baseline.
 
 **Requires** V5 complete (TreeAgent working)
+
+**Status** V6.1-V6.3 shipped. Gym environment and PyO3 bindings moved to V7.1.
 
 **V5 Modifications** V6 modifies V5 files where needed (open-closed is aspirational). Key V5 changes: `MlPredictionCache` `[f64;42]` → `Vec<f64>`, add `FeatureExtractor` trait (planned in 5.3, never built), extract agent spawning from `main.rs`.
 
@@ -892,45 +899,39 @@ V6.2: Full Ensemble
     └─► Benchmark: target <50us per ensemble prediction
 ```
 
-### V6.3: Gym Environment
+### V6.3: Canonical Features (SHAP Trimming)
 
-See `6.3_gym_environment.md`. Bridges to V7 RL.
-
-```
-V6.3: Gym Environment
-    └─► New crate: crates/gym/
-    └─► ExternalAgent: Agent impl with Arc<Mutex<DiscreteAction>> for external control
-    └─► TradingEnv: owns Simulation + ExternalAgent, step/reset/seed
-    └─► Action space: Discrete(3) = {Sell, Hold, Buy}
-    └─► Observation: 54-feature Vec<f64> (centralized market features)
-    └─► RewardFunction trait: pluggable for V7.1 reward shaping
-    │     Default: PnlDeltaReward (realized + unrealized P&L change)
-    │     Prepared: RiskAdjustedReward (drawdown penalty, transaction cost, Sharpe bonus)
-    └─► Episode management: configurable max_ticks, bankrupt termination
-    └─► Seed support: deterministic episodes for reproducible training
-    └─► Uses AgentFactory to spawn background agents per episode
-```
-
-### V6.4: PyO3 Bindings
-
-See `6.4_pyo3_bindings.md`. Python-Rust bridge for training.
+V6.2 SHAP analysis proved 27/55 features are noise. V6.3 adds `CanonicalFeatures` — a 28-feature SHAP-validated extractor as the new default. Design spec: `shap_feature_engineering.md`.
 
 ```
-V6.4: PyO3 Bindings
-    └─► New crate: crates/gym-python/ (cdylib via maturin)
-    └─► PyTradingEnv: wraps TradingEnv, NumPy array I/O
-    └─► observation_space / action_space properties (gymnasium.spaces compatible)
-    └─► py.allow_threads() releases GIL during Rust computation
-    └─► PyVecTradingEnv: parallel Rust envs via rayon for batched episode collection
-    └─► Seed passthrough for reproducible training runs
-    └─► Build: maturin develop --release
+V6.3: Canonical Features
+    └─► types/features.rs: N_CANONICAL_FEATURES=28, canonical_idx, CANONICAL_REGISTRY
+    └─► CanonicalFeatures: FeatureExtractor impl (28 features, 5 groups)
+    │     Self-contained extraction: Price(8), Technical(13), Volatility(3),
+    │     Fundamental(2), MomentumQuality(2)
+    │     Dropped: News, Microstructure, VolumeCross (<1% SHAP each)
+    └─► MinimalFeatures refactored to use group_extractors (modular)
+    └─► extract_features_raw/extract_features deprecated
+    └─► Default extractor: CanonicalFeatures (was MinimalFeatures)
+    └─► compute_feature_indices: short-circuit for 28 canonical
+    └─► Three extractors coexist: Minimal(42), Full(55), Canonical(28)
 ```
+
+### V6.4 & V6.5: Moved to V7.1
+
+**Note:** Gym environment and PyO3 bindings are now part of **V7.1: Gym Environment + PyO3 Bindings**.
+
+Rationale:
+- V6 goal was feature engineering (V6.1-V6.3) ✅ COMPLETE
+- Gym + PyO3 are RL infrastructure, belong with RL training
+- V7.1 delivers complete vertical slice: gym environment + Python bindings + baseline testing
+- See `7.1_gym_and_pyo3.md` for full implementation plan
 
 **Dependency Graph**
 ```
-Refactor ──► 6.1 Full Features ──► 6.2 Ensemble
-                   │
-                   └──► 6.3 Gym Env ──► 6.4 PyO3
+Refactor ──► 6.1 Full Features ──► 6.2 Ensemble ──► 6.3 Canonical ✅
+                                                          │
+                                                          └──► V7.1 Gym + PyO3
 ```
 
 **V6 Files**
@@ -948,87 +949,176 @@ MODIFIED:
 
 NEW:
   crates/simulation/src/agent_factory.rs  # Extracted agent spawning
-  crates/agents/src/tier1/ml/full_features.rs   # FullFeatures (54 market)
+  crates/agents/src/tier1/ml/full_features.rs   # FullFeatures (55 market)
+  crates/agents/src/tier1/ml/canonical_features.rs  # CanonicalFeatures (28 SHAP-validated)
   crates/agents/src/tier1/ml/linear_model.rs    # LinearModel
   crates/agents/src/tier1/ml/svm_linear.rs      # SvmLinear
-  crates/agents/src/tier1/ml/ensemble_agent.rs  # EnsembleAgent (54 features)
-  crates/gym/                             # Gym environment crate
-  crates/gym-python/                      # PyO3 bindings crate
+  crates/agents/src/tier1/ml/ensemble_agent.rs  # EnsembleAgent
   scripts/train_ensemble.py               # Training pipeline
   scripts/export_linear.py                # Model export
   scripts/export_svm.py                   # Model export
 ```
 
-**V6 Deliverable** Full ensemble ML agent with gym environment and PyO3 training infrastructure. Ensemble performance is the baseline V7 RL must beat.
+**V6 Deliverable ✅** Ensemble ML agent with 28 SHAP-validated canonical features. Ensemble performance is the baseline V7 RL must beat.
 
-**Deferred Decisions (with trade-offs)**
+**V6 Decisions Made**
 
-| Decision | Options | Trade-off | When to Decide |
-|----------|---------|-----------|----------------|
-| **SVM kernel** | Linear / RBF | Linear: trivial export (weights+bias), ~200ns; RBF: requires support vectors, ~10x slower | V6.4 training |
-| **Action space** | Discrete(3) / Continuous | Discrete matches V5 3-class; Continuous enables position sizing in V7 | V7.1 |
-| **Feature pruning** | Keep all 54 / Prune by MI | Fewer features = faster + less overfit; more = richer signal | After V6.2 SHAP analysis |
+| Decision | Chosen | Outcome |
+|----------|--------|---------|
+| **SVM kernel** | Linear | Trivial export (weights+bias), ~200ns inference ✅ |
+| **Feature pruning** | SHAP-based (28 canonical) | 28 features from 55 original, better generalization ✅ |
 
-**Total V6** ~2.5 weeks (Refactor: 3-4d, V6.1: 3d, V6.2: 4d, V6.3: 3d, V6.4: 3d; 6.2 and 6.3 can overlap)
+**Total V6** ~2 weeks ✅ (Refactor: 3-4d, V6.1: 3d, V6.2: 4d, V6.3: 3d)
 
 ## V7: Reinforcement Learning
 
-**Philosophy** Build on V6 infrastructure to add reward functions and deep RL training. V7.1 enhances ensemble with reward shaping. V7.2 adds Deep RL (GPU) optionally if ensemble proves insufficient.
+**Philosophy** Build complete RL infrastructure then train agents. V7.1 delivers gym environment + Python bindings (vertical slice). V7.2 adds RL training with reward shaping and optional deep RL.
 
-**Note** V7 uses the same architecture as V5/V6 — train in Python, inference in Rust. For ensemble RL (V7.1), JSON export continues. For neural networks (V7.2), ONNX export is required.
+**Requires** V6.3 complete (CanonicalFeatures available)
 
-```
-V7.1: Reward-Shaped Ensemble (~3 days)
-    └─► Reward function design:
-        • Realized P&L + unrealized P&L change
-        • Risk penalties: volatility, drawdown
-        • Transaction cost modeling
-        • Sharpe ratio terminal bonus
-    └─► Re-train V6 ensemble with reward labels (not just imitation)
-    └─► Compare: imitation-trained vs reward-trained ensemble
-    └─► Export updated JSON, deploy as `RewardEnsembleAgent`
-```
+**Note** V7 uses the same architecture as V5/V6 — train in Python, inference in Rust. For RL policies, ONNX export enables neural network deployment if needed.
 
-**Optional V7.2: Deep RL with Neural Networks (~2 weeks, requires GPU)**
+### V7.1: Gym Environment + PyO3 Bindings
 
-Only pursue if ensemble ML plateaus below profitability threshold. Requires 1-2 GPUs (per your constraint).
+See `7.1_gym_and_pyo3.md`. Complete RL infrastructure for training.
 
 ```
-V7.2.1: Neural Network Architecture (~3 days)
-    └─► Design network: feedforward or LSTM for sequence modeling
-    └─► Input: V5.5 features (reuse feature engineering)
-    └─► Output: discrete actions (buy/hold/sell) or continuous (position sizing)
-    └─► Framework: PyTorch or stable-baselines3
-
-V7.2.2: Deep RL Training (~1 week)
-    └─► Algorithm: PPO (stable, sample-efficient) or DQN (simpler, discrete actions)
-    └─► Hyperparameter tuning: learning rate, batch size, entropy coefficient
-    └─► Parallel environment collection (leverage Rust speed via V6.3 PyO3)
-    └─► Fixed seed runs for reproducible experiments
-    └─► Tensorboard logging, training curves
-
-V7.2.3: ONNX Export + Rust Inference (~3 days)
-    └─► Export trained model to ONNX format
-    └─► Integrate ONNX runtime in Rust (`ort` crate recommended)
-    └─► Implement `NeuralAgent` wrapper
-    └─► Benchmark inference latency (target: <1ms per agent)
-    └─► Note: ONNX only needed for neural networks, not V5/V6/V7.1 ensemble
+V7.1: Gym Environment + PyO3 Bindings (~1 week)
+    └─► Gym Environment (crates/gym/)
+        • ExternalAgent: multi-symbol agent with clean SoC (separate storage in AgentOrchestrator)
+        • TradingEnv: owns Simulation, step/reset/seed, MultiDiscrete([3,3,3]) action space
+        • Observation: N_symbols × 28 CanonicalFeatures (concatenated)
+        • RewardFunction trait: pluggable for V7.2 experimentation
+        • Simulation APIs: ml_cache(), warmup_ticks_needed(), get_external_agent_mut()
+    └─► PyO3 Bindings (crates/gym-python/)
+        • PyTradingEnv: wraps TradingEnv, NumPy array I/O
+        • gymnasium.spaces compatible (observation_space, action_space properties)
+        • py.allow_threads() releases GIL during Rust computation
+        • PyVecTradingEnv: parallel envs via rayon for batched collection
+        • Seed passthrough for deterministic training
+        • Build: maturin develop --release
+    └─► Testing
+        • Unit tests: action space, reward functions, termination
+        • Integration tests: deterministic episodes, factory integration
+        • Baseline run: 100 episodes with random actions
 ```
 
-**Why Start with Ensemble ML**
-1. **Faster iteration** Minutes to train vs hours for Deep RL
-2. **No GPU required** Runs on any machine
-3. **Interpretable** Feature importance reveals what works
-4. **Proven** Many quant funds use tree ensembles
-5. **Baseline** If ensemble fails, features are bad (fix before trying Deep RL)
+**Deliverable** Rust gym environment with Python bindings, ready for RL training. Baseline performance measured.
 
-**When to Add Deep RL**
-- Ensemble ML consistently loses to baseline strategies
+### V7.2: Reward Function Design & Baseline Testing
+
+Experiment with reward functions to find optimal learning signal.
+
+```
+V7.2: Reward Function Design & Baseline Testing (~2-3 days)
+    └─► Reward Function Implementation
+        • PnlDeltaReward: Simple realized P&L + unrealized P&L change
+        • RiskAdjustedReward: P&L with volatility penalty (Sharpe-inspired)
+        • TransactionCostReward: Model slippage and fees
+        • DrawdownPenaltyReward: Penalize equity drawdowns
+        • SharpeBonusReward: Terminal Sharpe ratio bonus
+    └─► Baseline Testing (Random Actions)
+        • Run 100 episodes with random actions for each reward function
+        • Measure: mean reward, variance, episode length, final equity
+        • Identify which reward functions produce meaningful gradients
+        • Document reward statistics for training comparison
+    └─► Reward Function Selection
+        • Compare learning potential (non-zero gradient, bounded variance)
+        • Select 2-3 best candidates for V7.3 training
+        • Document rationale and baseline metrics
+```
+
+**Deliverable** 2-3 validated reward functions with baseline metrics, ready for PPO/A2C training.
+
+### V7.3: RL Training (PPO/A2C)
+
+Train RL agents using V7.1 infrastructure and V7.2 reward functions.
+
+```
+V7.3: RL Training (PPO/A2C) (~1 week)
+    └─► Training Setup
+        • Algorithm: PPO (stable, sample-efficient) or A2C (simpler, on-policy)
+        • Framework: stable-baselines3 (standard RL library)
+        • Use PyVecTradingEnv for parallel episode collection (V7.1 rayon batching)
+        • Fixed seed runs for reproducible experiments
+        • Tensorboard logging, training curves
+    └─► Hyperparameter Tuning
+        • Learning rate: [1e-4, 3e-4, 1e-3]
+        • Batch size: [64, 256, 1024]
+        • Entropy coefficient: [0.0, 0.01, 0.1]
+        • Grid search or random search over top reward functions from V7.2
+        • Train for 100k-500k steps per configuration
+    └─► Best Model Selection
+        • Evaluate on validation episodes (100 episodes, different seeds)
+        • Select model with best Sharpe ratio or total return
+        • Save model checkpoint for V7.4 deployment
+```
+
+**Deliverable** Trained RL policy (PPO/A2C) with training logs, learning curves, and validation metrics.
+
+### V7.4: Deployment & Evaluation
+
+Deploy trained RL agent in simulation and compare against baselines.
+
+```
+V7.4: Deployment & Evaluation (~4-5 days)
+    └─► Rust Deployment
+        • ONNX export (if neural network policy)
+        • JSON export (if tree-based policy, like V6 ensemble)
+        • Integrate ONNX runtime in Rust (`ort` crate) if needed
+        • Implement `RlAgent` wrapper (similar to TreeAgent, EnsembleAgent)
+        • Benchmark inference latency (target: <1ms per agent)
+    └─► Performance Comparison
+        • RL agent vs V6.3 ensemble baseline (Sharpe, returns, drawdown)
+        • RL agent vs rule-based strategies (momentum, mean-reversion)
+        • Out-of-sample testing on unseen market conditions (different seeds)
+        • Statistical significance testing (t-test, bootstrap)
+    └─► Hyperparameter Sensitivity Analysis
+        • Re-run with ±20% hyperparameter variations
+        • Measure robustness to reward function changes
+        • Document failure modes (e.g., when RL underperforms)
+```
+
+**Deliverable** Deployed RlAgent in simulation, performance report comparing RL vs baselines, sensitivity analysis.
+
+### V7.5: (Optional) Deep RL
+
+Neural network policies for complex function approximation.
+
+```
+V7.5: Deep RL (~2 weeks, GPU required)
+    └─► Neural Network Architecture
+        • Feedforward: [28 features → 128 → 64 → 3 actions] for single-symbol
+        • LSTM: Add recurrent layer for sequential dependencies (market regimes)
+        • Multi-symbol: [N×28 features → shared trunk → N×3 actions]
+    └─► GPU Training
+        • Requires 1-2 GPUs (CUDA/ROCm)
+        • Larger batch sizes (1024-4096)
+        • More training steps (1M-10M)
+        • Use PPO or SAC (soft actor-critic for continuous actions)
+    └─► ONNX Export & Deployment
+        • Export trained model to ONNX format
+        • Test inference latency with `ort` crate
+        • Compare vs tree-based policies (accuracy, latency, sample efficiency)
+```
+
+**Deliverable** (Optional) Deep RL agent deployed in simulation, comparison vs shallow RL and baselines.
+
+**Why Start with Shallow RL (V7.2-V7.4, Not V7.5)**
+1. **Faster iteration**: Hours to train vs days for deep RL
+2. **No GPU required**: Runs on any machine
+3. **Proven**: PPO is state-of-the-art for continuous control
+4. **Diagnostic**: If shallow RL fails, reward function or features need work
+
+**When to Add Deep RL (V7.5)**
+- Shallow RL consistently loses to baseline strategies
+- Need complex function approximation (non-linear policies)
 - Need to model sequential dependencies (LSTM for market regimes)
 - Have GPU resources available for training
-- Want to explore complex action spaces (continuous position sizing)
 
-**Maps to Original** Phases 13-18 (RL Track) — updated for CPU-first approach with optional GPU path
+**Total V7** ~3-5 weeks (V7.1: 1wk, V7.2: 2-3d, V7.3: 1wk, V7.4: 4-5d, V7.5: 2wks optional)
+
+**Maps to Original** Phases 13-18 (RL Track) — updated to start with gym infrastructure, then training
 
 ## V8: Portfolio Manager Game
 

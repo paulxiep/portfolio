@@ -1,5 +1,85 @@
 # Development Log
 
+## 2026-02-08: V6.3 Canonical Features — 28 SHAP-Validated Feature Extractor
+
+### Summary
+V6.2 SHAP analysis proved 27/55 features contribute <1% importance. Retrained all models on 28 features — accuracy preserved (some models slightly improved). V6.3 adds `CanonicalFeatures` as a third plug-in extractor alongside `MinimalFeatures` (42, V5) and `FullFeatures` (55, V6.1). Modularized `MinimalFeatures` to use group extractors, deprecating monolithic `extract_features_raw`. Changed default extractor to `CanonicalFeatures`.
+
+SHAP analysis: `shap_feature_engineering.md`
+
+### What Changed
+
+**1. Canonical feature schema** (`crates/types/src/features.rs`)
+- `N_CANONICAL_FEATURES = 28`, `CANONICAL_LOOKBACKS = [1, 32, 48, 64]`
+- `canonical_idx` module: 28 named index constants (0-27)
+- `CANONICAL_FEATURE_NAMES`: 28 feature name strings
+- `CANONICAL_FEATURE_NEUTRALS`: semantic neutral values for NaN imputation
+- `CANONICAL_DESCRIPTORS`: 28 `FeatureDescriptor` entries across 5 groups
+- `CANONICAL_REGISTRY`: static `FeatureRegistry` for downstream consumers
+- `FeatureGroup::CANONICAL`: 5 groups (Price, Technical, Volatility, Fundamental, MomentumQuality)
+- Compile-time assertions: all 28 index checks + array length checks
+
+**2. CanonicalFeatures extractor** (`crates/agents/src/tier1/ml/canonical_features.rs`) — NEW
+- Self-contained `FeatureExtractor` impl producing 28 features
+- 5 private extraction functions writing to canonical indices:
+  - `extract_price()` — 8 features (mid_price, price_change_{1,32,48,64}, log_return_{32,48,64})
+  - `extract_technical()` — 13 indicators (SMA, EMA, RSI, MACD, Bollinger, ATR)
+  - `extract_volatility()` — 3 features (realized_vol_8/32, vol_ratio)
+  - `extract_fundamental()` — 2 features (fair_value_dev, price_to_fair)
+  - `extract_momentum_quality()` — 2 features (trend_strength, rsi_divergence)
+- No dependency on V5/V6.1 group_extractors — fully self-contained
+
+**3. MinimalFeatures modularized** (`crates/agents/src/tier1/ml/feature_extractor.rs`)
+- `MinimalFeatures::extract_market()` now delegates to `group_extractors::extract_price/technical/news`
+- `extract_features_raw()` and `extract_features()` marked `#[deprecated]`
+- Monolithic code detached from extractor (kept for backward compat)
+
+**4. Feature index remapping** (`crates/agents/src/tier1/ml/mod.rs`)
+- `compute_feature_indices()`: added `N_CANONICAL_FEATURES` (28) short-circuit — no remap needed
+- MlModel trait doc updated: "28 for V6.3 canonical, 42 for V5, 55 for V6.1"
+
+**5. Default extractor** (`crates/simulation/src/runner.rs`)
+- Changed auto-default from `MinimalFeatures` to `CanonicalFeatures`
+- Explicit `--full-features` still uses `FullFeatures` (55)
+
+**6. Version bump** — pushed old V6.3 (Gym) → V6.4, old V6.4 (PyO3) → V6.5
+
+### Retrained Accuracy (28 features)
+
+| Model | Type | 55-feat | 28-feat | Delta |
+|-------|------|---------|---------|-------|
+| medium_decision_tree | DT (depth 12) | ~51% | 51.12% | ~0% |
+| deep_decision_tree | DT (depth 16) | ~63% | 63.13% | ~0% |
+| small_random_forest | RF (24 trees, depth 12) | ~64.5% | 65.12% | +0.6% |
+| fast_gradient_boosted | GB (24 trees, depth 8, lr 0.4) | ~71% | 72.24% | +1.2% |
+| slow_gradient_boosted | GB (36 trees, depth 10, lr 0.25) | ~85% | 84.48% | -0.5% |
+
+### Architecture
+
+Three feature extractors coexist as plug-ins:
+```
+FeatureExtractor trait
+    ├── MinimalFeatures  (42 features, V5)    — group_extractors (refactored)
+    ├── FullFeatures     (55 features, V6.1)  — group_extractors (unchanged)
+    └── CanonicalFeatures(28 features, V6.3)  — self-contained (new default)
+```
+
+### Files Summary
+
+| File | Action | Change |
+|------|--------|--------|
+| `crates/types/src/features.rs` | MODIFY | Canonical schema: indices, names, neutrals, descriptors, registry |
+| `crates/types/src/lib.rs` | MODIFY | Canonical re-exports |
+| `crates/agents/src/tier1/ml/canonical_features.rs` | CREATE | CanonicalFeatures extractor (28 features) |
+| `crates/agents/src/tier1/ml/feature_extractor.rs` | MODIFY | MinimalFeatures modularized, monolithic deprecated |
+| `crates/agents/src/tier1/ml/mod.rs` | MODIFY | canonical module, compute_feature_indices short-circuit |
+| `crates/simulation/src/runner.rs` | MODIFY | Default extractor → CanonicalFeatures |
+| `crates/agents/src/tier1/mod.rs` | MODIFY | CanonicalFeatures re-export |
+| `crates/agents/src/lib.rs` | MODIFY | CanonicalFeatures re-export |
+| `shap_feature_engineering.md` | MODIFY | V6.2 retrained results section |
+| `6.3_gym_environment.md` | RENAME | → `6.4_gym_environment.md` |
+| `6.4_pyo3_bindings.md` | RENAME | → `6.5_pyo3_bindings.md` |
+
 ## 2026-02-07: V6.2 Full Ensemble — Python Training Pipeline, New Model Types, Ensemble YAML
 
 ### Summary
@@ -139,7 +219,7 @@ Design spec: `6.1_full_features.md`
 - Returns `FULL_REGISTRY` from `registry()`
 
 **5. FeatureExtractor trait extended** (`crates/agents/src/tier1/ml/mod.rs`)
-- Added `fn registry(&self) -> &'static FeatureRegistry` — provides metadata to downstream consumers (V6.2 SHAP, V6.3 gym, V7.2 deep RL)
+- Added `fn registry(&self) -> &'static FeatureRegistry` — provides metadata to downstream consumers (V6.2 SHAP, V6.3 canonical features, V6.4 gym, V7.2 deep RL)
 - `MinimalFeatures` returns `&MINIMAL_REGISTRY`
 
 **6. CLI integration** (`src/main.rs`)
@@ -186,7 +266,8 @@ FeatureDescriptor ──► FeatureRegistry   group_extractors.rs
                            │            HookContext.features ──► Parquet
                            ▼
                     V6.2: SHAP group aggregation
-                    V6.3: gym observation bounds
+                    V6.3: canonical feature trimming
+                    V6.4: gym observation bounds
                     V7.2: NN normalization ranges
 ```
 

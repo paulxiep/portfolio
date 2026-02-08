@@ -34,6 +34,7 @@
 //! );
 //! ```
 
+mod canonical_features;
 mod decision_tree;
 mod ensemble_model;
 mod feature_extractor;
@@ -46,8 +47,10 @@ mod ml_agent;
 mod model_registry;
 mod random_forest;
 
+pub use canonical_features::CanonicalFeatures;
 pub use decision_tree::DecisionTree;
 pub use ensemble_model::EnsembleModel;
+#[allow(deprecated)]
 pub use feature_extractor::{MinimalFeatures, extract_features, extract_features_raw};
 pub use full_features::FullFeatures;
 pub use gaussian_nb::GaussianNBPredictor;
@@ -67,7 +70,7 @@ pub trait MlModel: Send + Sync {
     /// Predict class probabilities from market features.
     ///
     /// # Arguments
-    /// * `features` - Slice of features in canonical order (42 for V5, 55 for V6)
+    /// * `features` - Slice of features in extraction order (28 for V6.3 canonical, 42 for V5, 55 for V6.1)
     ///
     /// # Returns
     /// `[p_sell, p_hold, p_buy]` probabilities that sum to 1.0.
@@ -154,18 +157,22 @@ pub fn impute_features(features: &mut crate::ml_cache::FeatureVec, neutrals: &[f
 
 /// Compute mapping from model feature positions to full-vector positions.
 ///
-/// Returns `None` if no remapping is needed (model uses canonical 42 or 55 features
-/// in standard order). Returns `Some(indices)` when the model was trained on a
-/// feature subset, where `indices[model_pos] = full_vector_pos`.
+/// Returns `None` if no remapping is needed (model uses 28 canonical, 42 market,
+/// or 55 full features in standard order). Returns `Some(indices)` when the model
+/// was trained on a feature subset, where `indices[model_pos] = full_vector_pos`.
 pub(crate) fn compute_feature_indices(
     model_feature_names: &[String],
     n_features: usize,
 ) -> Option<Vec<usize>> {
-    // V5 backward compat: 42 features = canonical prefix, no remap
+    // V6.3 canonical: 28 features = canonical order, no remap
+    if n_features == types::N_CANONICAL_FEATURES {
+        return None;
+    }
+    // V5 backward compat: 42 features = market prefix, no remap
     if n_features == types::N_MARKET_FEATURES {
         return None;
     }
-    // V6.1 full: 55 features = canonical order, no remap
+    // V6.1 full: 55 features = full order, no remap
     if n_features == types::N_FULL_FEATURES {
         return None;
     }

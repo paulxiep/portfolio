@@ -25,11 +25,14 @@ pub use strategies::{
     VwapExecutorConfig,
 };
 
-// Re-export ML model types (V5.5, V6.2) and MlAgent
+// Re-export ML model types (V5.5, V6.2, V6.3) and MlAgent
 // V5.6: Added ModelRegistry and extract_features for centralized prediction caching
 // V6.2: Added LinearPredictor, GaussianNBPredictor, EnsembleModel
+// V6.3: Added CanonicalFeatures (28 SHAP-validated features)
+#[allow(deprecated)]
 pub use ml::{
-    ClassProbabilities, DecisionTree, EnsembleModel, FeatureExtractor, FullFeatures,
-    GaussianNBPredictor, GradientBoosted, LinearPredictor, MinimalFeatures, MlAgent, MlAgentConfig,
-    MlModel, ModelRegistry, RandomForest, extract_features, extract_features_raw, impute_features,
+    CanonicalFeatures, ClassProbabilities, DecisionTree, EnsembleModel, FeatureExtractor,
+    FullFeatures, GaussianNBPredictor, GradientBoosted, LinearPredictor, MinimalFeatures, MlAgent,
+    MlAgentConfig, MlModel, ModelRegistry, RandomForest, extract_features, extract_features_raw,
+    impute_features,
 };

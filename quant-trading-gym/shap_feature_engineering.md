@@ -137,3 +137,69 @@ Importance normalized per model (divide by sum), then averaged across 5 models. 
 ### Notes on News features
 
 News contributing almost nothing may be a simulation artifact — news events are rare and their price impact is already captured by price/volatility features. In a real market data setting, news features would likely be more important. Keeping them in the Rust feature extractor for future re-evaluation.
+
+---
+
+## V6.2 Retrained Results (28 Features)
+
+### Accuracy Comparison
+
+Retrained all 5 models on 28 SHAP-validated features. No signal loss — some models slightly improve due to reduced noise.
+
+| Model | Type | 55-feat | 28-feat | Delta |
+|-------|------|---------|---------|-------|
+| medium_decision_tree | DT (depth 12) | ~51% | 51.12% | ~0% |
+| deep_decision_tree | DT (depth 16) | ~63% | 63.13% | ~0% |
+| small_random_forest | RF (24 trees, depth 12) | ~64.5% | 65.12% | +0.6% |
+| fast_gradient_boosted | GB (24 trees, depth 8, lr 0.4) | ~71% | 72.24% | +1.2% |
+| slow_gradient_boosted | GB (36 trees, depth 10, lr 0.25) | ~85% | 84.48% | -0.5% |
+
+### Group Importance (28 features, 5 groups)
+
+| Group | #Feat | DT deep | GB fast | DT med | GB slow | RF small |
+|-------|-------|---------|---------|--------|---------|----------|
+| Technical | 13 | 37.0% | 37.7% | 37.5% | 37.9% | 34.2% |
+| Price | 8 | 24.0% | 26.2% | 20.8% | 27.2% | 20.0% |
+| Fundamental | 2 | 18.7% | 12.2% | 24.6% | 9.8% | 29.4% |
+| Volatility | 3 | 15.9% | 19.2% | 13.0% | 20.1% | 13.4% |
+| MomentumQuality | 2 | 4.4% | 4.7% | 4.1% | 5.0% | 3.0% |
+
+### Cross-Model Feature Consensus (28 Features)
+
+| Rank | Feature | Group | AvgNorm | Top20 |
+|------|---------|-------|---------|-------|
+| 1 | f_fair_value_dev | Fundamental | 0.1168 | 5/5 |
+| 2 | f_price_to_fair | Fundamental | 0.0680 | 5/5 |
+| 3 | f_realized_vol_32 | Volatility | 0.0623 | 5/5 |
+| 4 | f_realized_vol_8 | Volatility | 0.0598 | 5/5 |
+| 5 | f_bb_lower | Technical | 0.0513 | 5/5 |
+| 6 | f_mid_price | Price | 0.0470 | 5/5 |
+| 7 | f_atr_8 | Technical | 0.0390 | 5/5 |
+| 8 | f_log_return_64 | Price | 0.0382 | 5/5 |
+| 9 | f_price_change_1 | Price | 0.0355 | 5/5 |
+| 10 | f_macd_histogram | Technical | 0.0343 | 5/5 |
+| 11 | f_sma_16 | Technical | 0.0316 | 5/5 |
+| 12 | f_ema_16 | Technical | 0.0311 | 5/5 |
+| 13 | f_bb_upper | Technical | 0.0295 | 5/5 |
+| 14 | f_price_change_64 | Price | 0.0287 | 5/5 |
+| 15 | f_vol_ratio | Volatility | 0.0273 | 5/5 |
+| 16 | f_macd_line | Technical | 0.0271 | 5/5 |
+| 17 | f_log_return_48 | Price | 0.0244 | 5/5 |
+| 18 | f_bb_percent_b | Technical | 0.0243 | 5/5 |
+| 19 | f_trend_strength | MomentumQuality | 0.0237 | 5/5 |
+| 20 | f_price_change_48 | Price | 0.0225 | 5/5 |
+| 21 | f_rsi_8 | Technical | 0.0221 | 5/5 |
+| 22 | f_macd_signal | Technical | 0.0185 | 3/5 |
+| 23 | f_ema_8 | Technical | 0.0183 | 2/5 |
+| 24 | f_rsi_divergence | MomentumQuality | 0.0183 | 2/5 |
+| 25 | f_price_change_32 | Price | 0.0182 | 2/5 |
+| 26 | f_log_return_32 | Price | 0.0176 | 2/5 |
+| 27 | f_sma_8 | Technical | 0.0175 | 1/5 |
+| 28 | f_bb_middle | Technical | 0.0169 | 1/5 |
+
+**Key observations (28 features):**
+- All 28 features contribute meaningfully — no zero-importance features remain
+- Top 21 features are 5/5 consensus (up from top 14 at 55 features)
+- Per-feature importance increases ~17% (1/28 vs 1/55 baseline) as noise features removed
+- Fundamental remains disproportionately important: 2 features, ~19% importance
+- Volatility efficiency confirmed: 3 features, ~16% importance

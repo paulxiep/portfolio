@@ -75,6 +75,15 @@ impl FeatureGroup {
 
     /// V5 groups only (first 42 features).
     pub const MINIMAL: [FeatureGroup; 3] = [Self::Price, Self::TechnicalIndicator, Self::News];
+
+    /// V6.3 canonical groups (28 SHAP-validated features).
+    pub const CANONICAL: [FeatureGroup; 5] = [
+        Self::Price,
+        Self::TechnicalIndicator,
+        Self::Volatility,
+        Self::Fundamental,
+        Self::MomentumQuality,
+    ];
 }
 
 // =============================================================================
@@ -648,6 +657,168 @@ pub static FULL_REGISTRY: FeatureRegistry = FeatureRegistry {
 };
 
 // =============================================================================
+// V6.3 Canonical Schema (28 SHAP-validated features)
+// =============================================================================
+
+/// Total number of V6.3 canonical features (SHAP-validated subset of V6.1).
+pub const N_CANONICAL_FEATURES: usize = 28;
+
+/// Lookback periods used by canonical Price features.
+pub const CANONICAL_LOOKBACKS: &[usize] = &[1, 32, 48, 64];
+
+/// Named feature indices for V6.3 canonical features (0-27).
+///
+/// 28 SHAP-validated features from 5 groups:
+/// Price (8), Technical (13), Volatility (3), Fundamental (2), MomentumQuality (2).
+pub mod canonical_idx {
+    // Price (0-7)
+    pub const MID_PRICE: usize = 0;
+    pub const PRICE_CHANGE_1: usize = 1;
+    pub const PRICE_CHANGE_32: usize = 2;
+    pub const PRICE_CHANGE_48: usize = 3;
+    pub const PRICE_CHANGE_64: usize = 4;
+    pub const LOG_RETURN_32: usize = 5;
+    pub const LOG_RETURN_48: usize = 6;
+    pub const LOG_RETURN_64: usize = 7;
+
+    // Technical (8-20)
+    pub const SMA_8: usize = 8;
+    pub const SMA_16: usize = 9;
+    pub const EMA_8: usize = 10;
+    pub const EMA_16: usize = 11;
+    pub const RSI_8: usize = 12;
+    pub const MACD_LINE: usize = 13;
+    pub const MACD_SIGNAL: usize = 14;
+    pub const MACD_HISTOGRAM: usize = 15;
+    pub const BB_UPPER: usize = 16;
+    pub const BB_MIDDLE: usize = 17;
+    pub const BB_LOWER: usize = 18;
+    pub const BB_PERCENT_B: usize = 19;
+    pub const ATR_8: usize = 20;
+
+    // Volatility (21-23)
+    pub const REALIZED_VOL_8: usize = 21;
+    pub const REALIZED_VOL_32: usize = 22;
+    pub const VOL_RATIO: usize = 23;
+
+    // Fundamental (24-25)
+    pub const FAIR_VALUE_DEV: usize = 24;
+    pub const PRICE_TO_FAIR: usize = 25;
+
+    // MomentumQuality (26-27)
+    pub const TREND_STRENGTH: usize = 26;
+    pub const RSI_DIVERGENCE: usize = 27;
+}
+
+/// V6.3 canonical feature names (28 total).
+pub const CANONICAL_FEATURE_NAMES: &[&str] = &[
+    // Price (8)
+    "f_mid_price",
+    "f_price_change_1",
+    "f_price_change_32",
+    "f_price_change_48",
+    "f_price_change_64",
+    "f_log_return_32",
+    "f_log_return_48",
+    "f_log_return_64",
+    // Technical (13)
+    "f_sma_8",
+    "f_sma_16",
+    "f_ema_8",
+    "f_ema_16",
+    "f_rsi_8",
+    "f_macd_line",
+    "f_macd_signal",
+    "f_macd_histogram",
+    "f_bb_upper",
+    "f_bb_middle",
+    "f_bb_lower",
+    "f_bb_percent_b",
+    "f_atr_8",
+    // Volatility (3)
+    "f_realized_vol_8",
+    "f_realized_vol_32",
+    "f_vol_ratio",
+    // Fundamental (2)
+    "f_fair_value_dev",
+    "f_price_to_fair",
+    // MomentumQuality (2)
+    "f_trend_strength",
+    "f_rsi_divergence",
+];
+
+/// Per-feature neutral values for NaN imputation (V6.3 canonical).
+#[rustfmt::skip]
+pub const CANONICAL_FEATURE_NEUTRALS: [f64; N_CANONICAL_FEATURES] = [
+    // Price (8): 0.0 = no change / no price info
+    0.0,                            // f_mid_price
+    0.0, 0.0, 0.0, 0.0,            // f_price_change_{1,32,48,64}
+    0.0, 0.0, 0.0,                  // f_log_return_{32,48,64}
+    // Technical (13)
+    0.0, 0.0,                       // SMA 8/16
+    0.0, 0.0,                       // EMA 8/16
+    50.0,                            // RSI 8 (neutral midpoint)
+    0.0, 0.0, 0.0,                  // MACD line/signal/histogram
+    0.0, 0.0, 0.0,                  // BB upper/middle/lower
+    0.5,                             // BB %B (middle of band)
+    0.0,                             // ATR 8
+    // Volatility (3)
+    0.0, 0.0,                       // realized_vol 8/32
+    1.0,                             // vol_ratio (no regime change)
+    // Fundamental (2)
+    0.0,                             // fair_value_dev (at fair value)
+    1.0,                             // price_to_fair (at fair value)
+    // MomentumQuality (2)
+    0.0,                             // trend_strength (no trend)
+    0.0,                             // rsi_divergence (neutral RSI)
+];
+
+/// V6.3 canonical feature descriptors (28 features, 5 groups).
+#[rustfmt::skip]
+pub static CANONICAL_DESCRIPTORS: [FeatureDescriptor; N_CANONICAL_FEATURES] = [
+    // Price (8)
+    desc( 0, "f_mid_price",        Price, 0.0, INF),
+    desc( 1, "f_price_change_1",   Price, 0.0, (-100.0, 100.0)),
+    desc( 2, "f_price_change_32",  Price, 0.0, (-100.0, 100.0)),
+    desc( 3, "f_price_change_48",  Price, 0.0, (-100.0, 100.0)),
+    desc( 4, "f_price_change_64",  Price, 0.0, (-100.0, 100.0)),
+    desc( 5, "f_log_return_32",    Price, 0.0, (-5.0, 5.0)),
+    desc( 6, "f_log_return_48",    Price, 0.0, (-5.0, 5.0)),
+    desc( 7, "f_log_return_64",    Price, 0.0, (-5.0, 5.0)),
+    // Technical (13)
+    desc( 8, "f_sma_8",            TechnicalIndicator,  0.0,  INF),
+    desc( 9, "f_sma_16",           TechnicalIndicator,  0.0,  INF),
+    desc(10, "f_ema_8",            TechnicalIndicator,  0.0,  INF),
+    desc(11, "f_ema_16",           TechnicalIndicator,  0.0,  INF),
+    desc(12, "f_rsi_8",            TechnicalIndicator, 50.0,  (0.0, 100.0)),
+    desc(13, "f_macd_line",        TechnicalIndicator,  0.0,  INF),
+    desc(14, "f_macd_signal",      TechnicalIndicator,  0.0,  INF),
+    desc(15, "f_macd_histogram",   TechnicalIndicator,  0.0,  INF),
+    desc(16, "f_bb_upper",         TechnicalIndicator,  0.0,  INF),
+    desc(17, "f_bb_middle",        TechnicalIndicator,  0.0,  INF),
+    desc(18, "f_bb_lower",         TechnicalIndicator,  0.0,  INF),
+    desc(19, "f_bb_percent_b",     TechnicalIndicator,  0.5,  (-2.0, 3.0)),
+    desc(20, "f_atr_8",            TechnicalIndicator,  0.0,  (0.0, f64::INFINITY)),
+    // Volatility (3)
+    desc(21, "f_realized_vol_8",   Volatility, 0.0, (0.0, 1.0)),
+    desc(22, "f_realized_vol_32",  Volatility, 0.0, (0.0, 1.0)),
+    desc(23, "f_vol_ratio",        Volatility, 1.0, (0.0, 10.0)),
+    // Fundamental (2)
+    desc(24, "f_fair_value_dev",   Fundamental, 0.0, (-1.0, 1.0)),
+    desc(25, "f_price_to_fair",    Fundamental, 1.0, (0.0, 5.0)),
+    // MomentumQuality (2)
+    desc(26, "f_trend_strength",   MomentumQuality, 0.0, (0.0, 10.0)),
+    desc(27, "f_rsi_divergence",   MomentumQuality, 0.0, (-50.0, 50.0)),
+];
+
+/// V6.3 canonical feature registry (28 features, semantic neutrals).
+pub static CANONICAL_REGISTRY: FeatureRegistry = FeatureRegistry {
+    descriptors: &CANONICAL_DESCRIPTORS,
+    names: CANONICAL_FEATURE_NAMES,
+    neutrals: &CANONICAL_FEATURE_NEUTRALS,
+};
+
+// =============================================================================
 // Pure Computation Functions
 // =============================================================================
 
@@ -916,6 +1087,42 @@ const _: () = {
     // Legacy constant consistency
     assert!(idx::NEWS_TICKS_REMAINING == N_MARKET_FEATURES - 1);
     assert!(extended_idx::SENTIMENT_PRICE_GAP == N_FULL_FEATURES - 1);
+
+    // CANONICAL: every index == position
+    assert!(CANONICAL_DESCRIPTORS[0].index == 0);
+    assert!(CANONICAL_DESCRIPTORS[1].index == 1);
+    assert!(CANONICAL_DESCRIPTORS[2].index == 2);
+    assert!(CANONICAL_DESCRIPTORS[3].index == 3);
+    assert!(CANONICAL_DESCRIPTORS[4].index == 4);
+    assert!(CANONICAL_DESCRIPTORS[5].index == 5);
+    assert!(CANONICAL_DESCRIPTORS[6].index == 6);
+    assert!(CANONICAL_DESCRIPTORS[7].index == 7);
+    assert!(CANONICAL_DESCRIPTORS[8].index == 8);
+    assert!(CANONICAL_DESCRIPTORS[9].index == 9);
+    assert!(CANONICAL_DESCRIPTORS[10].index == 10);
+    assert!(CANONICAL_DESCRIPTORS[11].index == 11);
+    assert!(CANONICAL_DESCRIPTORS[12].index == 12);
+    assert!(CANONICAL_DESCRIPTORS[13].index == 13);
+    assert!(CANONICAL_DESCRIPTORS[14].index == 14);
+    assert!(CANONICAL_DESCRIPTORS[15].index == 15);
+    assert!(CANONICAL_DESCRIPTORS[16].index == 16);
+    assert!(CANONICAL_DESCRIPTORS[17].index == 17);
+    assert!(CANONICAL_DESCRIPTORS[18].index == 18);
+    assert!(CANONICAL_DESCRIPTORS[19].index == 19);
+    assert!(CANONICAL_DESCRIPTORS[20].index == 20);
+    assert!(CANONICAL_DESCRIPTORS[21].index == 21);
+    assert!(CANONICAL_DESCRIPTORS[22].index == 22);
+    assert!(CANONICAL_DESCRIPTORS[23].index == 23);
+    assert!(CANONICAL_DESCRIPTORS[24].index == 24);
+    assert!(CANONICAL_DESCRIPTORS[25].index == 25);
+    assert!(CANONICAL_DESCRIPTORS[26].index == 26);
+    assert!(CANONICAL_DESCRIPTORS[27].index == 27);
+
+    // Canonical array length checks
+    assert!(CANONICAL_DESCRIPTORS.len() == N_CANONICAL_FEATURES);
+    assert!(CANONICAL_FEATURE_NAMES.len() == N_CANONICAL_FEATURES);
+    assert!(CANONICAL_FEATURE_NEUTRALS.len() == N_CANONICAL_FEATURES);
+    assert!(canonical_idx::RSI_DIVERGENCE == N_CANONICAL_FEATURES - 1);
 };
 
 // =============================================================================
@@ -1175,5 +1382,87 @@ mod tests {
     fn test_feature_group_all() {
         assert_eq!(FeatureGroup::ALL.len(), 8);
         assert_eq!(FeatureGroup::MINIMAL.len(), 3);
+        assert_eq!(FeatureGroup::CANONICAL.len(), 5);
+    }
+
+    // =========================================================================
+    // V6.3 Canonical Registry Tests
+    // =========================================================================
+
+    #[test]
+    fn test_canonical_registry_len() {
+        assert_eq!(CANONICAL_REGISTRY.len(), 28);
+    }
+
+    #[test]
+    fn test_canonical_names_match_descriptors() {
+        for (i, desc) in CANONICAL_REGISTRY.descriptors().iter().enumerate() {
+            assert_eq!(
+                desc.name,
+                CANONICAL_REGISTRY.names()[i],
+                "CANONICAL name mismatch at index {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_canonical_neutrals_match_descriptors() {
+        for (i, desc) in CANONICAL_REGISTRY.descriptors().iter().enumerate() {
+            assert!(
+                (desc.neutral - CANONICAL_REGISTRY.neutrals()[i]).abs() < 1e-15,
+                "CANONICAL neutral mismatch at index {i}: descriptor={}, array={}",
+                desc.neutral,
+                CANONICAL_REGISTRY.neutrals()[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_canonical_group_indices() {
+        let price = CANONICAL_REGISTRY.group_indices(FeatureGroup::Price);
+        assert_eq!(price.len(), 8); // 0-7
+
+        let technical = CANONICAL_REGISTRY.group_indices(FeatureGroup::TechnicalIndicator);
+        assert_eq!(technical.len(), 13); // 8-20
+
+        let volatility = CANONICAL_REGISTRY.group_indices(FeatureGroup::Volatility);
+        assert_eq!(volatility, vec![21, 22, 23]);
+
+        let fundamental = CANONICAL_REGISTRY.group_indices(FeatureGroup::Fundamental);
+        assert_eq!(fundamental, vec![24, 25]);
+
+        let momentum = CANONICAL_REGISTRY.group_indices(FeatureGroup::MomentumQuality);
+        assert_eq!(momentum, vec![26, 27]);
+
+        // Dropped groups should have no canonical features
+        let news = CANONICAL_REGISTRY.group_indices(FeatureGroup::News);
+        assert!(news.is_empty());
+        let micro = CANONICAL_REGISTRY.group_indices(FeatureGroup::Microstructure);
+        assert!(micro.is_empty());
+        let volcross = CANONICAL_REGISTRY.group_indices(FeatureGroup::VolumeCross);
+        assert!(volcross.is_empty());
+    }
+
+    #[test]
+    fn test_canonical_feature_name_prefix() {
+        for name in CANONICAL_FEATURE_NAMES {
+            assert!(
+                name.starts_with("f_"),
+                "Canonical feature name '{}' should start with 'f_'",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn test_canonical_names_exist_in_full() {
+        // Every canonical feature name must exist in the full 55-feature set
+        for name in CANONICAL_FEATURE_NAMES {
+            assert!(
+                FULL_FEATURE_NAMES.contains(name),
+                "Canonical feature '{}' not found in FULL_FEATURE_NAMES",
+                name
+            );
+        }
     }
 }

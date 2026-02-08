@@ -332,9 +332,9 @@ impl Simulation {
     /// sim.register_ml_model(model);
     /// ```
     pub fn register_ml_model<M: agents::MlModel + 'static>(&mut self, model: M) {
-        // Auto-set MinimalFeatures if no extractor configured (V5 backward compat)
+        // Auto-set CanonicalFeatures if no extractor configured (V6.3 default)
         if self.feature_extractor.is_none() {
-            self.feature_extractor = Some(Box::new(agents::MinimalFeatures));
+            self.feature_extractor = Some(Box::new(agents::CanonicalFeatures));
         }
         self.model_registry
             .get_or_insert_with(ModelRegistry::new)
@@ -347,18 +347,19 @@ impl Simulation {
     /// enabling shared ownership (e.g., ensemble sub-models).
     pub fn register_ml_model_arc(&mut self, model: std::sync::Arc<dyn agents::MlModel>) {
         if self.feature_extractor.is_none() {
-            self.feature_extractor = Some(Box::new(agents::MinimalFeatures));
+            self.feature_extractor = Some(Box::new(agents::CanonicalFeatures));
         }
         self.model_registry
             .get_or_insert_with(ModelRegistry::new)
             .register_arc(model);
     }
 
-    /// Set the feature extractor for ML features and recording (pre-V6 refactor section F).
+    /// Set the feature extractor for ML features and recording.
     ///
     /// When set, the runner extracts features in Phase 3 and passes them to
     /// both the ML cache (for prediction) and recording hooks (for Parquet).
-    /// Use `MinimalFeatures` for V5 compatibility or `FullFeatures` for V6.
+    /// Use `CanonicalFeatures` (V6.3, 28 features), `FullFeatures` (V6.1, 55),
+    /// or `MinimalFeatures` (V5, 42).
     pub fn set_feature_extractor(&mut self, extractor: Box<dyn agents::FeatureExtractor>) {
         self.feature_extractor = Some(extractor);
     }

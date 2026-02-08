@@ -7,10 +7,10 @@
 - **Architecture & Patterns:** `Trait-Based Polymorphism` · `Separation of Concerns (SoC)` · `Plugin Architecture` · `Tick-Based Event Loop` · `Strategy Pattern` · `Builder Pattern (Config structs)` · `Dependency Injection via Traits` · `Layered Architecture` · `Agent Trait Interface` · `Context Object Pattern` · `Command Pattern (AgentAction)` · `Hook Pattern (SimulationHook)`
 - **Market Simulation:** `Trading Simulation` · `Order Book` · `Limit Order Book (LOB)` · `Matching Engine` · `Price-Time Priority` · `Market Microstructure` · `Slippage Modeling` · `Batch Auction` · `Clearing Price Algorithm`
 - **Quantitative Finance:** `Technical Indicators (SMA, EMA, RSI, MACD, Bollinger Bands, ATR)` · `Risk Metrics (VaR, Sharpe Ratio, Sortino Ratio, Max Drawdown)` · `VWAP Execution` · `Market Making` · `Bid-Ask Spread` · `Inventory Management` · `Fair Value Models` · `Gordon Growth Model` · `Random Walk` · `Pairs Trading` · `Statistical Arbitrage`
-- **Machine Learning:** `Decision Tree` · `Random Forest` · `Gradient Boosted Trees` · `Scikit-learn` · `Feature Engineering` · `Training-Serving Parity` · `JSON Model Export` · `Polars`
+- **Machine Learning:** `Decision Tree` · `Random Forest` · `Gradient Boosted Trees` · `Scikit-learn` · `Feature Engineering` · `SHAP Feature Selection` · `Training-Serving Parity` · `JSON Model Export` · `Polars` · `Ensemble Learning` · `Linear Models (Logistic Regression)` · `Support Vector Machines (SVM)` · `Feature Extractor Traits` · `Semantic Neutral Values` · `Imputation Strategies`
 - **Agent Architecture:** `Reinforcement Learning` · `Tiered Agent Architecture` · `Multi-Agent Systems` · `Event-Driven Architecture` · `Reactive Agents (Wake Conditions)` · `Background Liquidity Pool`
 - **Web & Real-Time:** `Axum 0.8` · `WebSocket` · `REST API` · `React 19` · `Vite 6` · `Tailwind CSS` · `Real-Time Dashboard` · `Tower HTTP` · `CORS` · `Recharts` · `React Query (TanStack)`
-- **Rust Ecosystem:** `Cargo Workspaces` · `Modular Crate Design` · `Tokio (Async Runtime)` · `TUI (Ratatui/Crossterm)` · `Rayon (Parallel Iterators)` · `Serde` · `rusqlite` · `clap (CLI)` · `tracing` · `Apache Arrow` · *`PyO3 Python Bindings (planned)`*
+- **Rust Ecosystem:** `Cargo Workspaces` · `Modular Crate Design` · `Tokio (Async Runtime)` · `TUI (Ratatui/Crossterm)` · `Rayon (Parallel Iterators)` · `Serde` · `rusqlite` · `clap (CLI)` · `tracing` · `Apache Arrow` · `PyO3 Python Bindings` · `Maturin` · `NumPy Arrays` · `GIL Release` · `SmallVec`
 - **Performance:** `High-Performance Computing` · `Fixed-Point Arithmetic` · `Financial Precision (i64)` · `Rolling Windows` · `Statistical Analysis` · `Parallel Execution` · `Two-Phase Tick Architecture`
 - **Persistence & DevOps:** `SQLite` · `Apache Parquet` · `OHLCV Candle Aggregation` · `Time-Series Data` · `Docker` · `Docker Compose` · `Distroless Containers` · `Headless Mode` · `CLI Configuration`
 
@@ -49,8 +49,8 @@ The project is built vertically in iterative stages, ensuring a runnable simulat
 | **V3** (completed) | **Persistence & Agent Scaling** | SQLite for trade history and tiered architecture for 100k+ agent scale. |
 | **V4** (completed) | **Web frontend** | Axum and React TS Frontend with Dashboard |
 | **V5** (completed) | **Machine Learning** | Training for traditional ML. |
-| **V6** | **Feature Engineering** |  PyO3 bindings, feature engineering. |
-| **V7** | **Reinforcement Learning** |  Gym env, RL training. |
+| **V6** (completed) | **Feature Engineering** | SHAP feature selection, ensemble models, 28 canonical features. |
+| **V7** | **Reinforcement Learning** | Gym environment (V7.1), RL training with PPO/A2C (V7.2). |
 | **V8** | **Portfolio manager game** | Services, API for portfolio manager game. |
 
 ![v5](qtgv5.jpg)

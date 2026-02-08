@@ -72,6 +72,12 @@ pub use features::{
     TRADE_INTENSITY_BASELINE, extended_idx, realized_volatility, spread_bps,
 };
 
+// V6.3 canonical feature schema (28 SHAP-validated features)
+pub use features::{
+    CANONICAL_DESCRIPTORS, CANONICAL_FEATURE_NAMES, CANONICAL_FEATURE_NEUTRALS, CANONICAL_REGISTRY,
+    N_CANONICAL_FEATURES, canonical_idx,
+};
+
 // =============================================================================
 // Tests
 // =============================================================================

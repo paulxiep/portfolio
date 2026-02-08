@@ -67,7 +67,7 @@ for tick in 0..max_ticks:
 | BollingerReversion | T1 | Band touch | Buy lower band, sell upper band |
 | VwapExecutor | T1 | Time-sliced | Execute target qty over horizon |
 | PairsTrader | T1 | Spread z-score | Long/short cointegrated pairs |
-| TreeAgent (ML) | T1 | Model probability | DecisionTree/RandomForest/GradientBoosted |
+| EnsembleAgent (ML) | T1 | Model ensemble | RandomForest + LinearModel + SVM (28 features) |
 | SectorRotator | T2 | Sector sentiment | Rotate allocation on news events |
 | ThresholdTrader | T2 | Price threshold | Wake on price cross |
 | BackgroundPool | T3 | Statistical | 45k+ agents via aggregate modeling |
@@ -80,7 +80,7 @@ for tick in 0..max_ticks:
 4. **Fixed-point arithmetic**: `Price` and `Cash` use i64 with implicit decimals for financial precision
 5. **Event-value-first generation**: Events generate magnitude before selecting symbol to prevent seed-based bias
 6. **Growth cap at 7%**: Prevents Gordon Growth Model breakdown when g ≥ r
-7. **ML tree agents (V5.5)**: Load sklearn-trained models from JSON; extract 42 features from shared StrategyContext; separate long/short position limits
+7. **ML ensemble agents (V6)**: SHAP-validated 28 canonical features; ensemble models (RandomForest, LinearModel, SVM); training-serving parity via `FeatureExtractor` trait; semantic neutral values for imputation
 
 ## Build & Run
 

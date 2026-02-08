@@ -203,8 +203,7 @@ impl GradientBoosted {
             .map(|stage| stage.into_iter().map(|t| t.nodes).collect())
             .collect();
 
-        let feature_indices =
-            compute_feature_indices(&model.feature_names, model.n_features);
+        let feature_indices = compute_feature_indices(&model.feature_names, model.n_features);
 
         Ok(Self {
             name,

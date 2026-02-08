@@ -144,8 +144,7 @@ impl RandomForest {
         // Extract trees
         let trees: Vec<Vec<TreeNode>> = model.trees.into_iter().map(|t| t.nodes).collect();
 
-        let feature_indices =
-            compute_feature_indices(&model.feature_names, model.n_features);
+        let feature_indices = compute_feature_indices(&model.feature_names, model.n_features);
 
         Ok(Self {
             name,
