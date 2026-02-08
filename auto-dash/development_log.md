@@ -1,5 +1,91 @@
 # Development Log
 
+## 2026-02-08: MVP.2 Data Intelligence
+
+### Summary
+Implemented the data loading and profiling module (`autodash/data.py`). Loads tabular data from CSV, Excel, and Parquet files via a protocol-based loader registry, profiles every column (nulls, cardinality, statistics), detects semantic types (numeric, categorical, datetime, text, boolean, identifier), and produces a `DataProfile` consumed by downstream pipeline nodes. Added `ProfileConfig` for configurable detection thresholds. Wired the real `load_node` into the pipeline graph, replacing the MVP.1 stub.
+
+### Architecture
+
+```
+                        ┌─────────────────────────┐
+                        │      load_and_profile()  │  ← top-level entry point
+                        └────────┬────────────────┘
+                                 │
+                    ┌────────────┼────────────────┐
+                    ▼                             ▼
+            ┌──────────────┐              ┌──────────────┐
+            │ load_dataframe│              │ profile_dataframe │
+            │  (registry)   │              │  (profiling)      │
+            └──────┬───────┘              └───────┬──────────┘
+                   │                              │
+          ┌────────┼────────┐            ┌────────┼────────┐
+          ▼        ▼        ▼            ▼        ▼        ▼
+      CsvLoader  Excel   Parquet    profile_column  detect_semantic_type
+                 Loader   Loader         │
+                                  _detect_date_granularity
+```
+
+### New / Modified Files
+
+| File | Purpose |
+|------|---------|
+| `autodash/data.py` | **New.** DataLoader protocol, 3 loader implementations (CSV, Excel, Parquet), loader registry, `detect_semantic_type`, `_detect_date_granularity`, `profile_column`, `profile_dataframe`, `load_and_profile` |
+| `autodash/config.py` | **Modified.** Added `ProfileConfig` frozen dataclass (thresholds for semantic type detection, sampling) and composed it into `PipelineConfig` |
+| `autodash/pipeline.py` | **Modified.** `load_node` now calls `load_and_profile()` with `source_path` from state, returns `data_profile` or appends error |
+| `tests/test_data/sample.csv` | **New.** 20-row test dataset with 6 columns (id, category, revenue, signup_date, is_active, notes) covering numeric, categorical, datetime, boolean, and text types |
+| `tests/test_data_loading.py` | **New.** Loader dispatch, supports/rejects, protocol checks, CSV loading, error handling, custom loader registry |
+| `tests/test_data_profiling.py` | **New.** Semantic type detection (12 cases), date granularity (6 cases), column profiling (6 cases), DataFrame profiling (5 cases), JSON round-trip, integration tests (4 cases) |
+| `tests/test_pipeline_graph.py` | **Modified.** Updated to test real `load_node` with `source_path` in state |
+| `pyproject.toml` | **Modified.** Added `openpyxl` and `pyarrow` as optional extras (`[excel]`, `[parquet]`) |
+
+### Semantic Type Detection Decision Tree
+
+`detect_semantic_type(series, unique_ratio, config)` classifies columns in this order:
+
+| Priority | Condition | Result |
+|----------|-----------|--------|
+| 1 | `datetime` in dtype string | `DATETIME` |
+| 2 | dtype is `bool` | `BOOLEAN` |
+| 3 | Numeric dtype + values in {0, 1} | `BOOLEAN` |
+| 3 | Numeric dtype (otherwise) | `NUMERIC` |
+| 4a | Object + ≤2 unique + values in {"true","false","yes","no","0","1",...} | `BOOLEAN` |
+| 4b | Object + ≥80% parse as dates (sample of 100) | `DATETIME` |
+| 4c | Object + unique ratio ≥ 0.95 | `IDENTIFIER` |
+| 4d | Object + ≤20 unique AND ratio ≤ 0.5 | `CATEGORICAL` |
+| 4e | Fallback | `TEXT` |
+
+All thresholds are configurable via `ProfileConfig`.
+
+### Key Design Decisions
+
+1. **`ProfileConfig` as a frozen dataclass**: All detection thresholds (cardinality ratios, max unique counts, date parse sample size, boolean string values) are configurable without modifying detection logic. Composed into `PipelineConfig` via `field(default_factory=...)`.
+
+2. **Dual guard for categorical**: Both `unique_count <= max_unique` AND `unique_ratio <= max_cardinality` must hold. Prevents a 100-row dataset with 20 unique values (20% ratio) from being classified the same as a 1M-row dataset with 20 unique values (0.002% ratio).
+
+3. **Lazy imports for optional dependencies**: `ExcelLoader.load()` imports `openpyxl` at call time; `ParquetLoader.load()` imports `pyarrow`. Raises `DataError` with install instructions if missing. Avoids hard dependency on heavy packages.
+
+4. **`random_state=42` for date sampling**: `detect_semantic_type` samples object columns to attempt date parsing. Fixed seed ensures deterministic profiling (important for LangGraph replay and testing).
+
+5. **`load_node` error accumulation**: On failure, appends to `state["errors"]` list rather than raising. Lets the pipeline record errors without crashing the graph.
+
+6. **Deferred import in `load_node`**: `from autodash.data import load_and_profile` inside the function body avoids circular import risk and keeps `pipeline.py` lightweight for graph topology tests.
+
+### Test Results
+
+All tests pass across both MVP.1 and MVP.2:
+- `test_data_loading.py`: 13 tests (loader supports/rejects, protocol checks, CSV loading, error handling, registry)
+- `test_data_profiling.py`: 33 tests (semantic type detection, date granularity, column profiling, DataFrame profiling, JSON round-trip, integration)
+- Previous MVP.1 tests: all still passing
+
+### Unblocks
+
+- **MVP.3** (Analysis Planning): `DataProfile.to_json()` provides column names, types, stats, and sample rows for LLM prompt context. `column_names()` enables validation of planned analysis steps.
+- **MVP.4** (Data Exploration): `load_and_profile()` can be called to get both the profile and (separately) the DataFrame for code execution.
+- **MVP.5** (Chart Planning): Column semantic types inform which chart types are appropriate (e.g., datetime columns → time series charts).
+
+**Packages:** autodash
+
 ## 2026-02-08: MVP.1 Foundation + LangGraph Scaffold
 
 ### Summary

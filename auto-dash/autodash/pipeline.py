@@ -17,8 +17,20 @@ from autodash.models import PipelineState
 
 
 async def load_node(state: PipelineState) -> dict:
-    """Node: Load and profile data (MVP.2). Stub."""
-    return {}
+    """Node: Load and profile data (MVP.2).
+
+    Reads source_path from state, produces data_profile.
+    """
+    from autodash.data import load_and_profile
+
+    source_path = state.get("source_path")
+    if not source_path:
+        return {"errors": state.get("errors", []) + ["No source_path provided"]}
+    try:
+        profile = load_and_profile(source_path)
+        return {"data_profile": profile}
+    except Exception as e:
+        return {"errors": state.get("errors", []) + [f"Data loading failed: {e}"]}
 
 
 async def plan_node(state: PipelineState) -> dict:
