@@ -37,7 +37,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use super::{ClassProbabilities, MlModel, softmax};
+use super::{ClassProbabilities, MlModel, compute_feature_indices, remap_features, softmax};
 
 /// A single node in a regression tree (gradient boosting uses regression trees).
 #[derive(Debug, Clone, Deserialize)]
@@ -87,7 +87,7 @@ struct GradientBoostedJson {
 pub struct GradientBoosted {
     /// Model name for identification.
     name: String,
-    /// Number of features expected.
+    /// Number of features the model was trained on.
     n_features: usize,
     /// Number of classes (should be 3).
     #[allow(dead_code)]
@@ -98,6 +98,8 @@ pub struct GradientBoosted {
     init_value: Vec<f64>,
     /// Stages of regression trees: stages[stage][class] = nodes.
     stages: Vec<Vec<Vec<RegressionNode>>>,
+    /// Feature index remapping for subset-trained models (V6.2+).
+    feature_indices: Option<Vec<usize>>,
 }
 
 impl GradientBoosted {
@@ -143,8 +145,12 @@ impl GradientBoosted {
         }
 
         // Validate feature count
-        if model.n_features != 42 {
-            return Err(format!("Expected 42 features, got {}", model.n_features));
+        if model.n_features == 0 || model.n_features > types::N_FULL_FEATURES {
+            return Err(format!(
+                "Expected 1-{} features, got {}",
+                types::N_FULL_FEATURES,
+                model.n_features
+            ));
         }
 
         // Validate class count
@@ -197,6 +203,9 @@ impl GradientBoosted {
             .map(|stage| stage.into_iter().map(|t| t.nodes).collect())
             .collect();
 
+        let feature_indices =
+            compute_feature_indices(&model.feature_names, model.n_features);
+
         Ok(Self {
             name,
             n_features: model.n_features,
@@ -204,6 +213,7 @@ impl GradientBoosted {
             learning_rate: model.learning_rate,
             init_value: model.init_value,
             stages,
+            feature_indices,
         })
     }
 
@@ -252,13 +262,16 @@ impl GradientBoosted {
 
 impl MlModel for GradientBoosted {
     fn predict(&self, features: &[f64]) -> ClassProbabilities {
+        let mut buf = Vec::new();
+        let feats = remap_features(features, &self.feature_indices, &mut buf);
+
         // Initialize raw scores from init_value (log-odds prior)
         let mut scores = self.init_value.clone();
 
         // Accumulate predictions from each stage
         for stage in &self.stages {
             for (class_idx, tree) in stage.iter().enumerate() {
-                let leaf_value = Self::traverse_tree(tree, features);
+                let leaf_value = Self::traverse_tree(tree, feats);
                 scores[class_idx] += self.learning_rate * leaf_value;
             }
         }
@@ -272,7 +285,11 @@ impl MlModel for GradientBoosted {
     }
 
     fn n_features(&self) -> usize {
-        self.n_features
+        if self.feature_indices.is_some() {
+            types::N_FULL_FEATURES
+        } else {
+            self.n_features
+        }
     }
 }
 

@@ -140,7 +140,14 @@ mod tests {
         let recent_trades = std::collections::HashMap::new();
         let events = vec![];
         let fundamentals = news::SymbolFundamentals::default();
-        (book, candles, indicators, recent_trades, events, fundamentals)
+        (
+            book,
+            candles,
+            indicators,
+            recent_trades,
+            events,
+            fundamentals,
+        )
     }
 
     #[test]
@@ -148,7 +155,14 @@ mod tests {
         let (book, candles, indicators, recent_trades, events, fundamentals) = make_test_ctx();
         let market = sim_core::SingleSymbolMarket::new(&book);
         let ctx = crate::StrategyContext::new(
-            100, 1000, &market, &candles, &indicators, &recent_trades, &events, &fundamentals,
+            100,
+            1000,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
         );
 
         let extractor = FullFeatures::new();
@@ -170,7 +184,14 @@ mod tests {
         let (book, candles, indicators, recent_trades, events, fundamentals) = make_test_ctx();
         let market = sim_core::SingleSymbolMarket::new(&book);
         let ctx = crate::StrategyContext::new(
-            100, 1000, &market, &candles, &indicators, &recent_trades, &events, &fundamentals,
+            100,
+            1000,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
         );
 
         let mut extractor = FullFeatures::new();
@@ -190,7 +211,14 @@ mod tests {
         let (book, candles, indicators, recent_trades, events, fundamentals) = make_test_ctx();
         let market = sim_core::SingleSymbolMarket::new(&book);
         let ctx = crate::StrategyContext::new(
-            100, 1000, &market, &candles, &indicators, &recent_trades, &events, &fundamentals,
+            100,
+            1000,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
         );
 
         let symbol = "ACME".to_string();
@@ -209,10 +237,7 @@ mod tests {
             if f.is_nan() {
                 assert!(m.is_nan(), "feature {i}: full=NaN, minimal={m}");
             } else {
-                assert!(
-                    (f - m).abs() < 1e-12,
-                    "feature {i}: full={f}, minimal={m}"
-                );
+                assert!((f - m).abs() < 1e-12, "feature {i}: full={f}, minimal={m}");
             }
         }
     }

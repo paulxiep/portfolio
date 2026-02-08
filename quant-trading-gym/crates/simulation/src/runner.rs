@@ -341,6 +341,19 @@ impl Simulation {
             .register(model);
     }
 
+    /// Register an Arc-wrapped ML model for centralized prediction caching.
+    ///
+    /// Same as [`register_ml_model`] but accepts a pre-wrapped `Arc<dyn MlModel>`,
+    /// enabling shared ownership (e.g., ensemble sub-models).
+    pub fn register_ml_model_arc(&mut self, model: std::sync::Arc<dyn agents::MlModel>) {
+        if self.feature_extractor.is_none() {
+            self.feature_extractor = Some(Box::new(agents::MinimalFeatures));
+        }
+        self.model_registry
+            .get_or_insert_with(ModelRegistry::new)
+            .register_arc(model);
+    }
+
     /// Set the feature extractor for ML features and recording (pre-V6 refactor section F).
     ///
     /// When set, the runner extracts features in Phase 3 and passes them to

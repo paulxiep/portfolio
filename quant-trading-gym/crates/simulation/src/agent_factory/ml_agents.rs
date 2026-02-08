@@ -1,63 +1,104 @@
-//! ML agent spawning: decision trees, random forests, gradient boosted.
+//! ML agent spawning: creates MlAgent instances for all registered models.
 
-use agents::{
-    Agent, DecisionTree, GradientBoosted, MlModel, RandomForest, TreeAgent, TreeAgentConfig,
-};
+use std::sync::Arc;
+
+use agents::{Agent, MlAgent, MlAgentConfig, MlModel};
 use types::{AgentId, Price};
 
 use crate::Simulation;
 use crate::sim_config::{SimConfig, SymbolSpec};
 
-/// Pre-loaded ML models, ready for agent creation.
+/// Pre-loaded ML models, ready for registration and agent creation.
 ///
+/// Models are stored as `(model_type, Arc<dyn MlModel>)` pairs.
 /// The binary (CLI) populates this from JSON files on disk.
 /// The gym crate can populate it from episode config or bundled models.
 #[derive(Default)]
 pub struct MlModels {
-    pub decision_trees: Vec<DecisionTree>,
-    pub random_forests: Vec<RandomForest>,
-    pub gradient_boosteds: Vec<GradientBoosted>,
+    models: Vec<(String, Arc<dyn MlModel>)>,
 }
 
 impl MlModels {
+    /// Create an empty model collection.
+    pub fn new() -> Self {
+        Self { models: Vec::new() }
+    }
+
+    /// Add a model with its type tag (e.g., "decision_tree", "random_forest").
+    pub fn push(&mut self, model_type: &str, model: impl MlModel + 'static) {
+        self.models.push((model_type.to_string(), Arc::new(model)));
+    }
+
     /// True if any models are loaded.
     pub fn has_models(&self) -> bool {
-        !self.decision_trees.is_empty()
-            || !self.random_forests.is_empty()
-            || !self.gradient_boosteds.is_empty()
+        !self.models.is_empty()
+    }
+
+    /// Get all models.
+    pub fn all(&self) -> &[(String, Arc<dyn MlModel>)] {
+        &self.models
+    }
+
+    /// Get models matching a specific type.
+    pub fn of_type(&self, model_type: &str) -> Vec<&Arc<dyn MlModel>> {
+        self.models
+            .iter()
+            .filter(|(t, _)| t == model_type)
+            .map(|(_, m)| m)
+            .collect()
+    }
+
+    /// Get the number of loaded models.
+    pub fn len(&self) -> usize {
+        self.models.len()
+    }
+
+    /// Check if empty.
+    pub fn is_empty(&self) -> bool {
+        self.models.is_empty()
+    }
+
+    /// Look up a model by its `MlModel::name()` value.
+    pub fn by_name(&self, name: &str) -> Option<&Arc<dyn MlModel>> {
+        self.models
+            .iter()
+            .find(|(_, m)| m.name() == name)
+            .map(|(_, m)| m)
+    }
+
+    /// All model names (for error messages).
+    pub fn model_names(&self) -> Vec<&str> {
+        self.models.iter().map(|(_, m)| m.name()).collect()
     }
 }
 
-/// Spawn ML agents from a collection of models, distributing with round-robin.
-fn spawn_ml_agents<M: Clone + MlModel + 'static>(
-    models: &[M],
+/// Spawn MlAgent instances for a set of model names, distributed round-robin.
+fn spawn_ml_agents(
+    model_names: &[String],
     count: usize,
     start_id: u64,
-    agent_config: TreeAgentConfig,
-    warning_label: &str,
+    agent_config: MlAgentConfig,
 ) -> Vec<Box<dyn Agent>> {
-    if models.is_empty() {
-        if count > 0 {
-            eprintln!("  Warning: No {} models found in models/", warning_label);
-        }
+    if model_names.is_empty() || count == 0 {
         return Vec::new();
     }
     (0..count)
         .map(|i| {
-            Box::new(TreeAgent::new(
+            let name = model_names[i % model_names.len()].clone();
+            Box::new(MlAgent::new(
                 AgentId(start_id + i as u64),
-                models[i % models.len()].clone(),
+                name,
                 agent_config.clone(),
             )) as Box<dyn Agent>
         })
         .collect()
 }
 
-/// Spawn tree-based ML agents and register models with the simulation.
+/// Spawn ML agents and register models with the simulation.
 ///
 /// Models must be pre-loaded (see `MlModels`). This function:
-/// 1. Registers unique models with the simulation for centralized prediction caching
-/// 2. Creates agents distributed across the loaded models via round-robin
+/// 1. Registers all models with the simulation for centralized prediction caching
+/// 2. Creates MlAgent instances per model type, distributed round-robin
 pub(crate) fn spawn_tree_agents(
     sim: &mut Simulation,
     config: &SimConfig,
@@ -65,15 +106,9 @@ pub(crate) fn spawn_tree_agents(
     start_id: u64,
     models: &MlModels,
 ) -> (Vec<Box<dyn Agent>>, u64) {
-    // Register unique models for centralized prediction caching (O(M×S) vs O(N))
-    for model in &models.decision_trees {
-        sim.register_ml_model(model.clone());
-    }
-    for model in &models.random_forests {
-        sim.register_ml_model(model.clone());
-    }
-    for model in &models.gradient_boosteds {
-        sim.register_ml_model(model.clone());
+    // Register all models for centralized prediction caching
+    for (_, model) in models.all() {
+        sim.register_ml_model_arc(model.clone());
     }
     if sim.has_ml_models() {
         eprintln!(
@@ -82,7 +117,7 @@ pub(crate) fn spawn_tree_agents(
         );
     }
 
-    let agent_config = TreeAgentConfig {
+    let agent_config = MlAgentConfig {
         symbols: symbols.iter().map(|s| s.symbol.clone()).collect(),
         buy_threshold: config.tree_agent_buy_threshold,
         sell_threshold: config.tree_agent_sell_threshold,
@@ -96,37 +131,33 @@ pub(crate) fn spawn_tree_agents(
             .unwrap_or(Price::from_float(100.0)),
     };
 
-    let decision_tree_agents = spawn_ml_agents(
-        &models.decision_trees,
-        config.num_decision_tree_agents,
-        start_id,
-        agent_config.clone(),
-        "decision tree",
-    );
+    let mut all_agents: Vec<Box<dyn Agent>> = Vec::new();
+    let mut next_id = start_id;
 
-    let random_forest_agents = spawn_ml_agents(
-        &models.random_forests,
-        config.num_random_forest_agents,
-        start_id + decision_tree_agents.len() as u64,
-        agent_config.clone(),
-        "random forest",
-    );
+    // Spawn agents per model type based on config counts
+    for (model_type, count) in &config.ml_agent_counts {
+        let count = *count;
+        if count == 0 {
+            continue;
+        }
 
-    let gradient_boosted_agents = spawn_ml_agents(
-        &models.gradient_boosteds,
-        config.num_gradient_boosted_agents,
-        start_id + decision_tree_agents.len() as u64 + random_forest_agents.len() as u64,
-        agent_config,
-        "gradient boosted",
-    );
+        let model_names: Vec<String> = models
+            .of_type(model_type)
+            .iter()
+            .map(|m| m.name().to_string())
+            .collect();
 
-    let total =
-        decision_tree_agents.len() + random_forest_agents.len() + gradient_boosted_agents.len();
-    let agents = decision_tree_agents
-        .into_iter()
-        .chain(random_forest_agents)
-        .chain(gradient_boosted_agents)
-        .collect();
+        if model_names.is_empty() {
+            if count > 0 {
+                eprintln!("  Warning: No '{}' models found in models/", model_type);
+            }
+            continue;
+        }
 
-    (agents, start_id + total as u64)
+        let agents = spawn_ml_agents(&model_names, count, next_id, agent_config.clone());
+        next_id += agents.len() as u64;
+        all_agents.extend(agents);
+    }
+
+    (all_agents, next_id)
 }

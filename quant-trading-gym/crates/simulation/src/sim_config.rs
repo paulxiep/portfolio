@@ -9,6 +9,8 @@
 //! 2. Specify minimum total for each tier
 //! 3. If tier minimum not met by specific agents, random tier agents are spawned
 
+use std::collections::HashMap;
+
 use agents::tier3::MarketRegime;
 use rand::Rng;
 use rand::prelude::SliceRandom;
@@ -116,14 +118,12 @@ pub struct SimConfig {
     pub num_sector_rotators: usize,
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Tier 1 ML Agent Counts (V5.5)
+    // Tier 1 ML Agent Counts (V5.5, V6.2 HashMap refactor)
     // ─────────────────────────────────────────────────────────────────────────
-    /// Number of Decision Tree agents (split equally between shallow/medium models).
-    pub num_decision_tree_agents: usize,
-    /// Number of Random Forest agents (split equally between small/large models).
-    pub num_random_forest_agents: usize,
-    /// Number of Gradient Boosted agents (split equally between fast/slow models).
-    pub num_gradient_boosted_agents: usize,
+    /// ML agent counts by model type (e.g., "decision_tree" -> 400).
+    /// Agents for each type are distributed round-robin across loaded models of that type.
+    /// Adding new model types requires only adding an entry here.
+    pub ml_agent_counts: HashMap<String, usize>,
 
     // ─────────────────────────────────────────────────────────────────────────
     // Tier Minimums
@@ -313,17 +313,23 @@ impl Default for SimConfig {
             verbose: false,
             max_cpu_percent: 75,
             num_market_makers: 600,
-            num_noise_traders: 2400,
+            num_noise_traders: 3000,
             num_momentum_traders: 800,
             num_trend_followers: 800,
             num_macd_traders: 800,
             num_bollinger_traders: 800,
             num_vwap_executors: 200,
-            num_pairs_traders: 400,
+            num_pairs_traders: 500,
             num_sector_rotators: 500,
-            num_decision_tree_agents: 400,
-            num_random_forest_agents: 100,
-            num_gradient_boosted_agents: 200,
+            ml_agent_counts: HashMap::from([
+                ("decision_tree".into(), 0),
+                ("random_forest".into(), 0),
+                ("gradient_boosted".into(), 0),
+                ("linear_model".into(), 0),
+                ("svm_linear".into(), 0),
+                ("gaussian_nb".into(), 0),
+                ("ensemble".into(), 0),
+            ]),
             min_tier1_agents: 7500,
             num_tier2_agents: 5000,
             t2_initial_cash: Cash::from_float(100_000.0),
@@ -485,18 +491,16 @@ impl SimConfig {
         self
     }
 
-    pub fn decision_tree_agents(mut self, count: usize) -> Self {
-        self.num_decision_tree_agents = count;
-        self
-    }
-
-    pub fn random_forest_agents(mut self, count: usize) -> Self {
-        self.num_random_forest_agents = count;
-        self
-    }
-
-    pub fn gradient_boosted_agents(mut self, count: usize) -> Self {
-        self.num_gradient_boosted_agents = count;
+    /// Set the agent count for a specific ML model type.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let config = SimConfig::new()
+    ///     .ml_agents("decision_tree", 400)
+    ///     .ml_agents("random_forest", 100);
+    /// ```
+    pub fn ml_agents(mut self, model_type: impl Into<String>, count: usize) -> Self {
+        self.ml_agent_counts.insert(model_type.into(), count);
         self
     }
 
@@ -579,16 +583,17 @@ impl SimConfig {
             + self.num_bollinger_traders
             + self.num_vwap_executors
             + self.num_pairs_traders
-            + self.num_decision_tree_agents
-            + self.num_random_forest_agents
-            + self.num_gradient_boosted_agents
+            + self.total_ml_agents()
     }
 
-    /// Total number of ML tree agents.
-    pub fn total_tree_agents(&self) -> usize {
-        self.num_decision_tree_agents
-            + self.num_random_forest_agents
-            + self.num_gradient_boosted_agents
+    /// Total number of ML agents across all model types.
+    pub fn total_ml_agents(&self) -> usize {
+        self.ml_agent_counts.values().sum()
+    }
+
+    /// Get the agent count for a specific ML model type.
+    pub fn ml_agent_count(&self, model_type: &str) -> usize {
+        self.ml_agent_counts.get(model_type).copied().unwrap_or(0)
     }
 
     /// Number of random Tier 1 agents to spawn to meet minimum.
@@ -631,7 +636,7 @@ impl SimConfig {
             + self.num_bollinger_traders;
         let quant_total = Cash::from_float(self.quant_initial_cash.to_float() * quant_count as f64);
         let tree_total = Cash::from_float(
-            self.tree_agent_initial_cash.to_float() * self.total_tree_agents() as f64,
+            self.tree_agent_initial_cash.to_float() * self.total_ml_agents() as f64,
         );
         mm_total + nt_total + quant_total + tree_total
     }
@@ -715,13 +720,14 @@ mod tests {
             + config.num_bollinger_traders
             + config.num_vwap_executors
             + config.num_pairs_traders
-            + config.num_decision_tree_agents
-            + config.num_random_forest_agents
-            + config.num_gradient_boosted_agents;
+            + config.total_ml_agents();
         assert_eq!(config.specified_tier1_agents(), expected_specified);
         assert!(config.num_market_makers >= 1);
         assert!(config.total_ticks > 0);
         assert!(config.primary_initial_price() > Price::ZERO);
+        // ML agent counts sum should match total
+        let ml_sum: usize = config.ml_agent_counts.values().sum();
+        assert_eq!(config.total_ml_agents(), ml_sum);
     }
 
     #[test]
@@ -739,7 +745,7 @@ mod tests {
 
     #[test]
     fn test_random_tier1_fill() {
-        let config = SimConfig::new()
+        let mut config = SimConfig::new()
             .market_makers(2)
             .noise_traders(3)
             .momentum_traders(0)
@@ -748,11 +754,9 @@ mod tests {
             .bollinger_traders(0)
             .vwap_executors(0)
             .pairs_traders(0)
-            .decision_tree_agents(0)
-            .random_forest_agents(0)
-            .gradient_boosted_agents(0)
             .min_tier1(10)
             .tier2_agents(0);
+        config.ml_agent_counts.clear(); // No ML agents
         assert_eq!(config.specified_tier1_agents(), 5);
         assert_eq!(config.random_tier1_count(), 5);
         assert_eq!(config.total_tier1_agents(), 10);
@@ -770,19 +774,17 @@ mod tests {
 
     #[test]
     fn test_total_starting_cash() {
-        let config = SimConfig::new()
+        let mut config = SimConfig::new()
             .market_makers(2)
             .noise_traders(10)
             .momentum_traders(1)
             .trend_followers(1)
             .macd_traders(0)
             .bollinger_traders(0)
-            .decision_tree_agents(0)
-            .random_forest_agents(0)
-            .gradient_boosted_agents(0)
             .mm_cash(1_000_000.0)
             .nt_cash(10_000.0)
             .quant_cash(100_000.0);
+        config.ml_agent_counts.clear(); // No ML agents
         assert_eq!(config.total_starting_cash(), Cash::from_float(2_300_000.0));
     }
 

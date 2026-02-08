@@ -25,10 +25,9 @@
 
 use crate::StrategyContext;
 use types::{
-    IndicatorType, LOOKBACKS, Symbol,
-    bollinger_percent_b, extended_idx, log_return_from_candles, price_change_from_candles,
-    realized_volatility, spread_bps, TRADE_INTENSITY_BASELINE,
-    features::idx,
+    IndicatorType, LOOKBACKS, Symbol, TRADE_INTENSITY_BASELINE, bollinger_percent_b, extended_idx,
+    features::idx, log_return_from_candles, price_change_from_candles, realized_volatility,
+    spread_bps,
 };
 
 // =============================================================================
@@ -139,9 +138,18 @@ pub fn extract_news(symbol: &Symbol, ctx: &StrategyContext<'_>, buf: &mut [f64])
 /// Extract microstructure features: spread_bps, book_imbalance, net_order_flow (indices 42-44).
 pub fn extract_microstructure(symbol: &Symbol, ctx: &StrategyContext<'_>, buf: &mut [f64]) {
     // Spread in basis points
-    let bid = ctx.best_bid(symbol).map(|p| p.to_float()).unwrap_or(f64::NAN);
-    let ask = ctx.best_ask(symbol).map(|p| p.to_float()).unwrap_or(f64::NAN);
-    let mid = ctx.mid_price(symbol).map(|p| p.to_float()).unwrap_or(f64::NAN);
+    let bid = ctx
+        .best_bid(symbol)
+        .map(|p| p.to_float())
+        .unwrap_or(f64::NAN);
+    let ask = ctx
+        .best_ask(symbol)
+        .map(|p| p.to_float())
+        .unwrap_or(f64::NAN);
+    let mid = ctx
+        .mid_price(symbol)
+        .map(|p| p.to_float())
+        .unwrap_or(f64::NAN);
     buf[extended_idx::SPREAD_BPS] = spread_bps(bid, ask, mid);
 
     // Book imbalance: (bid_vol - ask_vol) / (bid_vol + ask_vol)
@@ -203,8 +211,14 @@ pub fn extract_volatility(symbol: &Symbol, ctx: &StrategyContext<'_>, buf: &mut 
 
 /// Extract fundamental features: fair_value_dev, price_to_fair (indices 48-49).
 pub fn extract_fundamental(symbol: &Symbol, ctx: &StrategyContext<'_>, buf: &mut [f64]) {
-    let mid = ctx.mid_price(symbol).map(|p| p.to_float()).unwrap_or(f64::NAN);
-    let fair = ctx.fair_value(symbol).map(|p| p.to_float()).unwrap_or(f64::NAN);
+    let mid = ctx
+        .mid_price(symbol)
+        .map(|p| p.to_float())
+        .unwrap_or(f64::NAN);
+    let fair = ctx
+        .fair_value(symbol)
+        .map(|p| p.to_float())
+        .unwrap_or(f64::NAN);
 
     buf[extended_idx::FAIR_VALUE_DEV] = if mid.is_finite() && fair.is_finite() && fair > 0.0 {
         (mid - fair) / fair
@@ -222,9 +236,15 @@ pub fn extract_fundamental(symbol: &Symbol, ctx: &StrategyContext<'_>, buf: &mut
 /// Extract momentum quality features: trend_strength, rsi_divergence (indices 50-51).
 pub fn extract_momentum_quality(symbol: &Symbol, ctx: &StrategyContext<'_>, buf: &mut [f64]) {
     // Trend strength: abs(ema_8 - ema_16) / atr_8
-    let ema_8 = ctx.get_indicator(symbol, IndicatorType::Ema(8)).unwrap_or(f64::NAN);
-    let ema_16 = ctx.get_indicator(symbol, IndicatorType::Ema(16)).unwrap_or(f64::NAN);
-    let atr_8 = ctx.get_indicator(symbol, IndicatorType::Atr(8)).unwrap_or(f64::NAN);
+    let ema_8 = ctx
+        .get_indicator(symbol, IndicatorType::Ema(8))
+        .unwrap_or(f64::NAN);
+    let ema_16 = ctx
+        .get_indicator(symbol, IndicatorType::Ema(16))
+        .unwrap_or(f64::NAN);
+    let atr_8 = ctx
+        .get_indicator(symbol, IndicatorType::Atr(8))
+        .unwrap_or(f64::NAN);
 
     buf[extended_idx::TREND_STRENGTH] =
         if ema_8.is_finite() && ema_16.is_finite() && atr_8.is_finite() && atr_8 > 0.0 {
@@ -234,7 +254,9 @@ pub fn extract_momentum_quality(symbol: &Symbol, ctx: &StrategyContext<'_>, buf:
         };
 
     // RSI divergence: rsi_8 - 50.0
-    let rsi = ctx.get_indicator(symbol, IndicatorType::Rsi(8)).unwrap_or(f64::NAN);
+    let rsi = ctx
+        .get_indicator(symbol, IndicatorType::Rsi(8))
+        .unwrap_or(f64::NAN);
     buf[extended_idx::RSI_DIVERGENCE] = if rsi.is_finite() {
         rsi - 50.0
     } else {
@@ -273,12 +295,12 @@ pub fn extract_volume_cross(symbol: &Symbol, ctx: &StrategyContext<'_>, buf: &mu
     // Sentiment-price gap: symbol_sentiment * fair_value_dev
     let sentiment = ctx.symbol_sentiment(symbol);
     let fair_value_dev = buf[extended_idx::FAIR_VALUE_DEV];
-    buf[extended_idx::SENTIMENT_PRICE_GAP] =
-        if fair_value_dev.is_finite() && sentiment.is_finite() {
-            sentiment * fair_value_dev
-        } else {
-            f64::NAN
-        };
+    buf[extended_idx::SENTIMENT_PRICE_GAP] = if fair_value_dev.is_finite() && sentiment.is_finite()
+    {
+        sentiment * fair_value_dev
+    } else {
+        f64::NAN
+    };
 }
 
 // =============================================================================
@@ -304,7 +326,14 @@ mod tests {
         let recent_trades = std::collections::HashMap::new();
         let events = vec![];
         let fundamentals = news::SymbolFundamentals::default();
-        (book, candles, indicators, recent_trades, events, fundamentals)
+        (
+            book,
+            candles,
+            indicators,
+            recent_trades,
+            events,
+            fundamentals,
+        )
     }
 
     #[test]
@@ -312,7 +341,14 @@ mod tests {
         let (book, candles, indicators, recent_trades, events, fundamentals) = make_test_ctx();
         let market = sim_core::SingleSymbolMarket::new(&book);
         let ctx = StrategyContext::new(
-            100, 1000, &market, &candles, &indicators, &recent_trades, &events, &fundamentals,
+            100,
+            1000,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
         );
 
         let mut buf = [f64::NAN; N_FULL_FEATURES];
@@ -333,7 +369,14 @@ mod tests {
         let (book, candles, indicators, recent_trades, events, fundamentals) = make_test_ctx();
         let market = sim_core::SingleSymbolMarket::new(&book);
         let ctx = StrategyContext::new(
-            100, 1000, &market, &candles, &indicators, &recent_trades, &events, &fundamentals,
+            100,
+            1000,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
         );
 
         let mut buf = [f64::NAN; N_FULL_FEATURES];
@@ -352,7 +395,14 @@ mod tests {
         let (book, candles, indicators, recent_trades, events, fundamentals) = make_test_ctx();
         let market = sim_core::SingleSymbolMarket::new(&book);
         let ctx = StrategyContext::new(
-            100, 1000, &market, &candles, &indicators, &recent_trades, &events, &fundamentals,
+            100,
+            1000,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
         );
 
         let symbol = "ACME".to_string();
@@ -373,10 +423,7 @@ mod tests {
             if e.is_nan() {
                 assert!(a.is_nan(), "feature {i}: expected NaN, got {a}");
             } else {
-                assert!(
-                    (e - a).abs() < 1e-12,
-                    "feature {i}: expected {e}, got {a}"
-                );
+                assert!((e - a).abs() < 1e-12, "feature {i}: expected {e}, got {a}");
             }
         }
     }
@@ -386,7 +433,14 @@ mod tests {
         let (book, candles, indicators, recent_trades, events, fundamentals) = make_test_ctx();
         let market = sim_core::SingleSymbolMarket::new(&book);
         let ctx = StrategyContext::new(
-            100, 1000, &market, &candles, &indicators, &recent_trades, &events, &fundamentals,
+            100,
+            1000,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
         );
 
         let mut buf = [f64::NAN; N_FULL_FEATURES];
@@ -403,7 +457,14 @@ mod tests {
         let (book, candles, indicators, recent_trades, events, fundamentals) = make_test_ctx();
         let market = sim_core::SingleSymbolMarket::new(&book);
         let ctx = StrategyContext::new(
-            100, 1000, &market, &candles, &indicators, &recent_trades, &events, &fundamentals,
+            100,
+            1000,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
         );
 
         let mut buf = [f64::NAN; N_FULL_FEATURES];
@@ -419,7 +480,14 @@ mod tests {
         let (book, candles, indicators, recent_trades, events, fundamentals) = make_test_ctx();
         let market = sim_core::SingleSymbolMarket::new(&book);
         let ctx = StrategyContext::new(
-            100, 1000, &market, &candles, &indicators, &recent_trades, &events, &fundamentals,
+            100,
+            1000,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
         );
 
         let mut buf = [f64::NAN; N_FULL_FEATURES];
@@ -434,7 +502,14 @@ mod tests {
         let (book, candles, indicators, recent_trades, events, fundamentals) = make_test_ctx();
         let market = sim_core::SingleSymbolMarket::new(&book);
         let ctx = StrategyContext::new(
-            100, 1000, &market, &candles, &indicators, &recent_trades, &events, &fundamentals,
+            100,
+            1000,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
         );
 
         let mut buf = [f64::NAN; N_FULL_FEATURES];

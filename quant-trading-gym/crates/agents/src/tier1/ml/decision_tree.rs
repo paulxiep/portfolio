@@ -34,7 +34,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use super::{ClassProbabilities, MlModel};
+use super::{ClassProbabilities, MlModel, compute_feature_indices, remap_features};
 
 /// A single node in the decision tree.
 #[derive(Debug, Clone, Deserialize)]
@@ -78,13 +78,17 @@ struct DecisionTreeJson {
 pub struct DecisionTree {
     /// Model name for identification.
     name: String,
-    /// Number of features expected.
+    /// Number of features the model was trained on.
     n_features: usize,
     /// Number of classes (should be 3).
     #[allow(dead_code)]
     n_classes: usize,
     /// Tree nodes in pre-order traversal.
     nodes: Vec<TreeNode>,
+    /// Feature index remapping for subset-trained models (V6.2+).
+    /// Maps model feature positions to full-vector positions.
+    /// None when model uses canonical 42 or 55 features.
+    feature_indices: Option<Vec<usize>>,
 }
 
 impl DecisionTree {
@@ -130,8 +134,12 @@ impl DecisionTree {
         }
 
         // Validate feature count
-        if model.n_features != 42 {
-            return Err(format!("Expected 42 features, got {}", model.n_features));
+        if model.n_features == 0 || model.n_features > types::N_FULL_FEATURES {
+            return Err(format!(
+                "Expected 1-{} features, got {}",
+                types::N_FULL_FEATURES,
+                model.n_features
+            ));
         }
 
         // Validate class count
@@ -174,11 +182,15 @@ impl DecisionTree {
             }
         }
 
+        let feature_indices =
+            compute_feature_indices(&model.feature_names, model.n_features);
+
         Ok(Self {
             name,
             n_features: model.n_features,
             n_classes: model.n_classes,
             nodes: model.tree.nodes,
+            feature_indices,
         })
     }
 
@@ -222,7 +234,9 @@ impl DecisionTree {
 
 impl MlModel for DecisionTree {
     fn predict(&self, features: &[f64]) -> ClassProbabilities {
-        let leaf_idx = self.traverse(features);
+        let mut buf = Vec::new();
+        let feats = remap_features(features, &self.feature_indices, &mut buf);
+        let leaf_idx = self.traverse(feats);
         let node = &self.nodes[leaf_idx];
 
         match &node.value {
@@ -236,7 +250,12 @@ impl MlModel for DecisionTree {
     }
 
     fn n_features(&self) -> usize {
-        self.n_features
+        // When remapping is active, report full vector size so callers pass the full vector
+        if self.feature_indices.is_some() {
+            types::N_FULL_FEATURES
+        } else {
+            self.n_features
+        }
     }
 }
 

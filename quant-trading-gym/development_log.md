@@ -1,5 +1,106 @@
 # Development Log
 
+## 2026-02-07: V6.2 Full Ensemble — Python Training Pipeline, New Model Types, Ensemble YAML
+
+### Summary
+Built the complete V6.2 training pipeline: Python trains 8 model types (DT, RF, GB, LogReg, LinearSVC, GaussianNB), exports JSON for Rust inference, and auto-generates `ensemble_config.yaml` with accuracy-based weights. Added `LinearPredictor` and `GaussianNBPredictor` Rust types. Ensemble YAML loading validates member names against loaded models. Cross-platform `qtg.py` CLI dispatcher runs everything from project root on Windows/Linux.
+
+Design spec: `6.2_full_ensemble.md`
+
+### What Changed
+
+**1. Rust model types** (`crates/agents/src/tier1/ml/`)
+- `LinearPredictor` — loads JSON with `weights`/`biases` (or `coefficients`/`intercepts` via serde alias), predicts via `W @ features + b → softmax`. Supports both SVM and LogReg.
+- `GaussianNBPredictor` — loads `class_log_prior`, `theta`, `var` from JSON, applies variance smoothing, precomputes `neg_half_log_var` and `inv_2var` for zero-transcendental inference.
+- `EnsembleModel` — weighted vote across sub-models, loaded from `ensemble_config.yaml`.
+- Tree model loaders updated: accept 42 (V5) or 55 (V6.1 full) features instead of hardcoded 42.
+
+**2. Ensemble YAML loading** (`src/main.rs`)
+- `serde_yaml` workspace dependency added.
+- `load_ensemble()` — reads `models/ensemble_config.yaml`, validates all member names exist in loaded models, constructs `EnsembleModel`.
+- `MlModels::by_name()` / `model_names()` — lookup helpers for ensemble validation.
+- `load_ml_models()` now takes `&SimConfig`, skips loading when `total_ml_agents() == 0`.
+
+**3. Python training package** (`python/training/`)
+- `common.py` — extracted shared logic: `load_data()` (numbered parquet discovery + concat), `compute_lookahead_labels()`, `prepare_features()`, `load_and_split()`, `save_model_json()`, `rust_model_name()` (Rust name contract).
+- `train_trees.py` — refactored from `scripts/train_trees.py`, imports from `.common`.
+- `train_linear.py` — `LogisticRegression` with `StandardScaler`, scaler baked into exported coefficients/intercepts.
+- `train_svm.py` — `LinearSVC` with `StandardScaler`, scaler baked into exported weights/biases.
+- `train_naive_bayes.py` — `GaussianNB` with `StandardScaler`, scaler baked into exported theta/var.
+- `train_models.py` — orchestrator: trains all model types, feature engineering for linear models, auto-generates `ensemble_config.yaml`.
+- `feature_engineering.py` — interaction (a*b), squared (a^2), ratio (a/b) features for linear models. Manual mode (hand-picked) or auto mode (mutual information discovery of top-K).
+- `analyze_shap.py` — SHAP TreeExplainer for tree models, coefficient magnitude for linear/SVM, theta spread for NB, feature group aggregation.
+- `check_parquet.py` — data quality checker rewritten for V6.1 (polars, numbered files, feature group coverage).
+- `config.yaml` — unified training config with all model types, feature engineering, ensemble, and SHAP settings.
+
+**4. Scaler baking** (Python → Rust contract)
+- Linear/SVM: `W_eff = W / std`, `b_eff = b - W_eff @ mean` — Rust inference on raw features, no scaling needed.
+- NB: `theta_raw = theta_scaled * std + mean`, `var_raw = var_scaled * std^2`.
+- Tree models are scale-invariant, no baking needed.
+
+**5. Ensemble auto-generation** (`train_models.py`)
+- Accuracy-based weights: each model's validation accuracy becomes its ensemble weight.
+- `min_accuracy` threshold (default 0.50): excludes near-random models from ensemble.
+- Linear/SVM/NB typically excluded (~42% accuracy on non-linear data), trees included (85-94%).
+
+**6. Cross-platform CLI** (`qtg.py`)
+- `python qtg.py check` / `train` / `shap` — dispatches to training modules.
+- `sys.path.insert(0, "python")` internally — no `PYTHONPATH` needed (Windows-compatible).
+
+**7. Bug fixes**
+- Bollinger %B: `width > 0.0` → `width > 1e-10` to prevent trillion-scale values from subnormal division.
+- sklearn 1.8: removed deprecated `multi_class` parameter from LogReg and LinearSVC.
+- `test_default_config_consistency`: fixed to verify structural consistency instead of hardcoded ML agent counts.
+
+### Scaler Baking Architecture
+
+```
+Python Training                    Rust Inference
+     │                                  │
+  X_train ──► StandardScaler.fit()      │
+     │            │                     │
+  X_scaled ──► model.fit()              │
+     │            │                     │
+  model.coef_ + scaler.mean_/scale_     │
+     │                                  │
+  bake: W_eff = W/std                   │
+        b_eff = b - W_eff@mean          │
+     │                                  │
+  JSON: {"weights": W_eff, ...}    ──►  LinearPredictor
+     │                                  │
+                                   raw features ──► W_eff @ x + b_eff
+                                   (no scaling needed at inference)
+```
+
+### Files Summary
+
+| File | Action | Change |
+|------|--------|--------|
+| `crates/agents/src/tier1/ml/linear_predictor.rs` | CREATE | LinearPredictor for LogReg + SVM |
+| `crates/agents/src/tier1/ml/gaussian_nb.rs` | CREATE | GaussianNBPredictor |
+| `crates/agents/src/tier1/ml/ensemble_model.rs` | CREATE | EnsembleModel weighted vote |
+| `crates/agents/src/tier1/ml/decision_tree.rs` | MODIFY | Accept 42 or 55 features |
+| `crates/agents/src/tier1/ml/random_forest.rs` | MODIFY | Accept 42 or 55 features |
+| `crates/agents/src/tier1/ml/gradient_boosted.rs` | MODIFY | Accept 42 or 55 features |
+| `crates/agents/src/tier1/ml/ml_agents.rs` | MODIFY | `by_name()`, `model_names()` |
+| `crates/types/src/features.rs` | MODIFY | Bollinger %B epsilon guard |
+| `crates/simulation/src/sim_config.rs` | MODIFY | Fix test, ML agent defaults |
+| `src/main.rs` | MODIFY | `serde_yaml`, `load_ensemble()`, `load_ml_models(&config)` |
+| `Cargo.toml` | MODIFY | `serde_yaml` dependency |
+| `python/training/__init__.py` | CREATE | Package init |
+| `python/training/common.py` | CREATE | Shared data loading/labeling |
+| `python/training/train_trees.py` | CREATE | Refactored tree training |
+| `python/training/train_linear.py` | CREATE | LogisticRegression training |
+| `python/training/train_svm.py` | CREATE | LinearSVC training |
+| `python/training/train_naive_bayes.py` | CREATE | GaussianNB training |
+| `python/training/train_models.py` | CREATE | Orchestrator |
+| `python/training/feature_engineering.py` | CREATE | Interaction/square/ratio features, MI auto-discovery |
+| `python/training/analyze_shap.py` | CREATE | SHAP + coefficient analysis |
+| `python/training/check_parquet.py` | CREATE | Data quality checker |
+| `python/training/config.yaml` | CREATE | Unified training config |
+| `qtg.py` | CREATE | Cross-platform CLI dispatcher |
+| `scripts/scripts` | MODIFY | Updated commands for `python qtg.py` |
+
 ## 2026-02-07: V6.1 Feature Engineering — Declarative Registry + 55 Candidate Features
 
 ### Summary

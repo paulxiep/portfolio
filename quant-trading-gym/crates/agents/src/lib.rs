@@ -91,13 +91,12 @@ pub use tier1::{
     PairsTrading, PairsTradingConfig, TrendFollower, TrendFollowerConfig, VwapExecutor,
     VwapExecutorConfig,
 };
-// Re-export ML model types (V5.5) and feature extraction (V5.6)
+// Re-export ML model types (V5.5, V6.2), MlAgent, and feature extraction (V5.6)
 pub use ml_cache::FeatureVec;
 pub use tier1::{
-    ClassProbabilities, DecisionTree, DecisionTreeAgent, FeatureExtractor, FullFeatures,
-    GradientBoosted, GradientBoostedAgent, MinimalFeatures, MlModel, ModelRegistry, RandomForest,
-    RandomForestAgent, TreeAgent, TreeAgentConfig, extract_features, extract_features_raw,
-    impute_features,
+    ClassProbabilities, DecisionTree, EnsembleModel, FeatureExtractor, FullFeatures,
+    GaussianNBPredictor, GradientBoosted, LinearPredictor, MinimalFeatures, MlAgent, MlAgentConfig,
+    MlModel, ModelRegistry, RandomForest, extract_features, extract_features_raw, impute_features,
 };
 // Re-export Tier 2 types for V3.2
 pub use tier2::{

@@ -74,11 +74,7 @@ impl FeatureGroup {
     ];
 
     /// V5 groups only (first 42 features).
-    pub const MINIMAL: [FeatureGroup; 3] = [
-        Self::Price,
-        Self::TechnicalIndicator,
-        Self::News,
-    ];
+    pub const MINIMAL: [FeatureGroup; 3] = [Self::Price, Self::TechnicalIndicator, Self::News];
 }
 
 // =============================================================================
@@ -495,7 +491,13 @@ const fn desc(
     neutral: f64,
     valid_range: (f64, f64),
 ) -> FeatureDescriptor {
-    FeatureDescriptor { index, name, group, neutral, valid_range }
+    FeatureDescriptor {
+        index,
+        name,
+        group,
+        neutral,
+        valid_range,
+    }
 }
 
 /// INF range shorthand for unbounded features (need z-score normalization for V7.2).
@@ -676,14 +678,15 @@ pub fn log_return(current: f64, past: f64) -> f64 {
 /// Compute Bollinger %B (normalized position within bands).
 ///
 /// Returns `(price - lower) / (upper - lower)`, or NaN if inputs invalid.
+/// When bands converge (width < 1e-10), returns 0.5 (price at center).
 #[inline]
 pub fn bollinger_percent_b(price: f64, upper: f64, lower: f64) -> f64 {
     if upper.is_finite() && lower.is_finite() && price.is_finite() {
         let width = upper - lower;
-        if width > 0.0 {
+        if width > 1e-10 {
             (price - lower) / width
         } else {
-            f64::NAN
+            0.5
         }
     } else {
         f64::NAN
@@ -956,8 +959,9 @@ mod tests {
         assert!((bollinger_percent_b(120.0, 120.0, 100.0) - 1.0).abs() < 1e-10);
         // Price at middle = 0.5
         assert!((bollinger_percent_b(110.0, 120.0, 100.0) - 0.5).abs() < 1e-10);
-        // Invalid bands return NaN
-        assert!(bollinger_percent_b(100.0, 100.0, 100.0).is_nan()); // zero width
+        // Converged bands return 0.5 (price at center)
+        assert!((bollinger_percent_b(100.0, 100.0, 100.0) - 0.5).abs() < 1e-10);
+        // NaN inputs return NaN
         assert!(bollinger_percent_b(f64::NAN, 120.0, 100.0).is_nan());
     }
 
@@ -1085,13 +1089,15 @@ mod tests {
     fn test_registry_names_match_descriptors() {
         for (i, desc) in MINIMAL_REGISTRY.descriptors().iter().enumerate() {
             assert_eq!(
-                desc.name, MINIMAL_REGISTRY.names()[i],
+                desc.name,
+                MINIMAL_REGISTRY.names()[i],
                 "MINIMAL name mismatch at index {i}"
             );
         }
         for (i, desc) in FULL_REGISTRY.descriptors().iter().enumerate() {
             assert_eq!(
-                desc.name, FULL_REGISTRY.names()[i],
+                desc.name,
+                FULL_REGISTRY.names()[i],
                 "FULL name mismatch at index {i}"
             );
         }
@@ -1101,7 +1107,8 @@ mod tests {
     fn test_registry_neutrals_match_descriptors() {
         for (i, desc) in MINIMAL_REGISTRY.descriptors().iter().enumerate() {
             assert_eq!(
-                desc.neutral, MINIMAL_REGISTRY.neutrals()[i],
+                desc.neutral,
+                MINIMAL_REGISTRY.neutrals()[i],
                 "MINIMAL neutral mismatch at index {i}"
             );
         }
