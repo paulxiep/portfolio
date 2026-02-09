@@ -1,0 +1,278 @@
+{
+  "description": "V3 quality harness test dataset for portfolio-rag-chat",
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "hero-retriever",
+      "query": "How does the retriever work?",
+      "expected_intent": "implementation",
+      "expected_files": ["engine/retriever.rs"],
+      "expected_identifiers": ["retrieve"],
+      "expected_chunk_types": ["code"],
+      "expected_projects": ["portfolio-rag-chat"],
+      "tags": ["hero", "v1", "self_reference", "implementation"],
+      "notes": "V1 hero query. Meta-portfolio signal: system retrieves its own retriever."
+    },
+    {
+      "id": "hero-chat-endpoint",
+      "query": "How does the chat endpoint work?",
+      "expected_intent": "implementation",
+      "expected_files": ["api/handlers.rs"],
+      "expected_identifiers": ["chat"],
+      "expected_chunk_types": ["code"],
+      "expected_projects": ["portfolio-rag-chat"],
+      "tags": ["hero", "v2", "implementation"]
+    },
+    {
+      "id": "hero-intent-classifier",
+      "query": "How does intent classification work?",
+      "expected_intent": "implementation",
+      "expected_files": ["engine/intent.rs"],
+      "expected_identifiers": ["classify"],
+      "expected_chunk_types": ["code"],
+      "expected_projects": ["portfolio-rag-chat"],
+      "tags": ["hero", "v2", "implementation"]
+    },
+    {
+      "id": "hero-incremental-ingestion",
+      "query": "How does incremental ingestion detect changes?",
+      "expected_intent": "implementation",
+      "expected_files": ["src/reconcile.rs"],
+      "expected_chunk_types": ["code"],
+      "expected_projects": ["portfolio-rag-chat"],
+      "tags": ["hero", "v1", "implementation"]
+    },
+    {
+      "id": "hero-project-overview",
+      "query": "What is portfolio-rag-chat?",
+      "expected_intent": "overview",
+      "expected_chunk_types": ["readme"],
+      "expected_projects": ["portfolio-rag-chat"],
+      "tags": ["hero", "overview"]
+    },
+    {
+      "id": "overview-architecture",
+      "query": "Describe the architecture of this system",
+      "expected_intent": "overview",
+      "expected_chunk_types": ["readme", "module_doc"],
+      "tags": ["overview", "directional"]
+    },
+    {
+      "id": "overview-rag-approach",
+      "query": "What is the RAG approach used here?",
+      "expected_intent": "overview",
+      "expected_chunk_types": ["readme"],
+      "tags": ["overview", "directional"]
+    },
+    {
+      "id": "overview-coderag-types",
+      "query": "What is the coderag-types crate?",
+      "expected_intent": "overview",
+      "expected_chunk_types": ["crate"],
+      "expected_projects": ["portfolio-rag-chat"],
+      "tags": ["overview", "directional"]
+    },
+    {
+      "id": "overview-workspace-structure",
+      "query": "How is the workspace organized?",
+      "expected_intent": "overview",
+      "expected_chunk_types": ["crate", "readme"],
+      "tags": ["overview", "directional"]
+    },
+    {
+      "id": "overview-vector-database",
+      "query": "What vector database is used?",
+      "expected_intent": "overview",
+      "expected_chunk_types": ["readme", "crate"],
+      "tags": ["overview", "directional"]
+    },
+    {
+      "id": "overview-embedding-model",
+      "query": "What embedding model does the system use?",
+      "expected_intent": "overview",
+      "expected_files": ["store/embedder.rs"],
+      "tags": ["overview", "directional"]
+    },
+    {
+      "id": "impl-embedding-generation",
+      "query": "How does the embedding model generate vectors?",
+      "expected_intent": "implementation",
+      "expected_files": ["store/embedder.rs"],
+      "expected_identifiers": ["embed_one"],
+      "tags": ["implementation", "directional"]
+    },
+    {
+      "id": "impl-vector-store",
+      "query": "How does the vector store work?",
+      "expected_intent": "implementation",
+      "expected_files": ["store/vector_store.rs"],
+      "tags": ["implementation", "directional"]
+    },
+    {
+      "id": "impl-query-routing",
+      "query": "How does query routing work?",
+      "expected_intent": "implementation",
+      "expected_files": ["engine/intent.rs"],
+      "expected_identifiers": ["route"],
+      "tags": ["implementation", "directional", "v2"]
+    },
+    {
+      "id": "impl-context-building",
+      "query": "How is the LLM context built?",
+      "expected_intent": "implementation",
+      "expected_files": ["engine/context.rs"],
+      "tags": ["implementation", "directional", "v2"]
+    },
+    {
+      "id": "impl-code-parsing",
+      "query": "How does the code parser extract functions?",
+      "expected_intent": "implementation",
+      "expected_files": ["src/parser.rs"],
+      "tags": ["implementation", "directional", "v1"]
+    },
+    {
+      "id": "impl-docstring-extraction",
+      "query": "How are docstrings extracted from code?",
+      "expected_intent": "implementation",
+      "expected_files": ["src/parser.rs"],
+      "tags": ["implementation", "directional", "v1"]
+    },
+    {
+      "id": "impl-language-handler",
+      "query": "How do language handlers work?",
+      "expected_intent": "implementation",
+      "expected_files": ["src/language_handler.rs"],
+      "tags": ["implementation", "directional", "v1"]
+    },
+    {
+      "id": "rel-what-calls-retrieve",
+      "query": "What calls the retrieve function?",
+      "expected_intent": "relationship",
+      "expected_files": ["api/handlers.rs"],
+      "tags": ["relationship", "directional", "v2"]
+    },
+    {
+      "id": "rel-coderag-types-usage",
+      "query": "What depends on coderag-types?",
+      "expected_intent": "relationship",
+      "expected_chunk_types": ["crate"],
+      "tags": ["relationship", "directional"]
+    },
+    {
+      "id": "rel-embedder-usage",
+      "query": "Where is the embedder used?",
+      "expected_intent": "relationship",
+      "expected_files": ["api/state.rs", "engine/intent.rs"],
+      "tags": ["relationship", "directional"]
+    },
+    {
+      "id": "rel-intent-classifier-callers",
+      "query": "What calls the intent classifier?",
+      "expected_intent": "relationship",
+      "expected_files": ["api/handlers.rs"],
+      "tags": ["relationship", "directional", "v2"]
+    },
+    {
+      "id": "rel-vector-store-dependencies",
+      "query": "What does the vector store depend on?",
+      "expected_intent": "relationship",
+      "expected_chunk_types": ["code"],
+      "tags": ["relationship", "directional"]
+    },
+    {
+      "id": "comp-retriever-generator",
+      "query": "Compare the retriever and generator",
+      "expected_intent": "comparison",
+      "expected_files": ["engine/retriever.rs", "engine/generator.rs"],
+      "expected_chunk_types": ["code"],
+      "tags": ["comparison", "directional"]
+    },
+    {
+      "id": "comp-chunk-types",
+      "query": "What is the difference between CodeChunk and ReadmeChunk?",
+      "expected_intent": "comparison",
+      "expected_chunk_types": ["code"],
+      "tags": ["comparison", "directional"]
+    },
+    {
+      "id": "comp-code-raptor-vs-rag-chat",
+      "query": "What is the difference between code-raptor and portfolio-rag-chat?",
+      "expected_intent": "comparison",
+      "expected_chunk_types": ["readme", "crate"],
+      "tags": ["comparison", "directional"]
+    },
+    {
+      "id": "comp-bge-vs-other-models",
+      "query": "Why BGE-small versus other embedding models?",
+      "expected_intent": "comparison",
+      "expected_chunk_types": ["readme"],
+      "tags": ["comparison", "directional"]
+    },
+    {
+      "id": "smoke-retrieval-overview",
+      "query": "Give me an overview of the retrieval system",
+      "min_relevant_results": 3,
+      "tags": ["smoke"],
+      "notes": "Smoke test — any 3 relevant results is a pass, regardless of which files. Survives any pipeline change."
+    },
+    {
+      "id": "smoke-code-structure",
+      "query": "How is the codebase organized?",
+      "min_relevant_results": 2,
+      "tags": ["smoke"],
+      "notes": "Smoke test — should find at least 2 useful results about project structure."
+    },
+    {
+      "id": "smoke-embedding-system",
+      "query": "Tell me about the embedding system",
+      "min_relevant_results": 2,
+      "tags": ["smoke"]
+    },
+    {
+      "id": "smoke-query-pipeline",
+      "query": "How does a query flow through the system?",
+      "min_relevant_results": 3,
+      "tags": ["smoke"]
+    },
+    {
+      "id": "smoke-nonsense-exclusion",
+      "query": "How does authentication work?",
+      "excluded_files": ["engine/retriever.rs", "store/embedder.rs"],
+      "tags": ["smoke", "edge_case"],
+      "notes": "Auth isn't in this codebase. Core retrieval files should not appear for this query."
+    },
+    {
+      "id": "smoke-database-exclusion",
+      "query": "How does PostgreSQL integration work?",
+      "excluded_files": ["engine/retriever.rs", "api/handlers.rs"],
+      "tags": ["smoke", "edge_case"],
+      "notes": "No PostgreSQL in this project. Core files shouldn't match."
+    },
+    {
+      "id": "smoke-general-quality",
+      "query": "What are the main components of this system?",
+      "min_relevant_results": 4,
+      "tags": ["smoke"]
+    },
+    {
+      "id": "edge-nonsense",
+      "query": "How does the quantum flux capacitor work?",
+      "tags": ["edge_case", "no_results"],
+      "notes": "No relevant content. All expected fields empty = vacuous recall. Harness reports top_relevance separately."
+    },
+    {
+      "id": "edge-ambiguous",
+      "query": "Tell me about the store",
+      "expected_files": ["store/vector_store.rs"],
+      "tags": ["edge_case", "ambiguous"],
+      "notes": "Ambiguous query — could mean the store module or the vector store. Intent omitted."
+    },
+    {
+      "id": "edge-typo-resilience",
+      "query": "How does the retreiver work?",
+      "expected_files": ["engine/retriever.rs"],
+      "tags": ["edge_case"],
+      "notes": "Tests typo resilience (retreiver vs retriever). Semantic search should still find it."
+    }
+  ]
+}

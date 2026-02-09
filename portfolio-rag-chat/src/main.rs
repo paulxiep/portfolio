@@ -1,5 +1,6 @@
 mod api;
 mod engine;
+mod harness;
 mod models;
 mod store;
 
