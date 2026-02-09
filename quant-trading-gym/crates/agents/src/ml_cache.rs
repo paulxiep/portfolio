@@ -13,11 +13,11 @@
 //! ┌─────────────────────────────────────────────────────────────┐
 //! │            MlPredictionCache                                 │
 //! │  ┌─────────────────────────────────────────────────────────┐│
-//! │  │ features: HashMap<Symbol, [f64; 42]>                     ││
+//! │  │ features: HashMap<Symbol, FeatureVec>                    ││
 //! │  │   - Extract ONCE per symbol per tick                     ││
 //! │  └─────────────────────────────────────────────────────────┘│
 //! │  ┌─────────────────────────────────────────────────────────┐│
-//! │  │ predictions: HashMap<(ModelName, Symbol), [f64; 3]>      ││
+//! │  │ predictions: HashMap<Model, HashMap<Symbol, [f64; 3]>>   ││
 //! │  │   - Predict ONCE per (model, symbol) per tick            ││
 //! │  └─────────────────────────────────────────────────────────┘│
 //! └─────────────────────────────────────────────────────────────┘
@@ -34,19 +34,24 @@
 //! // Insert prediction for a model-symbol pair
 //! cache.insert_prediction("decision_tree_1", &"ACME".into(), [0.1, 0.2, 0.7]);
 //!
-//! // Retrieve cached prediction
+//! // Retrieve cached prediction (zero-allocation lookup)
 //! if let Some(probs) = cache.get_prediction("decision_tree_1", &"ACME".into()) {
 //!     // Use cached prediction
 //! }
 //! ```
 
 use std::collections::HashMap;
-use types::{N_MARKET_FEATURES, Symbol, Tick};
+
+use smallvec::SmallVec;
+use types::{Symbol, Tick};
 
 use crate::tier1::ml::ClassProbabilities;
 
-/// Key for prediction cache: (model_name, symbol).
-pub type PredictionKey = (String, Symbol);
+/// Feature vector type: inline storage for up to 64 f64s (covers V5's 42 and V6's 55+).
+///
+/// Uses `SmallVec` to avoid heap allocation for typical feature counts.
+/// Implements `Deref<Target=[f64]>`, so all slice-based code works unchanged.
+pub type FeatureVec = SmallVec<[f64; 64]>;
 
 /// Centralized cache for ML features and predictions.
 ///
@@ -58,10 +63,11 @@ pub struct MlPredictionCache {
     pub tick: Tick,
 
     /// Extracted features per symbol, computed once.
-    features: HashMap<Symbol, [f64; N_MARKET_FEATURES]>,
+    features: HashMap<Symbol, FeatureVec>,
 
-    /// Cached predictions per (model_name, symbol) pair.
-    predictions: HashMap<PredictionKey, ClassProbabilities>,
+    /// Cached predictions indexed by model name, then symbol.
+    /// Nested HashMap enables zero-allocation lookups via `Borrow` trait.
+    predictions: HashMap<String, HashMap<Symbol, ClassProbabilities>>,
 }
 
 impl MlPredictionCache {
@@ -75,13 +81,13 @@ impl MlPredictionCache {
     }
 
     /// Insert extracted features for a symbol.
-    pub fn insert_features(&mut self, symbol: Symbol, features: [f64; N_MARKET_FEATURES]) {
+    pub fn insert_features(&mut self, symbol: Symbol, features: FeatureVec) {
         self.features.insert(symbol, features);
     }
 
     /// Get cached features for a symbol.
-    pub fn get_features(&self, symbol: &Symbol) -> Option<&[f64; N_MARKET_FEATURES]> {
-        self.features.get(symbol)
+    pub fn get_features(&self, symbol: &Symbol) -> Option<&[f64]> {
+        self.features.get(symbol).map(|v| v.as_slice())
     }
 
     /// Insert a prediction for a model-symbol pair.
@@ -91,14 +97,17 @@ impl MlPredictionCache {
         symbol: &Symbol,
         probs: ClassProbabilities,
     ) {
-        let key = (model_name.to_string(), symbol.clone());
-        self.predictions.insert(key, probs);
+        self.predictions
+            .entry(model_name.to_string())
+            .or_default()
+            .insert(symbol.clone(), probs);
     }
 
     /// Get cached prediction for a model-symbol pair.
+    ///
+    /// Zero-allocation lookup: uses `HashMap::get(&str)` via `Borrow` trait.
     pub fn get_prediction(&self, model_name: &str, symbol: &Symbol) -> Option<ClassProbabilities> {
-        let key = (model_name.to_string(), symbol.clone());
-        self.predictions.get(&key).copied()
+        self.predictions.get(model_name)?.get(symbol).copied()
     }
 
     /// Check if features are cached for a symbol.
@@ -108,8 +117,9 @@ impl MlPredictionCache {
 
     /// Check if prediction is cached for a model-symbol pair.
     pub fn has_prediction(&self, model_name: &str, symbol: &Symbol) -> bool {
-        let key = (model_name.to_string(), symbol.clone());
-        self.predictions.contains_key(&key)
+        self.predictions
+            .get(model_name)
+            .is_some_and(|m| m.contains_key(symbol))
     }
 
     /// Get the number of cached symbols.
@@ -119,7 +129,23 @@ impl MlPredictionCache {
 
     /// Get the number of cached predictions.
     pub fn prediction_count(&self) -> usize {
-        self.predictions.len()
+        self.predictions.values().map(|m| m.len()).sum()
+    }
+
+    /// Iterate over symbols that have cached features.
+    ///
+    /// Used by [`ModelRegistry::predict_from_cache`] to discover which symbols
+    /// have features available for prediction.
+    pub fn feature_symbols(&self) -> impl Iterator<Item = &Symbol> {
+        self.features.keys()
+    }
+
+    /// Clone all cached features (for recording reuse).
+    ///
+    /// When ML cache exists, recording reuses these features instead of
+    /// re-extracting — guaranteeing training-serving parity by construction.
+    pub fn all_features(&self) -> HashMap<Symbol, FeatureVec> {
+        self.features.clone()
     }
 }
 
@@ -138,15 +164,15 @@ mod tests {
     #[test]
     fn test_features_insert_and_get() {
         let mut cache = MlPredictionCache::new(100);
-        let features = [1.0; N_MARKET_FEATURES];
+        let features: FeatureVec = smallvec::smallvec![1.0; 42];
         let symbol = "ACME".to_string();
 
         assert!(!cache.has_features(&symbol));
 
-        cache.insert_features(symbol.clone(), features);
+        cache.insert_features(symbol.clone(), features.clone());
 
         assert!(cache.has_features(&symbol));
-        assert_eq!(cache.get_features(&symbol), Some(&features));
+        assert_eq!(cache.get_features(&symbol), Some(features.as_slice()));
         assert_eq!(cache.symbol_count(), 1);
     }
 

@@ -1,5 +1,455 @@
 # Development Log
 
+## 2026-02-08: V6.3 Canonical Features — 28 SHAP-Validated Feature Extractor
+
+### Summary
+V6.2 SHAP analysis proved 27/55 features contribute <1% importance. Retrained all models on 28 features — accuracy preserved (some models slightly improved). V6.3 adds `CanonicalFeatures` as a third plug-in extractor alongside `MinimalFeatures` (42, V5) and `FullFeatures` (55, V6.1). Modularized `MinimalFeatures` to use group extractors, deprecating monolithic `extract_features_raw`. Changed default extractor to `CanonicalFeatures`.
+
+SHAP analysis: `shap_feature_engineering.md`
+
+### What Changed
+
+**1. Canonical feature schema** (`crates/types/src/features.rs`)
+- `N_CANONICAL_FEATURES = 28`, `CANONICAL_LOOKBACKS = [1, 32, 48, 64]`
+- `canonical_idx` module: 28 named index constants (0-27)
+- `CANONICAL_FEATURE_NAMES`: 28 feature name strings
+- `CANONICAL_FEATURE_NEUTRALS`: semantic neutral values for NaN imputation
+- `CANONICAL_DESCRIPTORS`: 28 `FeatureDescriptor` entries across 5 groups
+- `CANONICAL_REGISTRY`: static `FeatureRegistry` for downstream consumers
+- `FeatureGroup::CANONICAL`: 5 groups (Price, Technical, Volatility, Fundamental, MomentumQuality)
+- Compile-time assertions: all 28 index checks + array length checks
+
+**2. CanonicalFeatures extractor** (`crates/agents/src/tier1/ml/canonical_features.rs`) — NEW
+- Self-contained `FeatureExtractor` impl producing 28 features
+- 5 private extraction functions writing to canonical indices:
+  - `extract_price()` — 8 features (mid_price, price_change_{1,32,48,64}, log_return_{32,48,64})
+  - `extract_technical()` — 13 indicators (SMA, EMA, RSI, MACD, Bollinger, ATR)
+  - `extract_volatility()` — 3 features (realized_vol_8/32, vol_ratio)
+  - `extract_fundamental()` — 2 features (fair_value_dev, price_to_fair)
+  - `extract_momentum_quality()` — 2 features (trend_strength, rsi_divergence)
+- No dependency on V5/V6.1 group_extractors — fully self-contained
+
+**3. MinimalFeatures modularized** (`crates/agents/src/tier1/ml/feature_extractor.rs`)
+- `MinimalFeatures::extract_market()` now delegates to `group_extractors::extract_price/technical/news`
+- `extract_features_raw()` and `extract_features()` marked `#[deprecated]`
+- Monolithic code detached from extractor (kept for backward compat)
+
+**4. Feature index remapping** (`crates/agents/src/tier1/ml/mod.rs`)
+- `compute_feature_indices()`: added `N_CANONICAL_FEATURES` (28) short-circuit — no remap needed
+- MlModel trait doc updated: "28 for V6.3 canonical, 42 for V5, 55 for V6.1"
+
+**5. Default extractor** (`crates/simulation/src/runner.rs`)
+- Changed auto-default from `MinimalFeatures` to `CanonicalFeatures`
+- Explicit `--full-features` still uses `FullFeatures` (55)
+
+**6. Version bump** — pushed old V6.3 (Gym) → V6.4, old V6.4 (PyO3) → V6.5
+
+### Retrained Accuracy (28 features)
+
+| Model | Type | 55-feat | 28-feat | Delta |
+|-------|------|---------|---------|-------|
+| medium_decision_tree | DT (depth 12) | ~51% | 51.12% | ~0% |
+| deep_decision_tree | DT (depth 16) | ~63% | 63.13% | ~0% |
+| small_random_forest | RF (24 trees, depth 12) | ~64.5% | 65.12% | +0.6% |
+| fast_gradient_boosted | GB (24 trees, depth 8, lr 0.4) | ~71% | 72.24% | +1.2% |
+| slow_gradient_boosted | GB (36 trees, depth 10, lr 0.25) | ~85% | 84.48% | -0.5% |
+
+### Architecture
+
+Three feature extractors coexist as plug-ins:
+```
+FeatureExtractor trait
+    ├── MinimalFeatures  (42 features, V5)    — group_extractors (refactored)
+    ├── FullFeatures     (55 features, V6.1)  — group_extractors (unchanged)
+    └── CanonicalFeatures(28 features, V6.3)  — self-contained (new default)
+```
+
+### Files Summary
+
+| File | Action | Change |
+|------|--------|--------|
+| `crates/types/src/features.rs` | MODIFY | Canonical schema: indices, names, neutrals, descriptors, registry |
+| `crates/types/src/lib.rs` | MODIFY | Canonical re-exports |
+| `crates/agents/src/tier1/ml/canonical_features.rs` | CREATE | CanonicalFeatures extractor (28 features) |
+| `crates/agents/src/tier1/ml/feature_extractor.rs` | MODIFY | MinimalFeatures modularized, monolithic deprecated |
+| `crates/agents/src/tier1/ml/mod.rs` | MODIFY | canonical module, compute_feature_indices short-circuit |
+| `crates/simulation/src/runner.rs` | MODIFY | Default extractor → CanonicalFeatures |
+| `crates/agents/src/tier1/mod.rs` | MODIFY | CanonicalFeatures re-export |
+| `crates/agents/src/lib.rs` | MODIFY | CanonicalFeatures re-export |
+| `shap_feature_engineering.md` | MODIFY | V6.2 retrained results section |
+| `6.3_gym_environment.md` | RENAME | → `6.4_gym_environment.md` |
+| `6.4_pyo3_bindings.md` | RENAME | → `6.5_pyo3_bindings.md` |
+
+## 2026-02-07: V6.2 Full Ensemble — Python Training Pipeline, New Model Types, Ensemble YAML
+
+### Summary
+Built the complete V6.2 training pipeline: Python trains 8 model types (DT, RF, GB, LogReg, LinearSVC, GaussianNB), exports JSON for Rust inference, and auto-generates `ensemble_config.yaml` with accuracy-based weights. Added `LinearPredictor` and `GaussianNBPredictor` Rust types. Ensemble YAML loading validates member names against loaded models. Cross-platform `qtg.py` CLI dispatcher runs everything from project root on Windows/Linux.
+
+Design spec: `6.2_full_ensemble.md`
+
+### What Changed
+
+**1. Rust model types** (`crates/agents/src/tier1/ml/`)
+- `LinearPredictor` — loads JSON with `weights`/`biases` (or `coefficients`/`intercepts` via serde alias), predicts via `W @ features + b → softmax`. Supports both SVM and LogReg.
+- `GaussianNBPredictor` — loads `class_log_prior`, `theta`, `var` from JSON, applies variance smoothing, precomputes `neg_half_log_var` and `inv_2var` for zero-transcendental inference.
+- `EnsembleModel` — weighted vote across sub-models, loaded from `ensemble_config.yaml`.
+- Tree model loaders updated: accept 42 (V5) or 55 (V6.1 full) features instead of hardcoded 42.
+
+**2. Ensemble YAML loading** (`src/main.rs`)
+- `serde_yaml` workspace dependency added.
+- `load_ensemble()` — reads `models/ensemble_config.yaml`, validates all member names exist in loaded models, constructs `EnsembleModel`.
+- `MlModels::by_name()` / `model_names()` — lookup helpers for ensemble validation.
+- `load_ml_models()` now takes `&SimConfig`, skips loading when `total_ml_agents() == 0`.
+
+**3. Python training package** (`python/training/`)
+- `common.py` — extracted shared logic: `load_data()` (numbered parquet discovery + concat), `compute_lookahead_labels()`, `prepare_features()`, `load_and_split()`, `save_model_json()`, `rust_model_name()` (Rust name contract).
+- `train_trees.py` — refactored from `scripts/train_trees.py`, imports from `.common`.
+- `train_linear.py` — `LogisticRegression` with `StandardScaler`, scaler baked into exported coefficients/intercepts.
+- `train_svm.py` — `LinearSVC` with `StandardScaler`, scaler baked into exported weights/biases.
+- `train_naive_bayes.py` — `GaussianNB` with `StandardScaler`, scaler baked into exported theta/var.
+- `train_models.py` — orchestrator: trains all model types, feature engineering for linear models, auto-generates `ensemble_config.yaml`.
+- `feature_engineering.py` — interaction (a*b), squared (a^2), ratio (a/b) features for linear models. Manual mode (hand-picked) or auto mode (mutual information discovery of top-K).
+- `analyze_shap.py` — SHAP TreeExplainer for tree models, coefficient magnitude for linear/SVM, theta spread for NB, feature group aggregation.
+- `check_parquet.py` — data quality checker rewritten for V6.1 (polars, numbered files, feature group coverage).
+- `config.yaml` — unified training config with all model types, feature engineering, ensemble, and SHAP settings.
+
+**4. Scaler baking** (Python → Rust contract)
+- Linear/SVM: `W_eff = W / std`, `b_eff = b - W_eff @ mean` — Rust inference on raw features, no scaling needed.
+- NB: `theta_raw = theta_scaled * std + mean`, `var_raw = var_scaled * std^2`.
+- Tree models are scale-invariant, no baking needed.
+
+**5. Ensemble auto-generation** (`train_models.py`)
+- Accuracy-based weights: each model's validation accuracy becomes its ensemble weight.
+- `min_accuracy` threshold (default 0.50): excludes near-random models from ensemble.
+- Linear/SVM/NB typically excluded (~42% accuracy on non-linear data), trees included (85-94%).
+
+**6. Cross-platform CLI** (`qtg.py`)
+- `python qtg.py check` / `train` / `shap` — dispatches to training modules.
+- `sys.path.insert(0, "python")` internally — no `PYTHONPATH` needed (Windows-compatible).
+
+**7. Bug fixes**
+- Bollinger %B: `width > 0.0` → `width > 1e-10` to prevent trillion-scale values from subnormal division.
+- sklearn 1.8: removed deprecated `multi_class` parameter from LogReg and LinearSVC.
+- `test_default_config_consistency`: fixed to verify structural consistency instead of hardcoded ML agent counts.
+
+### Scaler Baking Architecture
+
+```
+Python Training                    Rust Inference
+     │                                  │
+  X_train ──► StandardScaler.fit()      │
+     │            │                     │
+  X_scaled ──► model.fit()              │
+     │            │                     │
+  model.coef_ + scaler.mean_/scale_     │
+     │                                  │
+  bake: W_eff = W/std                   │
+        b_eff = b - W_eff@mean          │
+     │                                  │
+  JSON: {"weights": W_eff, ...}    ──►  LinearPredictor
+     │                                  │
+                                   raw features ──► W_eff @ x + b_eff
+                                   (no scaling needed at inference)
+```
+
+### Files Summary
+
+| File | Action | Change |
+|------|--------|--------|
+| `crates/agents/src/tier1/ml/linear_predictor.rs` | CREATE | LinearPredictor for LogReg + SVM |
+| `crates/agents/src/tier1/ml/gaussian_nb.rs` | CREATE | GaussianNBPredictor |
+| `crates/agents/src/tier1/ml/ensemble_model.rs` | CREATE | EnsembleModel weighted vote |
+| `crates/agents/src/tier1/ml/decision_tree.rs` | MODIFY | Accept 42 or 55 features |
+| `crates/agents/src/tier1/ml/random_forest.rs` | MODIFY | Accept 42 or 55 features |
+| `crates/agents/src/tier1/ml/gradient_boosted.rs` | MODIFY | Accept 42 or 55 features |
+| `crates/agents/src/tier1/ml/ml_agents.rs` | MODIFY | `by_name()`, `model_names()` |
+| `crates/types/src/features.rs` | MODIFY | Bollinger %B epsilon guard |
+| `crates/simulation/src/sim_config.rs` | MODIFY | Fix test, ML agent defaults |
+| `src/main.rs` | MODIFY | `serde_yaml`, `load_ensemble()`, `load_ml_models(&config)` |
+| `Cargo.toml` | MODIFY | `serde_yaml` dependency |
+| `python/training/__init__.py` | CREATE | Package init |
+| `python/training/common.py` | CREATE | Shared data loading/labeling |
+| `python/training/train_trees.py` | CREATE | Refactored tree training |
+| `python/training/train_linear.py` | CREATE | LogisticRegression training |
+| `python/training/train_svm.py` | CREATE | LinearSVC training |
+| `python/training/train_naive_bayes.py` | CREATE | GaussianNB training |
+| `python/training/train_models.py` | CREATE | Orchestrator |
+| `python/training/feature_engineering.py` | CREATE | Interaction/square/ratio features, MI auto-discovery |
+| `python/training/analyze_shap.py` | CREATE | SHAP + coefficient analysis |
+| `python/training/check_parquet.py` | CREATE | Data quality checker |
+| `python/training/config.yaml` | CREATE | Unified training config |
+| `qtg.py` | CREATE | Cross-platform CLI dispatcher |
+| `scripts/scripts` | MODIFY | Updated commands for `python qtg.py` |
+
+## 2026-02-07: V6.1 Feature Engineering — Declarative Registry + 55 Candidate Features
+
+### Summary
+Expanded the ML feature set from 42 to 55 candidate features using a declarative architecture. Features are defined via `FeatureDescriptor` + `FeatureRegistry` (single source of truth), extracted by modular group functions, and recorded via `--full-features` CLI flag. The 55 features are a candidate pool for SHAP-based pruning in V6.2 — the final production set will be trimmed to whatever carries signal.
+
+Design spec: `6.1_full_features.md`
+
+### What Changed
+
+**1. Declarative feature registry** (`crates/types/src/features.rs`)
+- `FeatureGroup` enum — 8 groups: Price, TechnicalIndicator, News, Microstructure, Volatility, Fundamental, MomentumQuality, VolumeCross
+- `FeatureDescriptor` struct — co-locates index, name, group, neutral, valid_range per feature
+- `FeatureRegistry` struct — wraps static descriptor/name/neutral arrays with derived accessors:
+  - `group_indices(group)` — for ablation testing
+  - `valid_ranges()` — for V7.2 NN normalization
+  - `validate(features)` — out-of-range detection
+- `MINIMAL_DESCRIPTORS` (42 entries, neutrals all -1.0) + `FULL_DESCRIPTORS` (55, semantic neutrals)
+- `MINIMAL_REGISTRY` + `FULL_REGISTRY` — static instances
+- Exhaustive compile-time assertions: every descriptor index == array position, prefix consistency between MINIMAL and FULL
+
+**2. Extended feature indices and pure functions** (`crates/types/src/features.rs`)
+- `extended_idx` module — constants for features 42-54, contiguous by group
+- `realized_volatility(candles, lookback)` — std of sequential 1-period log returns
+- `spread_bps(bid, ask, mid)` — spread in basis points
+
+**3. Group extraction functions** (`crates/agents/src/tier1/ml/group_extractors.rs`) — NEW
+- 8 free functions writing into `&mut [f64]` buffer at correct indices:
+  - V5 refactored: `extract_price`, `extract_technical`, `extract_news`
+  - V6.1 new: `extract_microstructure`, `extract_volatility`, `extract_fundamental`, `extract_momentum_quality`, `extract_volume_cross`
+- Equivalence test confirms V5 group functions produce identical output to monolithic `extract_features_raw()`
+- Dependency: `extract_fundamental` must run before `extract_volume_cross` (reads `fair_value_dev`)
+
+**4. FullFeatures extractor** (`crates/agents/src/tier1/ml/full_features.rs`) — NEW
+- `FullFeatures` struct implementing `FeatureExtractor` — calls all 8 group functions
+- Ablation API: `disable_group(group)` / `enable_group(group)` — disabled groups leave NaN, imputation fills neutrals
+- Returns `FULL_REGISTRY` from `registry()`
+
+**5. FeatureExtractor trait extended** (`crates/agents/src/tier1/ml/mod.rs`)
+- Added `fn registry(&self) -> &'static FeatureRegistry` — provides metadata to downstream consumers (V6.2 SHAP, V6.3 canonical features, V6.4 gym, V7.2 deep RL)
+- `MinimalFeatures` returns `&MINIMAL_REGISTRY`
+
+**6. CLI integration** (`src/main.rs`)
+- `--full-features` flag (env: `SIM_FULL_FEATURES`)
+- When set in `--headless-record` mode: uses `FullFeatures` extractor (55 columns in Parquet)
+- Default: `MinimalFeatures` (42 columns, V5 backward compat)
+
+### New V6.1 Features (13 candidates)
+
+| Index | Name | Group | Signal |
+|-------|------|-------|--------|
+| 42 | `f_spread_bps` | Microstructure | Liquidity cost |
+| 43 | `f_book_imbalance` | Microstructure | Buy/sell pressure |
+| 44 | `f_net_order_flow` | Microstructure | Tick-rule aggressor flow |
+| 45 | `f_realized_vol_8` | Volatility | Short-term regime |
+| 46 | `f_realized_vol_32` | Volatility | Medium-term regime |
+| 47 | `f_vol_ratio` | Volatility | Regime change (>1 expanding) |
+| 48 | `f_fair_value_dev` | Fundamental | Distance from fair value |
+| 49 | `f_price_to_fair` | Fundamental | Price/fair ratio |
+| 50 | `f_trend_strength` | MomentumQuality | abs(ema8-ema16)/atr8 |
+| 51 | `f_rsi_divergence` | MomentumQuality | RSI distance from neutral |
+| 52 | `f_volume_surge` | VolumeCross | Latest vol / avg vol |
+| 53 | `f_trade_intensity` | VolumeCross | Trade count / baseline |
+| 54 | `f_sentiment_price_gap` | VolumeCross | Sentiment * fair_value_dev |
+
+### Architecture: Declarative Feature Schema
+
+```
+types crate (declaration)              agents crate (computation)
+    │                                      │
+    ▼                                      ▼
+FeatureDescriptor ──► FeatureRegistry   group_extractors.rs
+  index: 42                │               extract_microstructure()
+  name: "f_spread_bps"     │               extract_volatility()
+  group: Microstructure    │               ...
+  neutral: 0.0             │                    │
+  valid_range: (0, 1000)   │                    ▼
+                           │            FullFeatures.extract_market()
+                           │                    │
+                           ▼                    ▼
+                    registry.names()     Runner Phase 3b ──► ML cache
+                    registry.neutrals()         │
+                    registry.group_indices()     ▼
+                           │            HookContext.features ──► Parquet
+                           ▼
+                    V6.2: SHAP group aggregation
+                    V6.3: canonical feature trimming
+                    V6.4: gym observation bounds
+                    V7.2: NN normalization ranges
+```
+
+### Files Summary
+
+| File | Action | Change |
+|------|--------|--------|
+| `crates/types/src/features.rs` | MODIFY | `FeatureGroup`, `FeatureDescriptor`, `FeatureRegistry`, `FULL_DESCRIPTORS`, `extended_idx`, `realized_volatility`, `spread_bps`, compile-time assertions |
+| `crates/types/src/lib.rs` | MODIFY | Export V6.1 types |
+| `crates/agents/src/tier1/ml/group_extractors.rs` | CREATE | 8 group extraction functions |
+| `crates/agents/src/tier1/ml/full_features.rs` | CREATE | `FullFeatures` extractor with ablation |
+| `crates/agents/src/tier1/ml/mod.rs` | MODIFY | `registry()` on `FeatureExtractor`, register new modules, export `FullFeatures` |
+| `crates/agents/src/tier1/ml/feature_extractor.rs` | MODIFY | `MinimalFeatures.registry()` returns `&MINIMAL_REGISTRY` |
+| `crates/agents/src/tier1/mod.rs` | MODIFY | Re-export `FullFeatures` |
+| `crates/agents/src/lib.rs` | MODIFY | Re-export `FullFeatures` |
+| `src/main.rs` | MODIFY | `--full-features` CLI flag, feature extractor selection in recording mode |
+
+### Verification
+- `cargo build` — full workspace clean
+- `cargo test --workspace` — 395 passed, 0 failed
+- V5 equivalence: group extractors produce identical output to monolithic `extract_features_raw()`
+- Compile-time assertions verify all 55 descriptor indices, name/neutral array consistency
+
+### What V6.2 Needs
+- Record 55-feature training data with `--headless-record --full-features`
+- Train models on full candidate pool in Python
+- SHAP analysis using `FeatureRegistry.group_indices()` for per-group importance
+- Ablation validation using `FullFeatures::disable_group()`
+- Trim to final feature set based on SHAP signal, potentially engineer new candidates
+
+## 2026-02-06: Pre-V6 Refactor — SoC Pipeline, Agent Factory, Tier 2 Budget
+
+### Summary
+Restructured the codebase to remove V5's hardcoded 42-feature assumptions and monolithic agent spawning, then implemented Section F (training-serving parity) with a clean SoC pipeline.
+
+V6's 55+ features, swappable extractors, per-feature imputation, gym environment, and schema-flexible recording can now be built on clean abstractions.
+
+Design spec: `refactor_v6_prep.md` (sections A–F)
+
+### What Changed
+
+**1. FeatureVec + MlPredictionCache refactor** (`crates/agents/src/ml_cache.rs`)
+- Features: `[f64; N_MARKET_FEATURES]` → `SmallVec<[f64; 64]>` (type alias `FeatureVec`)
+  - Zero heap allocation for up to 64 features; derefs to `&[f64]` for all downstream code
+- Predictions: `HashMap<(String, Symbol), ClassProbabilities>` → nested `HashMap<String, HashMap<Symbol, ClassProbabilities>>`
+  - Fixes ~168us/tick allocation bug in `get_prediction()` — lookups are now zero-alloc via `Borrow` trait
+- Added `feature_symbols()` iterator and `all_features()` clone for recording reuse
+
+**2. FeatureExtractor trait + pure extraction pipeline** (`crates/agents/src/tier1/ml/`)
+```rust
+pub trait FeatureExtractor: Send + Sync {
+    fn n_features(&self) -> usize;
+    fn extract_market(&self, symbol: &Symbol, ctx: &StrategyContext<'_>) -> FeatureVec;
+    fn feature_names(&self) -> &[&str];
+    fn neutral_values(&self) -> &[f64];  // Per-feature NaN imputation targets
+}
+```
+- Extraction is **pure**: `extract_market()` returns raw features with NaN preserved
+- Imputation is a separate pipeline step using `neutral_values()`, applied by the runner
+- `extract_features_raw()` — pure extraction function (NaN preserved)
+- `extract_features()` — V5-compat wrapper: raw + NaN→-1.0
+- `impute_features(features, neutrals)` — single-point imputation function
+- `MINIMAL_FEATURE_NEUTRALS: [f64; 42] = [-1.0; 42]` — V5 training convention constant
+- `MinimalFeatures` delegates to `extract_features_raw()`, not the imputed version
+- V6 `FullFeatures` will define per-feature semantic neutrals (RSI→50, vol_ratio→1.0, bb_%b→0.5)
+
+**3. ModelRegistry — prediction only (SoC)** (`crates/agents/src/tier1/ml/model_registry.rs`)
+- **No longer owns a FeatureExtractor** — extraction is the runner's responsibility
+- Constructor: `ModelRegistry::new()` (no extractor arg)
+- Single method: `predict_from_cache(&self, cache: &mut MlPredictionCache)` — reads pre-extracted features from cache, computes predictions in parallel
+- Training-serving parity by construction: same features feed both ML cache and recording
+
+**4. Runner feature extraction pipeline** (`crates/simulation/src/runner.rs`)
+- New field: `feature_extractor: Option<Box<dyn FeatureExtractor>>`
+- `set_feature_extractor()` — explicit setter; `register_ml_model()` auto-sets `MinimalFeatures` as default
+- Phase 3b pipeline: extract in parallel → impute with `neutral_values()` → insert into cache → `predict_from_cache()`
+- Phase 13: pass features to hooks via `HookContext.features` (reuse ML cache features when available)
+- Added `parallel_features` to `ParallelizationConfig`
+
+**5. HookContext SoC — features separate from enriched data** (`crates/simulation/src/hooks.rs`)
+- `HookContext.features: Option<HashMap<Symbol, FeatureVec>>` — computed artifact for ML and recording
+- `EnrichedData.recent_trades: HashMap<Symbol, Vec<Trade>>` — observational state
+- Features and enriched data kept separate by design: they may overlap but won't be the same, avoiding recalculation
+
+**6. RecordingHook — simplified to pure Parquet writer** (`crates/storage/src/recording_hook.rs`)
+- Reads pre-extracted features from `ctx.features` instead of extracting internally
+- Removed `PriceHistory` dependency and `on_tick_start()` lifecycle hook
+- Training-serving parity guaranteed: features in Parquet are identical to features used for ML prediction
+- `MarketFeatures::extract()` deleted — dual extraction path eliminated
+- `PriceHistory` deprecated (module hidden, no re-export)
+
+**7. Gym-facing API** (`crates/simulation/src/runner.rs`, `subsystems/agents.rs`)
+- Added `Simulation::agent_state(id) -> Option<AgentState>` for gym observation extraction
+- `AgentOrchestrator::agent_state()` acquires agent mutex briefly to clone state
+
+**8. Agent Factory extraction** (`crates/simulation/src/agent_factory/`)
+- ~800 lines of spawn functions moved from `src/main.rs` into library crate sub-modules:
+  - `mod.rs` — `spawn_all()` orchestrator, `SpawnResult`, top-level API
+  - `tier1.rs` — market makers, noise traders, quant strategies, pairs traders
+  - `tier2.rs` — reactive agents, sector rotators
+  - `ml_agents.rs` — `MlModels` struct, tree agent creation + model registration
+  - `background_pool.rs` — Tier 3 pool setup
+- `src/main.rs` reduced by ~800 lines; all 4 run modes use single `spawn_all()` call
+- Model I/O (JSON loading from disk) stays in binary via `load_ml_models()`
+- Gym crate can now import `simulation::agent_factory::spawn_all()` directly
+
+**9. SimConfig migration** (`crates/simulation/src/sim_config.rs`)
+- `SimConfig`, `SymbolSpec`, `Tier1AgentType` moved from binary (`src/config.rs`) to library crate
+- `src/config.rs` is now a thin re-export: `pub use simulation::{SimConfig, SymbolSpec, Tier1AgentType};`
+
+**10. Tier 2 budget: sector rotators folded in**
+- `num_tier2_agents` now represents **total** Tier 2 (reactive + sector rotators)
+- Default: 5000 (was 4500 reactive + 500 rotators counted separately)
+- New computed methods: `reactive_tier2_count()`, `effective_sector_rotators()`
+- `total_agents()` no longer double-counts rotators
+
+### Architecture: Feature Pipeline (SoC)
+
+```
+Runner Phase 3b                          Phase 13
+    │                                        │
+    ▼                                        ▼
+FeatureExtractor                        HookContext
+  .extract_market()  ──► raw features       .features ──► RecordingHook
+        │                (NaN)                              (Parquet writer)
+        ▼
+  impute_features()  ──► clean features
+        │
+        ▼
+  MlPredictionCache
+  .insert_features()
+        │
+        ▼
+  ModelRegistry
+  .predict_from_cache()  ──► predictions ──► agents
+```
+
+Extraction, imputation, prediction, and recording are four separate concerns.
+Same features feed both ML and recording — training-serving parity by construction.
+
+### Files Summary
+
+| File | Action | Change |
+|------|--------|--------|
+| `crates/types/src/features.rs` | MODIFY | `MINIMAL_FEATURE_NEUTRALS` constant |
+| `crates/types/src/lib.rs` | MODIFY | Export `MINIMAL_FEATURE_NEUTRALS` |
+| `crates/agents/src/ml_cache.rs` | MODIFY | `FeatureVec` alias, nested HashMap, `feature_symbols()`, `all_features()` |
+| `crates/agents/src/tier1/ml/mod.rs` | MODIFY | `FeatureExtractor` trait with `neutral_values()`, `impute_features()` fn |
+| `crates/agents/src/tier1/ml/feature_extractor.rs` | MODIFY | `extract_features_raw()`, `MinimalFeatures` delegates to raw, `neutral_values()` impl |
+| `crates/agents/src/tier1/ml/model_registry.rs` | MODIFY | Prediction-only: `new()`, `predict_from_cache()`. Removed extractor field |
+| `crates/agents/src/tier1/mod.rs` | MODIFY | Re-export `extract_features_raw`, `impute_features` |
+| `crates/agents/src/lib.rs` | MODIFY | Export `FeatureVec`, `FeatureExtractor`, `MinimalFeatures`, `impute_features`, `extract_features_raw` |
+| `crates/simulation/src/runner.rs` | MODIFY | `feature_extractor` field, Phase 3b pipeline, enriched context with features + recent_trades |
+| `crates/simulation/src/config.rs` | MODIFY | `parallel_features` in `ParallelizationConfig` |
+| `crates/simulation/src/hooks.rs` | MODIFY | `HookContext.features`, `EnrichedData.recent_trades`, `with_features()` builder |
+| `crates/simulation/src/subsystems/agents.rs` | MODIFY | `AgentOrchestrator::agent_state()` |
+| `crates/simulation/src/sim_config.rs` | CREATE | SimConfig, SymbolSpec, Tier1AgentType (from binary) |
+| `crates/simulation/src/agent_factory/mod.rs` | CREATE | `spawn_all()`, `SpawnResult` |
+| `crates/simulation/src/agent_factory/tier1.rs` | CREATE | T1 spawn helpers |
+| `crates/simulation/src/agent_factory/tier2.rs` | CREATE | T2 + sector rotators |
+| `crates/simulation/src/agent_factory/ml_agents.rs` | CREATE | `MlModels`, tree agents |
+| `crates/simulation/src/agent_factory/background_pool.rs` | CREATE | T3 pool setup |
+| `crates/simulation/src/lib.rs` | MODIFY | Add modules + re-exports |
+| `crates/storage/src/comprehensive_features.rs` | MODIFY | Removed `extract()`, kept struct + schema constants |
+| `crates/storage/src/parquet_writer.rs` | MODIFY | Accept `feature_names` parameter |
+| `crates/storage/src/recording_hook.rs` | MODIFY | Pure Parquet writer: reads `ctx.features`, removed `PriceHistory`/`on_tick_start` |
+| `crates/storage/src/price_history.rs` | DEPRECATE | Hidden, not re-exported (only consumer was deleted `MarketFeatures::extract()`) |
+| `src/config.rs` | REWRITE | Thin re-export from simulation crate |
+| `src/main.rs` | MODIFY | -800 lines, uses `agent_factory::spawn_all()` |
+
+### Verification
+- `cargo check` — clean
+- `cargo test --workspace` — 376 passed, 0 failed
+- Behavior: identical for same seed (MinimalFeatures produces same 42 features via raw + impute(-1.0))
+
+### What V6 Can Now Do
+- Add `FullFeatures` implementing `FeatureExtractor` with 55+ columns and per-feature semantic neutrals
+- Build `crates/gym/` importing `agent_factory::spawn_all()` + `Simulation::agent_state()` directly
+- Record with dynamic Parquet schema by passing `extractor.feature_names()` to `RecordingHook`
+- Swap extractors at runtime: `sim.set_feature_extractor(Box::new(FullFeatures))` — recording and ML both update
+- Training-serving parity is structural, not a convention — same features serve both paths
+
 ## 2026-01-31: V5.6 Centralized ML Inference
 
 ### Summary

@@ -13,8 +13,8 @@ A high-performance trading simulation that models realistic market microstructur
 ## Key Features
 
 - **Multi-Symbol Trading**: currently 10 symbols across 5 different sectors
-- **12 Agent Strategies**: Market makers, momentum, MACD, Bollinger, VWAP, pairs trading, sector rotation, ML tree agents
-- **ML Agents (V5.5)**: DecisionTree, RandomForest, GradientBoosted agents using trained sklearn models
+- **12 Agent Strategies**: Market makers, momentum, MACD, Bollinger, VWAP, pairs trading, sector rotation, ML ensemble agents
+- **ML Agents (V6)**: Ensemble agents (RandomForest, LinearModel, SVM) with 28 SHAP-validated features
 - **Tiered Architecture**: T1 (full logic), T2 (reactive), T3 (45k+ background agents)
 - **News Events**: Earnings surprises, guidance changes, rate decisions, sector news
 - **Fair Value Model**: Gordon Growth Model anchors prices to fundamentals
@@ -43,7 +43,9 @@ cargo run --release          # Press Space to start simulation
 
 ## Current State
 
-**V5.5 Complete** — ML tree agents (DecisionTree, RandomForest, GradientBoosted) with trained sklearn models, unified indicator computation, separate long/short position limits. Full web frontend with React dashboard.
+**V6 Complete** — Feature engineering with SHAP-validated 28 canonical features, ensemble ML agents (RandomForest, LinearModel, SVM), training-serving parity via feature extractor traits.
+
+**V7 Planned** — Gym environment + PyO3 bindings (V7.1) for RL training infrastructure, then RL training with PPO/A2C (V7.2).
 
 ## Technology
 

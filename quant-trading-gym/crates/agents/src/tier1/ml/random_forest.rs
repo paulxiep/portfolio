@@ -31,7 +31,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 use super::decision_tree::TreeNode;
-use super::{ClassProbabilities, MlModel};
+use super::{ClassProbabilities, MlModel, compute_feature_indices, remap_features};
 
 /// Tree structure from JSON.
 #[derive(Debug, Deserialize)]
@@ -61,13 +61,15 @@ struct RandomForestJson {
 pub struct RandomForest {
     /// Model name for identification.
     name: String,
-    /// Number of features expected.
+    /// Number of features the model was trained on.
     n_features: usize,
     /// Number of classes (should be 3).
     #[allow(dead_code)]
     n_classes: usize,
     /// All trees in the ensemble.
     trees: Vec<Vec<TreeNode>>,
+    /// Feature index remapping for subset-trained models (V6.2+).
+    feature_indices: Option<Vec<usize>>,
 }
 
 impl RandomForest {
@@ -113,8 +115,12 @@ impl RandomForest {
         }
 
         // Validate feature count
-        if model.n_features != 42 {
-            return Err(format!("Expected 42 features, got {}", model.n_features));
+        if model.n_features == 0 || model.n_features > types::N_FULL_FEATURES {
+            return Err(format!(
+                "Expected 1-{} features, got {}",
+                types::N_FULL_FEATURES,
+                model.n_features
+            ));
         }
 
         // Validate class count
@@ -138,11 +144,14 @@ impl RandomForest {
         // Extract trees
         let trees: Vec<Vec<TreeNode>> = model.trees.into_iter().map(|t| t.nodes).collect();
 
+        let feature_indices = compute_feature_indices(&model.feature_names, model.n_features);
+
         Ok(Self {
             name,
             n_features: model.n_features,
             n_classes: model.n_classes,
             trees,
+            feature_indices,
         })
     }
 
@@ -198,9 +207,12 @@ impl MlModel for RandomForest {
             return [0.0, 1.0, 0.0]; // No trees = hold
         }
 
+        let mut buf = Vec::new();
+        let feats = remap_features(features, &self.feature_indices, &mut buf);
+
         // Sum probabilities from all trees
         let sum = self.trees.iter().fold([0.0, 0.0, 0.0], |mut acc, tree| {
-            let probs = Self::traverse_tree(tree, features);
+            let probs = Self::traverse_tree(tree, feats);
             acc[0] += probs[0];
             acc[1] += probs[1];
             acc[2] += probs[2];
@@ -217,7 +229,11 @@ impl MlModel for RandomForest {
     }
 
     fn n_features(&self) -> usize {
-        self.n_features
+        if self.feature_indices.is_some() {
+            types::N_FULL_FEATURES
+        } else {
+            self.n_features
+        }
     }
 }
 

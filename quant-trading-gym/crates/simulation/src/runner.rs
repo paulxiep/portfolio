@@ -162,6 +162,13 @@ pub struct Simulation {
     /// ML model registry for centralized prediction caching (V5.6).
     /// When populated, enables O(M × S) predictions instead of O(N).
     model_registry: Option<ModelRegistry>,
+
+    /// Feature extractor for ML features and recording (pre-V6 refactor section F).
+    ///
+    /// Set via `set_feature_extractor()`. When present, the runner extracts
+    /// features in Phase 3, imputes NaN using `neutral_values()`, and passes
+    /// them to both the ML cache (for prediction) and hooks (for recording).
+    feature_extractor: Option<Box<dyn agents::FeatureExtractor>>,
 }
 
 impl Simulation {
@@ -269,6 +276,8 @@ impl Simulation {
             news_engine,
             // V5.6: ML prediction caching
             model_registry: None,
+            // Pre-V6 refactor: Feature extraction
+            feature_extractor: None,
         }
     }
 
@@ -323,9 +332,36 @@ impl Simulation {
     /// sim.register_ml_model(model);
     /// ```
     pub fn register_ml_model<M: agents::MlModel + 'static>(&mut self, model: M) {
+        // Auto-set CanonicalFeatures if no extractor configured (V6.3 default)
+        if self.feature_extractor.is_none() {
+            self.feature_extractor = Some(Box::new(agents::CanonicalFeatures));
+        }
         self.model_registry
             .get_or_insert_with(ModelRegistry::new)
             .register(model);
+    }
+
+    /// Register an Arc-wrapped ML model for centralized prediction caching.
+    ///
+    /// Same as [`register_ml_model`] but accepts a pre-wrapped `Arc<dyn MlModel>`,
+    /// enabling shared ownership (e.g., ensemble sub-models).
+    pub fn register_ml_model_arc(&mut self, model: std::sync::Arc<dyn agents::MlModel>) {
+        if self.feature_extractor.is_none() {
+            self.feature_extractor = Some(Box::new(agents::CanonicalFeatures));
+        }
+        self.model_registry
+            .get_or_insert_with(ModelRegistry::new)
+            .register_arc(model);
+    }
+
+    /// Set the feature extractor for ML features and recording.
+    ///
+    /// When set, the runner extracts features in Phase 3 and passes them to
+    /// both the ML cache (for prediction) and recording hooks (for Parquet).
+    /// Use `CanonicalFeatures` (V6.3, 28 features), `FullFeatures` (V6.1, 55),
+    /// or `MinimalFeatures` (V5, 42).
+    pub fn set_feature_extractor(&mut self, extractor: Box<dyn agents::FeatureExtractor>) {
+        self.feature_extractor = Some(extractor);
     }
 
     /// Check if the model registry has any registered models.
@@ -376,15 +412,18 @@ impl Simulation {
 
     /// Build hook context with enriched data for `on_tick_end` (V4.4).
     ///
-    /// Includes candles, indicators, agent summaries, risk metrics, etc.
-    /// V5.5: Uses IndicatorSnapshot with enum keys for type safety.
-    fn build_enriched_hook_context(&self, indicators: &quant::IndicatorSnapshot) -> HookContext {
+    /// Includes candles, indicators, agent summaries, risk metrics, recent trades, etc.
+    /// Pre-extracted features are passed separately on HookContext (SoC — see hooks.rs).
+    fn build_enriched_hook_context(
+        &self,
+        indicators: &quant::IndicatorSnapshot,
+        features: Option<HashMap<Symbol, agents::FeatureVec>>,
+    ) -> HookContext {
         use crate::hooks::EnrichedData;
 
         // Start with base context
         let base = self.build_hook_context();
 
-        // Build enriched data
         // V5.5: Clone indicator values from IndicatorSnapshot (single source of truth)
         let indicator_values: HashMap<Symbol, HashMap<types::IndicatorType, f64>> = indicators
             .symbols()
@@ -400,11 +439,16 @@ impl Simulation {
             indicators: indicator_values,
             agent_summaries: self.agent_summaries(),
             risk_metrics: self.risk_manager.compute_all_metrics(),
-            fair_values: HashMap::new(), // No factor engine in current implementation
+            fair_values: HashMap::new(),
             news_events: self.get_active_news_snapshots(),
+            recent_trades: self.market_data.all_recent_trades().clone(),
         };
 
-        base.with_enriched(enriched)
+        let ctx = base.with_enriched(enriched);
+        match features {
+            Some(f) => ctx.with_features(f),
+            None => ctx,
+        }
     }
 
     /// Get active news events as snapshots for hooks.
@@ -462,6 +506,11 @@ impl Simulation {
     /// Get the number of agents.
     pub fn agent_count(&self) -> usize {
         self.agent_orchestrator.agent_count()
+    }
+
+    /// Get a clone of an agent's state by ID (for gym observation extraction).
+    pub fn agent_state(&self, id: types::AgentId) -> Option<agents::AgentState> {
+        self.agent_orchestrator.agent_state(id)
     }
 
     /// Get a reference to the simulation configuration.
@@ -874,27 +923,55 @@ impl Simulation {
         let trades_map = self.build_trades_map();
         let indicators = self.build_indicator_snapshot();
 
-        // V5.6: Build ML prediction cache if registry exists
-        // This computes predictions once per (model, symbol) pair: O(M × S)
-        // Skip during warmup - indicators have NaN values until sufficient price history
+        // Phase 3b: Extract features and build ML prediction cache (pre-V6 SoC)
+        //
+        // Pipeline: extract_raw → impute(neutral_values) → cache → predict
+        // Features are extracted ONCE per symbol per tick. Both ML prediction and
+        // recording hooks consume the same features (training-serving parity).
+        //
+        // Skip during warmup — indicators have NaN values until sufficient price history.
+        let past_warmup = self.tick >= self.config.ml_warmup_ticks;
+        let has_extractor = self.feature_extractor.is_some();
+
+        // Extract and impute features (if extractor configured and past warmup)
+        let extracted_features: Option<HashMap<Symbol, agents::FeatureVec>> =
+            if past_warmup && has_extractor {
+                let symbols = self.config.symbols();
+                let temp_ctx = StrategyContext::new(
+                    self.tick,
+                    self.timestamp,
+                    &self.market,
+                    &candles_map,
+                    &indicators,
+                    &trades_map,
+                    self.news_engine.active_events(),
+                    self.news_engine.fundamentals(),
+                );
+                let extractor = self.feature_extractor.as_ref().unwrap();
+                let neutrals = extractor.neutral_values();
+                // Parallel extraction + imputation
+                let features_vec: Vec<_> = parallel::map_slice(
+                    &symbols,
+                    |symbol| {
+                        let mut features = extractor.extract_market(symbol, &temp_ctx);
+                        agents::impute_features(&mut features, neutrals);
+                        (symbol.clone(), features)
+                    },
+                    !self.config.parallelization.parallel_features,
+                );
+                Some(features_vec.into_iter().collect())
+            } else {
+                None
+            };
+
+        // Build ML cache: insert features, then predict
         let ml_cache = self.model_registry.as_ref().and_then(|registry| {
-            if self.tick < self.config.ml_warmup_ticks {
-                return None;
-            }
-            let symbols = self.config.symbols();
-            // Build temporary context for feature extraction
-            let temp_ctx = StrategyContext::new(
-                self.tick,
-                self.timestamp,
-                &self.market,
-                &candles_map,
-                &indicators,
-                &trades_map,
-                self.news_engine.active_events(),
-                self.news_engine.fundamentals(),
-            );
+            let features = extracted_features.as_ref()?;
             let mut cache = MlPredictionCache::new(self.tick);
-            registry.compute_all_predictions(&temp_ctx, &symbols, &mut cache);
+            for (symbol, fv) in features {
+                cache.insert_features(symbol.clone(), fv.clone());
+            }
+            registry.predict_from_cache(&mut cache);
             Some(cache)
         });
 
@@ -987,8 +1064,14 @@ impl Simulation {
 
         // Phase 13 (V3.6): Hook - tick end with enriched data (V4.4)
         // V5.5: Reuse indicators computed in Phase 3 (single source of truth)
+        // Pre-V6 SoC: Pass pre-extracted features for recording hooks
         if has_hooks {
-            let hook_ctx = self.build_enriched_hook_context(&indicators);
+            // Reuse features from ML cache if available; otherwise use extracted_features
+            let hook_features = ml_cache
+                .as_ref()
+                .map(|c| c.all_features())
+                .or(extracted_features);
+            let hook_ctx = self.build_enriched_hook_context(&indicators, hook_features);
             self.hooks.on_tick_end(&self.stats, &hook_ctx);
         }
 

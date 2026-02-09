@@ -1,7 +1,7 @@
-//! Shared feature extraction for ML agents (V5.6).
+//! V5 market feature extraction (42 features).
 //!
-//! This module extracts the standalone feature extraction function from [`TreeAgent`]
-//! so it can be called centrally by the [`ModelRegistry`] for cache population.
+//! `MinimalFeatures` implements `FeatureExtractor` using V5 group extractors
+//! from `group_extractors` (Price, Technical, News).
 //!
 //! # Features Extracted (42 total)
 //!
@@ -11,8 +11,11 @@
 //!
 //! # NaN Handling
 //!
-//! NaN values are imputed to -1.0 to match training behavior where
-//! `X = np.nan_to_num(X, nan=-1.0)` was applied.
+//! `extract_features_raw()` preserves NaN — imputation is a separate pipeline step.
+//! `extract_features()` applies V5-compatible NaN→-1.0 for backward compatibility.
+//!
+//! Note: `extract_features_raw` and `extract_features` are deprecated legacy functions.
+//! `MinimalFeatures::extract_market()` now uses modular group extractors.
 
 use crate::StrategyContext;
 use types::{
@@ -20,22 +23,19 @@ use types::{
     log_return_from_candles, price_change_from_candles,
 };
 
-/// Extract market features for a symbol from the strategy context.
+/// Extract raw market features for a symbol (NaN values preserved).
 ///
-/// This is the centralized feature extraction function used by both:
-/// - [`ModelRegistry`] for populating the ML prediction cache
-/// - [`TreeAgent`] as a fallback when cache is unavailable
-///
-/// # Arguments
-///
-/// * `symbol` - The symbol to extract features for
-/// * `ctx` - The strategy context containing market data and indicators
+/// Pure extraction — no imputation. NaN indicates missing data.
+/// Use [`extract_features`] for V5-compatible behavior with NaN→-1.0 imputation.
 ///
 /// # Returns
 ///
 /// An array of 42 features in canonical order (see [`types::features`]).
-/// NaN values are imputed to -1.0.
-pub fn extract_features(symbol: &Symbol, ctx: &StrategyContext<'_>) -> [f64; N_MARKET_FEATURES] {
+#[deprecated(note = "Use MinimalFeatures::extract_market() via FeatureExtractor trait instead")]
+pub fn extract_features_raw(
+    symbol: &Symbol,
+    ctx: &StrategyContext<'_>,
+) -> [f64; N_MARKET_FEATURES] {
     let mut features = [f64::NAN; N_MARKET_FEATURES];
 
     // Mid price
@@ -134,28 +134,71 @@ pub fn extract_features(symbol: &Symbol, ctx: &StrategyContext<'_>) -> [f64; N_M
     features[idx::NEWS_MAGNITUDE] = magnitude;
     features[idx::NEWS_TICKS_REMAINING] = ticks_remaining;
 
-    // Impute NaN with -1.0 to match training behavior
-    // Training script: X = np.nan_to_num(X, nan=-1.0)
+    features
+}
+
+/// Extract market features with V5-compatible NaN→-1.0 imputation.
+///
+/// Wraps [`extract_features_raw`] and applies uniform -1.0 imputation
+/// matching the V5 training convention (`nan_to_num(X, nan=-1.0)`).
+#[deprecated(
+    note = "Use MinimalFeatures via FeatureExtractor trait with impute_features() instead"
+)]
+pub fn extract_features(symbol: &Symbol, ctx: &StrategyContext<'_>) -> [f64; N_MARKET_FEATURES] {
+    #[allow(deprecated)]
+    let mut features = extract_features_raw(symbol, ctx);
     features.iter_mut().for_each(|f| {
         if f.is_nan() {
             *f = -1.0;
         }
     });
-
     features
+}
+
+/// V5-compatible feature extractor producing 42 raw market features.
+///
+/// Uses modular group extractors (Price, Technical, News) from `group_extractors`.
+/// Imputation uses `neutral_values()` which returns -1.0 for all features
+/// (V5 training convention).
+pub struct MinimalFeatures;
+
+impl super::FeatureExtractor for MinimalFeatures {
+    fn n_features(&self) -> usize {
+        N_MARKET_FEATURES
+    }
+
+    fn extract_market(
+        &self,
+        symbol: &Symbol,
+        ctx: &crate::StrategyContext<'_>,
+    ) -> crate::ml_cache::FeatureVec {
+        let mut buf = [f64::NAN; N_MARKET_FEATURES];
+        super::group_extractors::extract_price(symbol, ctx, &mut buf);
+        super::group_extractors::extract_technical(symbol, ctx, &mut buf);
+        super::group_extractors::extract_news(symbol, ctx, &mut buf);
+        smallvec::SmallVec::from_slice(&buf)
+    }
+
+    fn feature_names(&self) -> &[&str] {
+        types::MARKET_FEATURE_NAMES
+    }
+
+    fn neutral_values(&self) -> &[f64] {
+        &types::MINIMAL_FEATURE_NEUTRALS
+    }
+
+    fn registry(&self) -> &'static types::FeatureRegistry {
+        &types::MINIMAL_REGISTRY
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // Note: Full integration tests require a properly set up StrategyContext
-    // which involves MarketView, IndicatorSnapshot, etc.
-    // Unit tests here focus on the function signature and basic properties.
+    use crate::tier1::ml::FeatureExtractor;
 
     #[test]
     fn test_feature_count() {
-        // Verify we're using the correct constant
         assert_eq!(N_MARKET_FEATURES, 42);
     }
 
@@ -165,10 +208,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_features_returns_42() {
-        use crate::StrategyContext;
-
-        // Create minimal context
+    fn test_minimal_produces_42() {
         let book = sim_core::OrderBook::new("ACME");
         let market = sim_core::SingleSymbolMarket::new(&book);
         let candles = std::collections::HashMap::new();
@@ -188,7 +228,54 @@ mod tests {
             &fundamentals,
         );
 
-        let features = extract_features(&"ACME".to_string(), &ctx);
+        let extractor = MinimalFeatures;
+        let features = extractor.extract_market(&"ACME".to_string(), &ctx);
         assert_eq!(features.len(), 42);
+    }
+
+    #[test]
+    fn test_minimal_modular_matches_monolithic() {
+        // Verify modularized MinimalFeatures produces same output as deprecated extract_features_raw
+        let book = sim_core::OrderBook::new("ACME");
+        let market = sim_core::SingleSymbolMarket::new(&book);
+        let candles = std::collections::HashMap::new();
+        let indicators = quant::IndicatorSnapshot::new(100);
+        let recent_trades = std::collections::HashMap::new();
+        let events = vec![];
+        let fundamentals = news::SymbolFundamentals::default();
+
+        let ctx = StrategyContext::new(
+            100,
+            1000,
+            &market,
+            &candles,
+            &indicators,
+            &recent_trades,
+            &events,
+            &fundamentals,
+        );
+
+        let symbol = "ACME".to_string();
+
+        // Modular (new)
+        let extractor = MinimalFeatures;
+        let modular = extractor.extract_market(&symbol, &ctx);
+
+        // Monolithic (deprecated)
+        #[allow(deprecated)]
+        let monolithic = extract_features_raw(&symbol, &ctx);
+
+        for i in 0..N_MARKET_FEATURES {
+            let m = modular[i];
+            let o = monolithic[i];
+            if m.is_nan() {
+                assert!(o.is_nan(), "feature {i}: modular=NaN, monolithic={o}");
+            } else {
+                assert!(
+                    (m - o).abs() < 1e-12,
+                    "feature {i}: modular={m}, monolithic={o}"
+                );
+            }
+        }
     }
 }

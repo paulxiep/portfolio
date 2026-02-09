@@ -60,9 +60,22 @@ pub use config::{RiskViolation, Sector, ShortSellingConfig, SymbolConfig};
 
 // Feature extraction types (V5.5.2 - unified training/inference)
 pub use features::{
-    LOOKBACKS, MARKET_FEATURE_NAMES, N_LOOKBACKS, N_MARKET_FEATURES, bollinger_percent_b,
-    idx as feature_idx, log_return, log_return_from_candles, price_change_from_candles,
-    price_change_pct, required_indicators,
+    LOOKBACKS, MARKET_FEATURE_NAMES, MINIMAL_FEATURE_NEUTRALS, N_LOOKBACKS, N_MARKET_FEATURES,
+    bollinger_percent_b, idx as feature_idx, log_return, log_return_from_candles,
+    price_change_from_candles, price_change_pct, required_indicators,
+};
+
+// V6.1 feature registry types
+pub use features::{
+    FULL_DESCRIPTORS, FULL_FEATURE_NAMES, FULL_FEATURE_NEUTRALS, FULL_REGISTRY, FeatureDescriptor,
+    FeatureGroup, FeatureRegistry, MINIMAL_DESCRIPTORS, MINIMAL_REGISTRY, N_FULL_FEATURES,
+    TRADE_INTENSITY_BASELINE, extended_idx, realized_volatility, spread_bps,
+};
+
+// V6.3 canonical feature schema (28 SHAP-validated features)
+pub use features::{
+    CANONICAL_DESCRIPTORS, CANONICAL_FEATURE_NAMES, CANONICAL_FEATURE_NEUTRALS, CANONICAL_REGISTRY,
+    N_CANONICAL_FEATURES, canonical_idx,
 };
 
 // =============================================================================

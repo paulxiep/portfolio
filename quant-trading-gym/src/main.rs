@@ -29,12 +29,8 @@ use std::thread;
 use std::time::Duration;
 
 use agents::{
-    Agent, BackgroundAgentPool, BackgroundPoolConfig, BollingerReversion, BollingerReversionConfig,
-    DecisionTree, GradientBoosted, MacdCrossover, MacdCrossoverConfig, MarketMaker,
-    MarketMakerConfig, MomentumConfig, MomentumTrader, NoiseTrader, NoiseTraderConfig,
-    PairsTrading, PairsTradingConfig, RandomForest, ReactiveAgent, ReactiveStrategyType,
-    SectorRotator, SectorRotatorConfig, TreeAgent, TreeAgentConfig, TrendFollower,
-    TrendFollowerConfig, VwapExecutor, VwapExecutorConfig,
+    DecisionTree, EnsembleModel, FullFeatures, GaussianNBPredictor, GradientBoosted,
+    LinearPredictor, MlModel, RandomForest,
 };
 use clap::Parser;
 use crossbeam_channel::{Receiver, Sender, bounded};
@@ -42,14 +38,12 @@ use news::config::{
     EarningsConfig, EventFrequency, GuidanceConfig, NewsGeneratorConfig, RateDecisionConfig,
     SectorNewsConfig,
 };
-use rand::Rng;
-use rand::prelude::SliceRandom;
 use serde::Deserialize;
 use server::{BroadcastHook, DataServiceHook, ServerState, create_app};
-use simulation::{Simulation, SimulationConfig};
+use simulation::{MlModels, Simulation, SimulationConfig};
 use storage::{RecordingConfig, RecordingHook, StorageConfig, StorageHook};
 use tui::{AgentInfo, RiskInfo, SimCommand, SimUpdate, TuiApp};
-use types::{AgentId, Cash, Price, Quantity, Sector, ShortSellingConfig, Symbol, SymbolConfig};
+use types::{AgentId, Quantity, ShortSellingConfig, Symbol, SymbolConfig};
 
 pub use config::{SimConfig, SymbolSpec, Tier1AgentType};
 
@@ -158,6 +152,14 @@ struct Args {
     /// Record every N ticks (1 = every tick)
     #[arg(long, env = "SIM_RECORD_INTERVAL", default_value = "1")]
     record_interval: u64,
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // V6.1: Full Feature Extraction
+    // ─────────────────────────────────────────────────────────────────────────────
+    /// Use V6.1 full features (55) instead of V5 minimal (42).
+    /// Requires new model training — V5 models are NOT compatible.
+    #[arg(long, env = "SIM_FULL_FEATURES")]
+    full_features: bool,
 }
 
 /// Calculate the number of digits needed to display a number.
@@ -338,274 +340,6 @@ fn build_update(
     }
 }
 
-/// Spawn a single agent of the given type with the specified ID.
-///
-/// For multi-symbol support: symbol and initial_price are passed explicitly
-/// so agents can be spawned per-symbol (market makers, noise traders) or
-/// assigned to the primary symbol (quant strategies).
-fn create_agent(
-    agent_type: Tier1AgentType,
-    id: u64,
-    config: &SimConfig,
-    symbol: &str,
-    initial_price: Price,
-) -> Box<dyn Agent> {
-    let id = AgentId(id);
-
-    match agent_type {
-        Tier1AgentType::NoiseTrader => {
-            // Adjust initial cash to give equal net worth regardless of symbol price.
-            // Target: same equity as quant strategies (100k) at any price.
-            // Formula: cash = target_equity - (initial_position * price)
-            // With initial_position = 50 and target equity = 100k:
-            //   At $100: cash = 100k - 50*100 = 95k (matches nt_initial_cash default)
-            //   At $50:  cash = 100k - 50*50 = 97.5k
-            //   At $200: cash = 100k - 50*200 = 90k
-            let target_equity = config.quant_initial_cash.to_float();
-            let position_value = config.nt_initial_position as f64 * initial_price.to_float();
-            let adjusted_cash = target_equity - position_value;
-
-            let nt_config = NoiseTraderConfig {
-                symbol: symbol.to_string(),
-                order_probability: config.nt_order_probability,
-                initial_price,
-                price_deviation: config.nt_price_deviation,
-                min_quantity: config.nt_min_quantity,
-                max_quantity: config.nt_max_quantity,
-                initial_cash: Cash::from_float(adjusted_cash),
-                initial_position: config.nt_initial_position,
-                max_long_position: config.nt_max_long_position,
-                max_short_position: config.nt_max_short_position,
-            };
-            Box::new(NoiseTrader::new(id, nt_config))
-        }
-        Tier1AgentType::MomentumTrader => {
-            let momentum_config = MomentumConfig {
-                symbol: symbol.to_string(),
-                initial_price,
-                initial_cash: config.quant_initial_cash,
-                order_size: config.quant_order_size,
-                max_position: config.quant_max_long_position,
-                ..Default::default()
-            };
-            Box::new(MomentumTrader::new(id, momentum_config))
-        }
-        Tier1AgentType::TrendFollower => {
-            let trend_config = TrendFollowerConfig {
-                symbol: symbol.to_string(),
-                initial_price,
-                initial_cash: config.quant_initial_cash,
-                order_size: config.quant_order_size,
-                max_position: config.quant_max_long_position,
-                ..Default::default()
-            };
-            Box::new(TrendFollower::new(id, trend_config))
-        }
-        Tier1AgentType::MacdTrader => {
-            let macd_config = MacdCrossoverConfig {
-                symbol: symbol.to_string(),
-                initial_price,
-                initial_cash: config.quant_initial_cash,
-                order_size: config.quant_order_size,
-                max_position: config.quant_max_long_position,
-                ..Default::default()
-            };
-            Box::new(MacdCrossover::new(id, macd_config))
-        }
-        Tier1AgentType::BollingerTrader => {
-            let bollinger_config = BollingerReversionConfig {
-                symbol: symbol.to_string(),
-                initial_price,
-                initial_cash: config.quant_initial_cash,
-                order_size: config.quant_order_size,
-                max_position: config.quant_max_long_position,
-                ..Default::default()
-            };
-            Box::new(BollingerReversion::new(id, bollinger_config))
-        }
-        Tier1AgentType::VwapExecutor => {
-            let vwap_config = VwapExecutorConfig {
-                symbol: symbol.to_string(),
-                initial_price,
-                initial_cash: config.quant_initial_cash,
-                ..Default::default()
-            };
-            Box::new(VwapExecutor::new(id, vwap_config))
-        }
-        Tier1AgentType::PairsTrading => {
-            // PairsTrading requires two symbols - should be handled separately
-            // This is a fallback that creates a self-referencing pair (effectively no-op)
-            let pairs_config = PairsTradingConfig::new(symbol, symbol)
-                .with_initial_cash(config.quant_initial_cash)
-                .with_max_position(config.quant_max_long_position);
-            Box::new(PairsTrading::new(id, pairs_config))
-        }
-    }
-}
-
-/// Spawn Tier 2 reactive agents distributed across symbols.
-///
-/// Each agent gets:
-/// - ThresholdBuyer entry (buy at absolute price level)
-/// - 1-2 exit strategies (StopLoss, TakeProfit, or ThresholdSeller)
-/// - Optionally NewsReactor (20% chance)
-///
-/// Price assumptions:
-/// - Initial price: $100 (1,000,000 in fixed-point)
-/// - Can drop to $50 initially due to selling pressure
-/// - ThresholdBuyer targets: $50-$95 range to catch dips
-/// - ThresholdSeller targets: above entry price for profit taking
-fn spawn_tier2_agents(
-    sim: &mut Simulation,
-    next_id: &mut u64,
-    config: &SimConfig,
-    symbols: &[SymbolSpec],
-    rng: &mut rand::prelude::ThreadRng,
-) {
-    use types::Price;
-
-    let num_agents = config.num_tier2_agents;
-    if num_agents == 0 {
-        return;
-    }
-
-    let num_symbols = symbols.len();
-    let agents_per_symbol = num_agents / num_symbols;
-    let remainder = num_agents % num_symbols;
-
-    // Fixed-point scale: 10000 per dollar
-    // $50 = 500_000, $100 = 1,000,000
-    const PRICE_SCALE: i64 = 10_000;
-
-    // Helper to create strategies for one agent
-    let make_strategies = |rng: &mut rand::prelude::ThreadRng| -> Vec<ReactiveStrategyType> {
-        let buy_dollars = config.t2_buy_threshold_min
-            + rng.r#gen::<f64>() * (config.t2_buy_threshold_max - config.t2_buy_threshold_min);
-        let buy_price = Price((buy_dollars * PRICE_SCALE as f64) as i64);
-        let entry_size = config.t2_order_size_min
-            + rng.r#gen::<f64>() * (config.t2_order_size_max - config.t2_order_size_min);
-
-        let stop_pct = config.t2_stop_loss_min
-            + rng.r#gen::<f64>() * (config.t2_stop_loss_max - config.t2_stop_loss_min);
-
-        let mut strategies = vec![
-            ReactiveStrategyType::ThresholdBuyer {
-                buy_price,
-                size_fraction: entry_size,
-            },
-            ReactiveStrategyType::StopLoss { stop_pct },
-        ];
-
-        // TakeProfit or ThresholdSeller based on config probability
-        if rng.r#gen::<f64>() < config.t2_take_profit_prob {
-            let target_pct = config.t2_take_profit_min
-                + rng.r#gen::<f64>() * (config.t2_take_profit_max - config.t2_take_profit_min);
-            strategies.push(ReactiveStrategyType::TakeProfit { target_pct });
-        } else {
-            let sell_dollars = config.t2_sell_threshold_min
-                + rng.r#gen::<f64>()
-                    * (config.t2_sell_threshold_max - config.t2_sell_threshold_min);
-            strategies.push(ReactiveStrategyType::ThresholdSeller {
-                sell_price: Price((sell_dollars * PRICE_SCALE as f64) as i64),
-                size_fraction: 1.0,
-            });
-        }
-
-        // NewsReactor based on config probability
-        if rng.r#gen::<f64>() < config.t2_news_reactor_prob {
-            strategies.push(ReactiveStrategyType::NewsReactor {
-                min_magnitude: 0.3 + rng.r#gen::<f64>() * 0.4,
-                sentiment_multiplier: 1.0 + rng.r#gen::<f64>() * 2.0,
-            });
-        }
-
-        strategies
-    };
-
-    // Build (spec, count) pairs then flatten to agent assignments
-    let agent_specs: Vec<_> = symbols
-        .iter()
-        .enumerate()
-        .flat_map(|(sym_idx, spec)| {
-            let count = agents_per_symbol + if sym_idx < remainder { 1 } else { 0 };
-            std::iter::repeat_n(spec, count)
-        })
-        .collect();
-
-    let start_id = *next_id;
-    let agents: Vec<_> = agent_specs
-        .iter()
-        .enumerate()
-        .map(|(i, spec)| {
-            Box::new(ReactiveAgent::new(
-                AgentId(start_id + i as u64),
-                spec.symbol.clone().into(),
-                make_strategies(rng),
-                Quantity(config.t2_max_position),
-                config.t2_initial_cash,
-            )) as Box<dyn Agent>
-        })
-        .collect();
-
-    *next_id += agents.len() as u64;
-    for agent in agents {
-        sim.add_agent(agent);
-    }
-}
-
-/// Spawn Sector Rotator agents (V3.3 - special Tier 2 category).
-///
-/// SectorRotator agents:
-/// - Watch all symbols across sectors
-/// - React to news events affecting their watched sectors
-/// - Rotate allocation to highest-sentiment sectors
-///
-/// These are displayed as "SectorRotator" in TUI (not "ReactiveAgent").
-fn spawn_sector_rotators(
-    sim: &mut Simulation,
-    next_id: &mut u64,
-    config: &SimConfig,
-    symbols: &[SymbolSpec],
-) {
-    let num_agents = config.num_sector_rotators;
-    if num_agents == 0 || symbols.is_empty() {
-        return;
-    }
-
-    // Group symbols by sector
-    use std::collections::HashMap;
-    let mut sector_symbols: HashMap<Sector, Vec<String>> = HashMap::new();
-    for spec in symbols {
-        sector_symbols
-            .entry(spec.sector)
-            .or_default()
-            .push(spec.symbol.clone());
-    }
-
-    // Create sector rotators - each watches all sectors
-    let start_id = *next_id;
-    let agents: Vec<_> = (0..num_agents)
-        .map(|i| {
-            let mut config = SectorRotatorConfig::new()
-                .with_initial_cash(config.quant_initial_cash)
-                .with_sentiment_scale(0.3) // ±30% allocation shift based on sentiment
-                .with_rebalance_threshold(0.05); // Rebalance on 5% drift
-
-            // Add all sector -> symbols mappings
-            for (sector, syms) in &sector_symbols {
-                config = config.with_sector(*sector, syms.clone());
-            }
-
-            Box::new(SectorRotator::new(AgentId(start_id + i as u64), config)) as Box<dyn Agent>
-        })
-        .collect();
-
-    *next_id += agents.len() as u64;
-    for agent in agents {
-        sim.add_agent(agent);
-    }
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Simulation Setup Helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -702,252 +436,19 @@ fn build_simulation_config(config: &SimConfig, args: &Args) -> SimulationConfig 
         .with_parallelization(par_config)
 }
 
-/// Create a MarketMakerConfig for a given symbol spec.
-fn make_mm_config(spec: &SymbolSpec, config: &SimConfig) -> MarketMakerConfig {
-    MarketMakerConfig {
-        symbol: spec.symbol.clone(),
-        initial_price: spec.initial_price,
-        half_spread: config.mm_half_spread,
-        quote_size: config.mm_quote_size,
-        refresh_interval: config.mm_refresh_interval,
-        max_inventory: config.mm_max_inventory,
-        inventory_skew: config.mm_inventory_skew,
-        initial_cash: config.mm_initial_cash,
-        initial_position: config.mm_initial_position,
-        fair_value_weight: 0.3,
-        max_long_position: config.mm_max_long_position,
-        max_short_position: config.mm_max_short_position,
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Agent Spawning Helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Spawn market makers distributed across symbols.
-/// Returns (agents, next_id).
-fn spawn_market_makers(
-    config: &SimConfig,
-    symbols: &[SymbolSpec],
-    start_id: u64,
-    rng: &mut rand::prelude::ThreadRng,
-) -> (Vec<Box<dyn Agent>>, u64) {
-    let num_symbols = symbols.len();
-    let per_symbol = config.num_market_makers / num_symbols;
-    let remainder = config.num_market_makers % num_symbols;
-
-    let mut next_id = start_id;
-
-    // Distributed evenly across symbols
-    let distributed: Vec<_> = symbols
-        .iter()
-        .flat_map(|spec| std::iter::repeat_n(spec, per_symbol))
-        .zip(next_id..)
-        .map(|(spec, id)| {
-            Box::new(MarketMaker::new(AgentId(id), make_mm_config(spec, config))) as Box<dyn Agent>
-        })
-        .collect();
-    next_id += distributed.len() as u64;
-
-    // Remainder randomly assigned
-    let remainder_agents: Vec<_> = (0..remainder)
-        .map(|_| symbols.choose(rng).unwrap())
-        .zip(next_id..)
-        .map(|(spec, id)| {
-            Box::new(MarketMaker::new(AgentId(id), make_mm_config(spec, config))) as Box<dyn Agent>
-        })
-        .collect();
-    next_id += remainder_agents.len() as u64;
-
-    let agents = distributed.into_iter().chain(remainder_agents).collect();
-    (agents, next_id)
-}
-
-/// Spawn noise traders distributed across symbols.
-/// Returns (agents, next_id).
-fn spawn_noise_traders(
-    config: &SimConfig,
-    symbols: &[SymbolSpec],
-    start_id: u64,
-    rng: &mut rand::prelude::ThreadRng,
-) -> (Vec<Box<dyn Agent>>, u64) {
-    let num_symbols = symbols.len();
-    let per_symbol = config.num_noise_traders / num_symbols;
-    let remainder = config.num_noise_traders % num_symbols;
-
-    let mut next_id = start_id;
-
-    // Distributed evenly
-    let distributed: Vec<_> = symbols
-        .iter()
-        .flat_map(|spec| std::iter::repeat_n(spec, per_symbol))
-        .zip(next_id..)
-        .map(|(spec, id)| {
-            create_agent(
-                Tier1AgentType::NoiseTrader,
-                id,
-                config,
-                &spec.symbol,
-                spec.initial_price,
-            )
-        })
-        .collect();
-    next_id += distributed.len() as u64;
-
-    // Remainder randomly assigned
-    let remainder_agents: Vec<_> = (0..remainder)
-        .map(|_| symbols.choose(rng).unwrap())
-        .zip(next_id..)
-        .map(|(spec, id)| {
-            create_agent(
-                Tier1AgentType::NoiseTrader,
-                id,
-                config,
-                &spec.symbol,
-                spec.initial_price,
-            )
-        })
-        .collect();
-    next_id += remainder_agents.len() as u64;
-
-    let agents = distributed.into_iter().chain(remainder_agents).collect();
-    (agents, next_id)
-}
-
-/// Spawn quant strategy agents (momentum, trend, MACD, etc.) randomly across symbols.
-/// Returns (agents, next_id).
-fn spawn_quant_agents(
-    config: &SimConfig,
-    symbols: &[SymbolSpec],
-    start_id: u64,
-    rng: &mut rand::prelude::ThreadRng,
-) -> (Vec<Box<dyn Agent>>, u64) {
-    let agent_counts = [
-        (Tier1AgentType::MomentumTrader, config.num_momentum_traders),
-        (Tier1AgentType::TrendFollower, config.num_trend_followers),
-        (Tier1AgentType::MacdTrader, config.num_macd_traders),
-        (
-            Tier1AgentType::BollingerTrader,
-            config.num_bollinger_traders,
-        ),
-        (Tier1AgentType::VwapExecutor, config.num_vwap_executors),
-    ];
-
-    let specs: Vec<_> = agent_counts
-        .iter()
-        .flat_map(|(agent_type, count)| std::iter::repeat_n(*agent_type, *count))
-        .map(|agent_type| (agent_type, symbols.choose(rng).unwrap()))
-        .collect();
-
-    let agents: Vec<_> = specs
-        .iter()
-        .zip(start_id..)
-        .map(|((agent_type, spec), id)| {
-            create_agent(*agent_type, id, config, &spec.symbol, spec.initial_price)
-        })
-        .collect();
-
-    let next_id = start_id + agents.len() as u64;
-    (agents, next_id)
-}
-
-/// Spawn pairs trading agents (requires at least 2 symbols).
-/// Returns (agents, next_id).
-fn spawn_pairs_traders(
-    config: &SimConfig,
-    symbols: &[SymbolSpec],
-    start_id: u64,
-) -> (Vec<Box<dyn Agent>>, u64) {
-    if symbols.len() < 2 {
-        return (Vec::new(), start_id);
-    }
-
-    let num_symbols = symbols.len();
-    let agents: Vec<_> = (0..config.num_pairs_traders)
-        .zip(start_id..)
-        .map(|(i, id)| {
-            let idx_a = i % num_symbols;
-            let idx_b = (i + 1) % num_symbols;
-            let spec_a = &symbols[idx_a];
-            let spec_b = &symbols[idx_b];
-
-            let pairs_config = PairsTradingConfig::new(&spec_a.symbol, &spec_b.symbol)
-                .with_initial_cash(config.quant_initial_cash)
-                .with_max_position(config.quant_max_long_position);
-
-            Box::new(PairsTrading::new(AgentId(id), pairs_config)) as Box<dyn Agent>
-        })
-        .collect();
-
-    let next_id = start_id + agents.len() as u64;
-    (agents, next_id)
-}
-
-/// Spawn random Tier 1 agents to fill to minimum count.
-/// Returns (agents, next_id).
-fn spawn_random_tier1_agents(
-    config: &SimConfig,
-    symbols: &[SymbolSpec],
-    start_id: u64,
-    rng: &mut rand::prelude::ThreadRng,
-) -> (Vec<Box<dyn Agent>>, u64) {
-    let count = config.random_tier1_count();
-    let agents: Vec<_> = (0..count)
-        .map(|_| (Tier1AgentType::random(rng), symbols.choose(rng).unwrap()))
-        .zip(start_id..)
-        .map(|((agent_type, spec), id)| {
-            create_agent(agent_type, id, config, &spec.symbol, spec.initial_price)
-        })
-        .collect();
-
-    let next_id = start_id + agents.len() as u64;
-    (agents, next_id)
-}
-
-/// Spawn ML agents from a collection of models, distributing with round-robin.
-fn spawn_ml_agents<M: Clone + agents::MlModel + 'static>(
-    models: &[M],
-    count: usize,
-    start_id: u64,
-    agent_config: TreeAgentConfig,
-    warning_label: &str,
-) -> Vec<Box<dyn Agent>> {
-    if models.is_empty() {
-        if count > 0 {
-            eprintln!("  Warning: No {} models found in models/", warning_label);
-        }
-        return Vec::new();
-    }
-    (0..count)
-        .map(|i| {
-            Box::new(TreeAgent::new(
-                AgentId(start_id + i as u64),
-                models[i % models.len()].clone(),
-                agent_config.clone(),
-            )) as Box<dyn Agent>
-        })
-        .collect()
-}
-
-/// Spawn tree-based ML agents (DecisionTree, RandomForest, GradientBoosted).
-/// Returns (agents, next_id).
+/// Load ML models from the models/ directory.
 ///
-/// Models are discovered from JSON files in the models/ directory.
-/// The model_type field in each JSON determines which loader to use.
-///
-/// V5.6: Also registers unique models with the simulation for centralized
-/// prediction caching (O(M × S) instead of O(N) predictions per tick).
-fn spawn_tree_agents(
-    sim: &mut Simulation,
-    config: &SimConfig,
-    symbols: &[SymbolSpec],
-    start_id: u64,
-) -> (Vec<Box<dyn Agent>>, u64) {
-    // Try multiple paths: Docker mount (/app/models), relative (./models), env var
+/// Tries multiple paths: Docker mount (/app/models), relative (./models), env var.
+/// Returns empty models if no directory is found.
+fn load_ml_models(config: &SimConfig) -> MlModels {
+    if config.total_ml_agents() == 0 {
+        return MlModels::default();
+    }
+
     let candidates = [
-        std::path::PathBuf::from("/app/models"), // Docker container
-        std::path::PathBuf::from("models"),      // Relative (local dev)
-        std::env::var("MODELS_DIR") // Explicit override
+        std::path::PathBuf::from("/app/models"),
+        std::path::PathBuf::from("models"),
+        std::env::var("MODELS_DIR")
             .map(std::path::PathBuf::from)
             .unwrap_or_default(),
     ];
@@ -957,7 +458,7 @@ fn spawn_tree_agents(
             eprintln!(
                 "  Warning: models directory not found (tried: /app/models, ./models, $MODELS_DIR)"
             );
-            return (Vec::new(), start_id);
+            return MlModels::default();
         }
     };
     eprintln!("  Loading ML models from: {}", models_dir.display());
@@ -967,182 +468,146 @@ fn spawn_tree_agents(
         model_type: String,
     }
 
-    // Load and categorize all model files
-    let (decision_trees, random_forests, gradient_boosteds) = std::fs::read_dir(models_dir)
+    let mut models = MlModels::new();
+
+    for entry in std::fs::read_dir(&models_dir)
         .into_iter()
         .flatten()
         .flatten()
         .filter(|entry| entry.path().extension().is_some_and(|e| e == "json"))
-        .fold(
-            (Vec::new(), Vec::new(), Vec::new()),
-            |(mut dt, mut rf, mut gb), entry| {
-                let path = entry.path();
-                if let Some(model_type) = std::fs::read_to_string(&path)
-                    .ok()
-                    .and_then(|c| serde_json::from_str::<ModelHeader>(&c).ok())
-                    .map(|h| h.model_type)
-                {
-                    let load_result = match model_type.as_str() {
-                        "decision_tree" => DecisionTree::from_json(&path).map(|m| dt.push(m)),
-                        "random_forest" => RandomForest::from_json(&path).map(|m| rf.push(m)),
-                        "gradient_boosted" => GradientBoosted::from_json(&path).map(|m| gb.push(m)),
-                        _ => Ok(()),
-                    };
-                    if let Err(e) = load_result {
-                        eprintln!("  Warning: Failed to load {}: {}", path.display(), e);
-                    }
-                }
-                (dt, rf, gb)
-            },
-        );
-
-    // V5.6: Register unique models with simulation for centralized prediction caching
-    // This enables O(M × S) predictions instead of O(N) per-agent computations
-    for model in &decision_trees {
-        sim.register_ml_model(model.clone());
-    }
-    for model in &random_forests {
-        sim.register_ml_model(model.clone());
-    }
-    for model in &gradient_boosteds {
-        sim.register_ml_model(model.clone());
-    }
-    if sim.has_ml_models() {
-        eprintln!(
-            "  Registered {} unique ML models for centralized caching",
-            sim.ml_model_count()
-        );
-    }
-
-    let agent_config = TreeAgentConfig {
-        symbols: symbols.iter().map(|s| s.symbol.clone()).collect(),
-        buy_threshold: config.tree_agent_buy_threshold,
-        sell_threshold: config.tree_agent_sell_threshold,
-        order_size: config.tree_agent_order_size,
-        max_long_position: config.tree_agent_max_long_position,
-        max_short_position: config.tree_agent_max_short_position,
-        initial_cash: config.tree_agent_initial_cash,
-        initial_price: symbols
-            .first()
-            .map(|s| s.initial_price)
-            .unwrap_or(Price::from_float(100.0)),
-    };
-
-    let decision_tree_agents = spawn_ml_agents(
-        &decision_trees,
-        config.num_decision_tree_agents,
-        start_id,
-        agent_config.clone(),
-        "decision tree",
-    );
-
-    let random_forest_agents = spawn_ml_agents(
-        &random_forests,
-        config.num_random_forest_agents,
-        start_id + decision_tree_agents.len() as u64,
-        agent_config.clone(),
-        "random forest",
-    );
-
-    let gradient_boosted_agents = spawn_ml_agents(
-        &gradient_boosteds,
-        config.num_gradient_boosted_agents,
-        start_id + decision_tree_agents.len() as u64 + random_forest_agents.len() as u64,
-        agent_config,
-        "gradient boosted",
-    );
-
-    let total =
-        decision_tree_agents.len() + random_forest_agents.len() + gradient_boosted_agents.len();
-    let agents = decision_tree_agents
-        .into_iter()
-        .chain(random_forest_agents)
-        .chain(gradient_boosted_agents)
-        .collect();
-
-    (agents, start_id + total as u64)
-}
-
-/// Spawn all Tier 1 agents and add them to the simulation.
-/// Returns next available agent ID.
-fn spawn_all_tier1_agents(
-    sim: &mut Simulation,
-    config: &SimConfig,
-    symbols: &[SymbolSpec],
-    rng: &mut rand::prelude::ThreadRng,
-) -> u64 {
-    let mut next_id = 1u64;
-
-    let (mm_agents, id) = spawn_market_makers(config, symbols, next_id, rng);
-    next_id = id;
-
-    let (nt_agents, id) = spawn_noise_traders(config, symbols, next_id, rng);
-    next_id = id;
-
-    let (quant_agents, id) = spawn_quant_agents(config, symbols, next_id, rng);
-    next_id = id;
-
-    let (pairs_agents, id) = spawn_pairs_traders(config, symbols, next_id);
-    next_id = id;
-
-    let (tree_agents, id) = spawn_tree_agents(sim, config, symbols, next_id);
-    next_id = id;
-
-    let (random_agents, id) = spawn_random_tier1_agents(config, symbols, next_id, rng);
-    next_id = id;
-
-    // Add all agents to simulation
-    for agent in mm_agents
-        .into_iter()
-        .chain(nt_agents)
-        .chain(quant_agents)
-        .chain(pairs_agents)
-        .chain(tree_agents)
-        .chain(random_agents)
     {
-        sim.add_agent(agent);
+        let path = entry.path();
+        let Some(model_type) = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|c| serde_json::from_str::<ModelHeader>(&c).ok())
+            .map(|h| h.model_type)
+        else {
+            continue;
+        };
+
+        let load_result = match model_type.as_str() {
+            "decision_tree" => {
+                DecisionTree::from_json(&path).map(|m| models.push("decision_tree", m))
+            }
+            "random_forest" => {
+                RandomForest::from_json(&path).map(|m| models.push("random_forest", m))
+            }
+            "gradient_boosted" => {
+                GradientBoosted::from_json(&path).map(|m| models.push("gradient_boosted", m))
+            }
+            "linear_model" | "svm_linear" => {
+                LinearPredictor::from_json(&path).map(|m| models.push(&model_type, m))
+            }
+            "gaussian_nb" => {
+                GaussianNBPredictor::from_json(&path).map(|m| models.push("gaussian_nb", m))
+            }
+            other => {
+                eprintln!(
+                    "  Warning: Unknown model type '{}' in {}",
+                    other,
+                    path.display()
+                );
+                Ok(())
+            }
+        };
+        if let Err(e) = load_result {
+            eprintln!("  Warning: Failed to load {}: {}", path.display(), e);
+        }
     }
 
-    next_id
+    // Load ensemble from YAML config (after all individual models)
+    if let Some(ensemble) = load_ensemble(&models_dir, &models) {
+        eprintln!(
+            "  Loaded ensemble '{}' with {} members",
+            ensemble.name(),
+            ensemble.n_models()
+        );
+        models.push("ensemble", ensemble);
+    }
+
+    models
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Background Pool Setup
-// ─────────────────────────────────────────────────────────────────────────────
+/// Ensemble config YAML format (auto-generated by Python training pipeline).
+#[derive(Deserialize)]
+struct EnsembleConfigYaml {
+    ensemble: EnsembleSpecYaml,
+}
 
-/// Setup the Tier 3 background pool if enabled.
-fn setup_background_pool(sim: &mut Simulation, config: &SimConfig, symbols: &[SymbolSpec]) {
-    if !config.enable_background_pool {
-        return;
+#[derive(Deserialize)]
+struct EnsembleSpecYaml {
+    name: String,
+    members: Vec<EnsembleMemberYaml>,
+}
+
+#[derive(Deserialize)]
+struct EnsembleMemberYaml {
+    model: String,
+    weight: f64,
+}
+
+/// Load ensemble model from YAML config, resolving members by name from loaded models.
+///
+/// Returns `None` if no `ensemble_config.yaml` exists (graceful skip).
+/// Prints errors to stderr if YAML exists but is invalid or references missing models.
+fn load_ensemble(models_dir: &std::path::Path, models: &MlModels) -> Option<EnsembleModel> {
+    let config_path = models_dir.join("ensemble_config.yaml");
+    if !config_path.exists() {
+        return None;
     }
 
-    let pool_symbols: Vec<String> = symbols.iter().map(|s| s.symbol.clone()).collect();
-    let symbol_sectors: std::collections::HashMap<String, types::Sector> = symbols
-        .iter()
-        .map(|s| (s.symbol.clone(), s.sector))
-        .collect();
-
-    let pool_config = BackgroundPoolConfig {
-        pool_size: config.background_pool_size,
-        regime: config.background_regime,
-        symbols: pool_symbols,
-        mean_order_size: config.t3_mean_order_size,
-        order_size_stddev: config.t3_order_size_stddev,
-        max_order_size: config.t3_max_order_size,
-        min_order_size: 1,
-        price_spread_lambda: config.t3_price_spread_lambda,
-        max_price_deviation: config.t3_max_price_deviation,
-        sentiment_decay: 0.995,
-        max_sentiment: 0.8,
-        news_sentiment_scale: 0.5,
-        enable_sanity_check: true,
-        max_pnl_loss_fraction: 0.05,
-        base_activity_override: config.t3_base_activity,
+    let content = match std::fs::read_to_string(&config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("  Warning: Failed to read {}: {}", config_path.display(), e);
+            return None;
+        }
+    };
+    let config: EnsembleConfigYaml = match serde_yaml::from_str(&content) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "  Error: YAML parse error in {}: {}",
+                config_path.display(),
+                e
+            );
+            return None;
+        }
     };
 
-    let mut pool = BackgroundAgentPool::new(pool_config, 42);
-    pool.init_sectors(&symbol_sectors);
-    sim.set_background_pool(pool);
+    // R4: Validate all member names exist in loaded models
+    let missing: Vec<_> = config
+        .ensemble
+        .members
+        .iter()
+        .filter(|m| models.by_name(&m.model).is_none())
+        .map(|m| m.model.clone())
+        .collect();
+    if !missing.is_empty() {
+        eprintln!("  Error: Ensemble references missing models: {:?}", missing);
+        eprintln!("  Available: {:?}", models.model_names());
+        return None;
+    }
+
+    let sub_models: Vec<Arc<dyn agents::MlModel>> = config
+        .ensemble
+        .members
+        .iter()
+        .map(|m| models.by_name(&m.model).unwrap().clone())
+        .collect();
+    let weights: Vec<f64> = config.ensemble.members.iter().map(|m| m.weight).collect();
+
+    match EnsembleModel::new(
+        format!("Ensemble_{}", config.ensemble.name),
+        sub_models,
+        weights,
+    ) {
+        Ok(ensemble) => Some(ensemble),
+        Err(e) => {
+            eprintln!("  Error creating ensemble: {}", e);
+            None
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1185,7 +650,7 @@ impl SimulationLoopState {
             tick: 0,
             total_ticks: config.total_ticks,
             tier1_count: config.total_tier1_agents(),
-            tier2_count: config.num_tier2_agents + config.num_sector_rotators,
+            tier2_count: config.num_tier2_agents,
             symbols,
             price_history,
             max_price_history: config.max_price_history,
@@ -1269,20 +734,12 @@ fn run_simulation(
     let sim_config = build_simulation_config(&config, &args);
     let mut sim = Simulation::new(sim_config);
 
-    let all_symbols: Vec<_> = config.get_symbols().to_vec();
+    // Phase 2: Spawn all agents
+    let ml_models = load_ml_models(&config);
     let mut rng = rand::thread_rng();
+    simulation::agent_factory::spawn_all(&mut sim, &config, &ml_models, &mut rng);
 
-    // Phase 2: Spawn Tier 1 agents
-    let mut next_id = spawn_all_tier1_agents(&mut sim, &config, &all_symbols, &mut rng);
-
-    // Phase 3: Spawn Tier 2 agents
-    spawn_tier2_agents(&mut sim, &mut next_id, &config, &all_symbols, &mut rng);
-    spawn_sector_rotators(&mut sim, &mut next_id, &config, &all_symbols);
-
-    // Phase 4: Setup background pool
-    setup_background_pool(&mut sim, &config, &all_symbols);
-
-    // Phase 5: Initialize loop state and send initial update
+    // Phase 3: Initialize loop state and send initial update
     let mut state = SimulationLoopState::new(&config);
     let _ = tx.send(state.build_update(&sim, false));
 
@@ -1418,15 +875,19 @@ fn main() {
         "║    VWAP Executors:  {:2}  │  Pairs Traders:    {:2}                      ║",
         config.num_vwap_executors, config.num_pairs_traders
     );
-    eprintln!("║  ML Tree Agents:                                                      ║");
+    eprintln!("║  ML Agents:                                                           ║");
+    for (model_type, count) in &config.ml_agent_counts {
+        if *count > 0 {
+            eprintln!(
+                "║    {:<18}{:3}                                              ║",
+                format!("{}:", model_type),
+                count
+            );
+        }
+    }
     eprintln!(
-        "║    DecisionTree:   {:3}  │  RandomForest:    {:3}                      ║",
-        config.num_decision_tree_agents, config.num_random_forest_agents
-    );
-    eprintln!(
-        "║    GradientBoosted:{:3}  │  Total ML:        {:3}                      ║",
-        config.num_gradient_boosted_agents,
-        config.total_tree_agents()
+        "║    Total ML:       {:3}                                              ║",
+        config.total_ml_agents()
     );
     eprintln!("╠═══════════════════════════════════════════════════════════════════════╣");
     eprintln!(
@@ -1492,18 +953,14 @@ fn run_headless(config: SimConfig, args: Args) {
     let total_ticks = config.total_ticks;
     let tick_delay_ms = config.tick_delay_ms;
 
-    // Build simulation (same as run_simulation)
+    // Build simulation
     let sim_config = build_simulation_config(&config, &args);
     let mut sim = Simulation::new(sim_config);
 
-    let all_symbols: Vec<_> = config.get_symbols().to_vec();
+    // Spawn all agents
+    let ml_models = load_ml_models(&config);
     let mut rng = rand::thread_rng();
-
-    // Spawn all agents (same as run_simulation)
-    let mut next_id = spawn_all_tier1_agents(&mut sim, &config, &all_symbols, &mut rng);
-    spawn_tier2_agents(&mut sim, &mut next_id, &config, &all_symbols, &mut rng);
-    spawn_sector_rotators(&mut sim, &mut next_id, &config, &all_symbols);
-    setup_background_pool(&mut sim, &config, &all_symbols);
+    simulation::agent_factory::spawn_all(&mut sim, &config, &ml_models, &mut rng);
 
     // V3.9: Register storage hook in headless mode
     if let Some(ref storage_path) = args.storage_path {
@@ -1574,18 +1031,25 @@ fn run_headless_record(config: SimConfig, args: Args) {
     let total_ticks = config.total_ticks;
     let tick_delay_ms = config.tick_delay_ms;
 
-    // Build simulation (same as run_headless)
+    // Build simulation
     let sim_config = build_simulation_config(&config, &args);
     let mut sim = Simulation::new(sim_config);
 
-    let all_symbols: Vec<_> = config.get_symbols().to_vec();
+    // Spawn all agents
+    let ml_models = load_ml_models(&config);
     let mut rng = rand::thread_rng();
+    simulation::agent_factory::spawn_all(&mut sim, &config, &ml_models, &mut rng);
 
-    // Spawn all agents (same as run_headless)
-    let mut next_id = spawn_all_tier1_agents(&mut sim, &config, &all_symbols, &mut rng);
-    spawn_tier2_agents(&mut sim, &mut next_id, &config, &all_symbols, &mut rng);
-    spawn_sector_rotators(&mut sim, &mut next_id, &config, &all_symbols);
-    setup_background_pool(&mut sim, &config, &all_symbols);
+    // V6.1: Set feature extractor based on --full-features flag
+    let feature_names: &[&str] = if args.full_features {
+        eprintln!("  Feature mode: V6.1 full (55 features)");
+        sim.set_feature_extractor(Box::new(FullFeatures::new()));
+        types::FULL_FEATURE_NAMES
+    } else {
+        eprintln!("  Feature mode: V5 minimal (42 features)");
+        sim.set_feature_extractor(Box::new(agents::MinimalFeatures));
+        storage::MarketFeatures::default_feature_names()
+    };
 
     // Generate incremental output path: {base}_{NNN}.parquet
     let base_path = Path::new(&args.record_output);
@@ -1610,7 +1074,7 @@ fn run_headless_record(config: SimConfig, args: Args) {
         .with_warmup(args.record_warmup)
         .with_interval(args.record_interval);
 
-    match RecordingHook::new(recording_config) {
+    match RecordingHook::new(recording_config, feature_names) {
         Ok(hook) => {
             sim.add_hook(Arc::new(hook));
         }
@@ -1750,15 +1214,10 @@ async fn run_with_server(config: SimConfig, args: Args) {
     let sim_config = build_simulation_config(&config, &args);
     let mut sim = Simulation::new(sim_config);
 
-    let all_symbols: Vec<_> = config.get_symbols().to_vec();
-    let mut rng = rand::thread_rng();
-
     // Spawn all agents
-    let mut next_id = spawn_all_tier1_agents(&mut sim, &config, &all_symbols, &mut rng);
-    spawn_tier2_agents(&mut sim, &mut next_id, &config, &all_symbols, &mut rng);
-    spawn_sector_rotators(&mut sim, &mut next_id, &config, &all_symbols);
-    setup_background_pool(&mut sim, &config, &all_symbols);
-    println!("next_id: {}", next_id);
+    let ml_models = load_ml_models(&config);
+    let mut rng = rand::thread_rng();
+    simulation::agent_factory::spawn_all(&mut sim, &config, &ml_models, &mut rng);
     // Register hooks
     sim.add_hook(broadcast_hook.clone());
 
