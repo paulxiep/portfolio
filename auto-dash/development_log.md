@@ -1,5 +1,70 @@
 # Development Log
 
+## 2026-02-09: MVP.7 Inspector Foundation (Geometric Defect Detection)
+
+### Summary
+Implemented the Inspector Foundation — validates the plotlint thesis that element bounding boxes can be programmatically extracted from rendered matplotlib charts and geometric collision detection reliably identifies visual defects. Built 8 new modules: `geometry.py` (BoundingBox primitives), `elements.py` (renderer-agnostic abstraction), `scoring.py` (issue→score conversion), check registry with decorator pattern, matplotlib extractor, and orchestration layer. Wired real `inspect_node` into convergence loop via factory pattern. Achieved 55/55 tests passing including THE CRITICAL TEST.
+
+### Architecture
+
+```
+geometry.py (BoundingBox) → elements.py (ElementMap, protocols)
+  → extractors/matplotlib.py + checks/{overlap,cutoff}.py → inspector.py
+
+OCP: New checks use @check decorator + import. Inspector NEVER changes (queries registry).
+```
+
+### New / Modified Files
+
+| File | Purpose |
+|------|---------|
+| `plotlint/geometry.py` | BoundingBox dataclass: overlaps, intersection_area, cutoff_fraction. Defensive guards: `max(0, width)` |
+| `plotlint/scoring.py` | `compute_score(issues)`: SEVERITY_WEIGHTS (HIGH:1.0, MED:0.5, LOW:0.2), MAX_DEMERITS=5.0 |
+| `plotlint/elements.py` | ElementCategory enum, ElementInfo, ElementMap with `by_category()`/`tick_labels()`, Extractor protocol |
+| `plotlint/checks/__init__.py` | Check protocol, registry `_CHECKS`, `@check(name)` decorator, `get_registered_checks()` |
+| `plotlint/checks/overlap.py` | LabelOverlapCheck: adjacent pair collision. Severity: >50%=HIGH, >20%=MEDIUM |
+| `plotlint/checks/cutoff.py` | ElementCutoffCheck: bbox.cutoff_fraction(). Severity: >50%=HIGH, >10%=MEDIUM |
+| `plotlint/extractors/matplotlib.py` | MatplotlibExtractor: unpickle, `fig.canvas.draw()`, walk artist tree. Y-axis flip: `y0=h-y1` |
+| `plotlint/inspector.py` | `inspect()`: queries registry, aggregates issues, computes score. `inspect_from_figure()` wrapper |
+| `plotlint/loop.py` | `_make_inspect_node(extractor)` factory. Catches ExtractionError → render_error |
+| `plotlint/renderer.py` | `matplotlib_bundle()` now instantiates MatplotlibExtractor (was `None`) |
+| `tests/test_*.py` | 55 new tests: geometry (20), scoring (9), elements (3), checks (13), extractor (7), inspector (3) |
+
+### THE CRITICAL TEST
+
+Creates chart with 20 overlapping x-axis labels → MatplotlibExtractor → LabelOverlapCheck → ✅ DefectType.LABEL_OVERLAP detected. **Proves plotlint thesis end-to-end.**
+
+### Key Design Decisions
+
+1. **BoundingBox validation: Defensive computation, no eager validation**
+   All operations use `max(0, width/height)` guards. Extractor filters `bbox.area > 0`. Allows temporarily invalid bboxes during conversion, prevents crashes.
+
+2. **Registry pattern: Decorator-based OCP**
+   `@check("name")` decorator registers checks. Inspector queries `get_registered_checks()` — never hardcodes list. Adding new check: create file, decorate, import in `__init__.py`. Zero inspector changes.
+
+3. **Coordinate system: Screen coords (top-left origin)**
+   BoundingBox uses y-down (renderer-agnostic). Matplotlib uses y-up. Conversion in `_mpl_to_bbox()`: `y0=fig_height-mpl_y1`. Isolates matplotlib-specific concern. Plotly won't need flip.
+
+4. **Error handling: Fail fast with ExtractionError**
+   inspect_node catches ExtractionError → sets render_error → should_continue stops gracefully. Better than empty ElementMap (hides problem) or partial extraction (inconsistent state).
+
+5. **Scoring parameters: Declarative constants**
+   SEVERITY_WEIGHTS/MAX_DEMERITS at module level. Easy to tune (only scoring.py changes). Will adjust in PL-1 based on real-world data.
+
+### Test Results
+
+All 368 tests pass (21.82s):
+- New MVP.7 tests: 55 (geometry, scoring, elements, checks, extractor, inspector)
+- Previous MVP.1-6: 313 (all still passing)
+
+### Unblocks
+
+- **MVP.8** (Patcher): Receives `InspectionResult.issues`. `Issue.suggestion` provides fix guidance.
+- **PL-1** (3 new checks): text readability, color contrast, aspect ratio. Same `@check` pattern, zero inspector changes.
+- **PL-1.6** (Plotly): Implement Extractor protocol. Walk JSON tree, extract bboxes (already top-left coords). Zero checks/ changes.
+
+**Packages:** plotlint
+
 ## 2026-02-08: MVP.6 Renderer (matplotlib Sandbox)
 
 ### Summary
@@ -122,124 +187,57 @@ All 313 tests pass (20.75s):
 ## 2026-02-08: MVP.5 Chart Planning + Code Generation
 
 ### Summary
-Implemented the chart planning and code generation module (`autodash/charts.py`). Accepts `InsightResult`(s) and user questions, uses two LLM calls — one to produce a renderer-agnostic `ChartSpec` (JSON), one to generate self-contained matplotlib code — and returns `ChartPlan`(s) pairing spec with code. The two-step split is critical: DI-1.3 (multi-chart) needs to intervene between planning and generation to assign priorities and avoid duplicate charts. All data models and error types were already defined in MVP.1; no model/config changes needed.
+Implemented chart planning (`autodash/charts.py`). Two LLM calls: (1) produce renderer-agnostic `ChartSpec` (JSON), (2) generate self-contained matplotlib code. Returns `ChartPlan`(s) pairing spec with code. Two-step split enables DI-1.3 (multi-chart) to intervene between planning and generation for prioritization. All models already defined in MVP.1.
 
 ### Architecture
 
 ```
-               ┌──────────┐   ┌──────────┐
-               │  MVP.4   │   │  user     │
-               │ explorer │   │ questions │
-               └────┬─────┘   └────┬─────┘
-                    │ InsightResult │
-                    └───────┬───────┘
-                            ▼
-                     ┌─────────────┐
-                     │   MVP.5     │
-                     │  charts.py  │
-                     └──────┬──────┘
-                            │ list[ChartPlan]
-                            ▼
-                     ┌─────────────┐
-                     │   MVP.6     │
-                     │ renderer.py │  executes the code
-                     └─────────────┘
+InsightResult + questions → plan_charts() → ChartSpec (JSON) → generate_chart_code() → ChartPlan (spec+code)
 
-charts.py internals (SoC):
-
-    _serialize_df_for_prompt()        ← DataFrame → Python dict literal (NaN→None, datetime→ISO)
-    _to_python_native()               ← single value → JSON-safe native type
-          │
-    build_chart_planning_prompt()     ← assemble user prompt for spec generation
-    build_code_generation_prompt()    ← assemble user prompt for code generation
-          │
-    plan_charts()                     ← Step 1: prompt → LLM → JSON → ChartSpec list (async)
-          │
-    ├── parse_chart_specs()           ← parse JSON, validate, build specs
-    ├── _parse_single_spec()          ← validate fields, chart type enum, source_step_index
-    └── _validate_data_mapping()      ← per-chart-type structural + column existence checks
-          │
-    generate_chart_code()             ← Step 2: spec + data → LLM → Python code → ChartPlan (async)
-          │
-    └── parse_code_from_response()    ← reused from plotlint.core.parsing
-          │
-    plan_and_generate()               ← combined entry point for pipeline node
+charts.py: _serialize_df_for_prompt, plan_charts, parse_chart_specs, _validate_data_mapping,
+          generate_chart_code, plan_and_generate (combined entry point)
 ```
 
 ### New / Modified Files
 
 | File | Purpose |
 |------|---------|
-| `autodash/charts.py` | **New.** Core logic: `_serialize_df_for_prompt`, `_to_python_native`, `_validate_data_mapping`, `build_chart_planning_prompt`, `build_code_generation_prompt`, `parse_chart_specs`, `_parse_single_spec`, `plan_charts`, `generate_chart_code`, `plan_and_generate` |
-| `autodash/prompts/chart_planning.py` | **New.** `SYSTEM_PROMPT` (chart type guidance, DataMapping rules per type), `OUTPUT_FORMAT` (JSON schema), `build_user_prompt()` — enum values built from `ChartType`/`ChartPriority` to stay in sync |
-| `autodash/prompts/code_generation.py` | **New.** `SYSTEM_PROMPT` (matplotlib code rules: no savefig/show/close, no backend, tight_layout, self-contained), `build_user_prompt()` — `renderer_type` param enables PL-1.6 Plotly with new template |
-| `autodash/pipeline.py` | **Modified.** Replaced `chart_node` stub with closure factory `_make_chart_node(config, llm_client)`. Fallback `chart_node` returns error dict when no LLM client. Wired into `build_pipeline_graph()` |
-| `tests/test_charts.py` | **New.** 67 tests: native conversion (10), serialization (6), data mapping validation (20), spec parsing (13), prompt construction (7), async integration with MockLLMClient (11) |
-| `tests/test_chart_prompts.py` | **New.** 22 tests: system prompt content (chart types, priorities, mapping rules), output format fields, user prompt assembly, code gen rules (no savefig, no backend, tight_layout) |
-| `tests/test_pipeline_graph.py` | **Modified.** Updated `test_chart_stub` → `test_chart_fallback_returns_error` |
+| `autodash/charts.py` | Core logic: serialization, prompt building, spec parsing, validation, code generation |
+| `autodash/prompts/chart_planning.py` | SYSTEM_PROMPT (chart types, mapping rules), OUTPUT_FORMAT (JSON schema), build_user_prompt |
+| `autodash/prompts/code_generation.py` | SYSTEM_PROMPT (matplotlib rules: no savefig/show/close, tight_layout), renderer_type param |
+| `autodash/pipeline.py` | `_make_chart_node(config, llm_client)` closure factory replaces stub |
+| `tests/test_charts.py` | 67 tests: native conversion, serialization, validation, parsing, prompts, integration |
+| `tests/test_chart_prompts.py` | 22 tests: system prompt content, output format, user prompt assembly |
 
-### Two-Step LLM Process
+### Two-Step Process
 
-```
-Step 1: plan_charts(insights, questions, llm_client, max_charts)
-  → build_chart_planning_prompt()
-  → LLM call (JSON response)
-  → parse_chart_specs() with validation
-  → list[ChartSpec]
+**Step 1:** `plan_charts()` → LLM (JSON) → `parse_chart_specs()` + validation → `list[ChartSpec]`
+**Step 2:** `generate_chart_code()` → LLM (Python) → `parse_code_from_response()` → `ChartPlan`
+**Combined:** `plan_and_generate()` orchestrates both steps.
 
-Step 2: generate_chart_code(spec, insight, llm_client, renderer_type)
-  → build_code_generation_prompt()  (embeds data as dict literal)
-  → LLM call (Python code response)
-  → parse_code_from_response()
-  → ChartPlan(spec=spec, code=code)
-
-Combined: plan_and_generate() calls Step 1 then Step 2 for each spec.
-```
-
-### DataMapping Validation Rules
-
-`_validate_data_mapping(mapping, chart_type, available_columns)` returns error list:
-
-| Chart Type | Required Fields | Optional |
-|-----------|----------------|----------|
-| BAR, LINE, AREA, SCATTER, HEATMAP | x, y | color, size, label |
-| GROUPED_BAR, STACKED_BAR | x, y, color | label |
-| PIE | values, categories | label |
-| HISTOGRAM | x OR y | color |
-| BOX | y | x (grouping) |
-
-All non-None column references validated against `InsightResult.column_names`.
+**DataMapping validation:** Per-chart-type required fields (e.g., BAR needs x+y, PIE needs values+categories, HISTOGRAM needs x OR y). All column refs validated against InsightResult.column_names.
 
 ### Key Design Decisions
 
-1. **Dict literal for data embedding**: Generated code uses `pd.DataFrame({...})` with inline dict. `_serialize_df_for_prompt()` handles NaN→None, datetime→ISO string, numpy→Python native. `PipelineConfig.inline_data_max_rows=50` as size guard. Cleaner than CSV string, no file path dependency (result_df doesn't exist as a file).
+1. **Dict literal for data embedding**: `pd.DataFrame({...})` inline. `_serialize_df_for_prompt()` handles NaN→None, datetime→ISO, numpy→native. `inline_data_max_rows=50` guard. No file dependency.
 
-2. **Fully self-contained generated code**: No `inject_globals`, no variables expected in scope. Code is copy-pasteable and debuggable. Conventions: `fig, ax = plt.subplots(figsize=...)`, no `plt.savefig()`/`plt.show()`/`plt.close()` (MVP.6 renderer captures `gcf()`), no `matplotlib.use('Agg')` (renderer worker sets backend), `plt.tight_layout()` at end.
+2. **Self-contained code**: No inject_globals. Copy-pasteable. Conventions: `fig, ax = plt.subplots(figsize=...)`, no savefig/show/close (renderer captures gcf), no `use('Agg')` (renderer sets backend), `tight_layout()` at end.
 
-3. **Single-shot code generation, no retry**: Unlike explorer.py which retries on execution errors, chart code generation just produces a string — there's no execution feedback within MVP.5. The convergence loop (MVP.6-8: render→inspect→patch) handles execution failures. Adding retry here would duplicate that responsibility.
+3. **Single-shot generation, no retry**: Code gen produces string with no execution feedback. Convergence loop (MVP.6-8) handles failures. Retry here would duplicate responsibility.
 
-4. **`source_step_index` for insight→spec linking**: `ChartSpec.source_step_index` (int) references the insight that produced the data. `parse_chart_specs()` validates it's in range. `plan_and_generate()` uses it to pair each spec with the correct `InsightResult` for code generation.
+4. **`source_step_index` linking**: ChartSpec references insight index. `parse_chart_specs()` validates range. `plan_and_generate()` pairs specs with InsightResults.
 
-5. **Per-module profile view**: `_serialize_df_for_prompt()` produces a dict literal + column info for code generation context. Different from planner's `_profile_summary()` (types + stats) and explorer's `_exploration_profile_summary()` (dtypes for code gen). Each LLM-calling module formats data for its specific needs.
+5. **Enum auto-sync**: SYSTEM_PROMPT builds lists from ChartType/ChartPriority enums. Adding new variant auto-updates prompts.
 
-6. **Enum values auto-synced in prompts**: `SYSTEM_PROMPT` in `chart_planning.py` builds chart type and priority lists from the enums (`", ".join(t.value for t in ChartType)`), matching the pattern in `analysis_planning.py`. Adding a new `ChartType` variant automatically appears in prompts.
-
-7. **Sequential code generation**: `plan_and_generate()` generates code for each spec sequentially. For MVP (max_charts=1), moot. DI-1.3 can trivially switch to `asyncio.gather()` without changing function signatures.
+6. **Sequential generation**: For MVP (max_charts=1). DI-1.3 can switch to `asyncio.gather()` without signature changes.
 
 ### Test Results
 
-All 291 tests pass (11.95s):
-- `test_charts.py`: 67 tests (native conversion, serialization, validation, parsing, prompt construction, integration)
-- `test_chart_prompts.py`: 22 tests (system prompt content, output format, user prompt assembly)
-- Previous MVP.1 + MVP.2 + MVP.3 + MVP.4 tests: all still passing (202 tests)
+All 291 tests pass (11.95s): charts (67), chart_prompts (22), previous MVP.1-4 (202).
 
 ### Unblocks
 
-- **MVP.6** (Renderer): Receives `ChartPlan.code` — a self-contained matplotlib script. Executes in subprocess sandbox, captures `plt.gcf()`. No coupling to how the code was generated.
-- **MVP.8** (Patcher): Replaces `ChartPlan.code` after patching. `ChartPlan` is mutable; `ChartSpec` is frozen (spec doesn't change, only implementation).
-- **DI-1.3** (Multi-chart): `plan_charts()` already returns `list[ChartSpec]`. `ChartPriority` enum exists from day one. DI-1.3 calls with `max_charts=N` and intervenes between plan and generate steps.
-- **PL-1.6** (Plotly): `generate_chart_code(renderer_type=RendererType.PLOTLY)` selects a different prompt template. No logic change in `charts.py`.
-- **DI-2.2** (Style harmonizer): Optional `color_palette` field already on `ChartSpec`. Harmonizer populates it before code generation.
+MVP.6 (Renderer), MVP.8 (Patcher: mutable ChartPlan.code), DI-1.3 (multi-chart: max_charts=N), PL-1.6 (Plotly: renderer_type param), DI-2.2 (color_palette field).
 
 **Packages:** autodash
 
@@ -534,147 +532,52 @@ All tests pass across both MVP.1 and MVP.2:
 ## 2026-02-08: MVP.1 Foundation + LangGraph Scaffold
 
 ### Summary
-Established the foundation for both `plotlint` (standalone visual compliance engine) and `autodash` (end-to-end data-to-dashboard pipeline). Defined state schemas as LangGraph TypedDicts, built two graph skeletons with stub nodes (convergence loop + pipeline), implemented cross-cutting utilities in `plotlint/core/` (LLM client, sandbox, parsing, errors, config), and defined all model types upfront as shared contracts. Everything built in MVP.2-9 plugs into this scaffold.
+Established foundation for `plotlint` (standalone visual compliance) and `autodash` (data-to-dashboard pipeline). Defined state schemas as TypedDicts, built two graph skeletons with stub nodes (convergence loop + pipeline), implemented cross-cutting utilities in `plotlint/core/` (LLM client, sandbox, parsing, errors, config), and defined all model types upfront as shared contracts. Everything in MVP.2-9 plugs into this scaffold.
 
 ### Architecture
 
 ```
-                    plotlint (standalone)              autodash (pipeline)
-                    ┌──────────────────────┐           ┌──────────────────────────┐
-                    │  Convergence Loop     │           │  Pipeline Graph           │
-                    │  render → inspect →   │           │  load → plan → explore →  │
-                    │  decide(patch|stop)   │           │  chart → comply → output  │
-                    └──────┬───────────────┘           └──────────┬───────────────┘
-                           │                                      │
-                           │    plotlint/core/ (shared foundation) │
-                           │    ┌─────────────────────────────────┘
-                           ▼    ▼
-                    ┌────────────────────────────────────────────┐
-                    │  errors.py  │ config.py │ llm.py           │
-                    │  sandbox.py │ parsing.py                   │
-                    └────────────────────────────────────────────┘
+plotlint: render→inspect→decide(patch|stop)
+autodash: load→plan→explore→chart→comply→output
+plotlint/core: errors, config, llm, sandbox, parsing (shared foundation)
 ```
 
-Two separate state machines in two separate packages. `plotlint` has ZERO imports from `autodash`. `autodash` imports from `plotlint.core`. The `comply_node` in the pipeline bridges them by invoking the convergence graph for each chart.
+Two separate packages. `plotlint` has ZERO imports from `autodash`. `autodash` imports from `plotlint.core`. `comply_node` bridges them.
 
 ### New Files
 
-| File | Purpose |
-|------|---------|
-| `pyproject.toml` | Hatchling build config, both packages, dependencies |
-| `plotlint/core/errors.py` | `AutoDashError` hierarchy (12 exception classes) |
-| `plotlint/core/config.py` | `LLMConfig`, `SandboxConfig` frozen dataclasses |
-| `plotlint/core/llm.py` | `LLMClient` protocol + `AnthropicClient` with retry |
-| `plotlint/core/parsing.py` | `parse_code_from_response()`, `parse_json_from_response()` |
-| `plotlint/core/sandbox.py` | `execute_code()` subprocess sandbox with temp file IPC |
-| `plotlint/models.py` | `Issue`, `InspectionResult`, `FixAttempt`, `RenderResult`, `ConvergenceState` |
-| `plotlint/config.py` | `ConvergenceConfig` frozen dataclass |
-| `plotlint/renderer.py` | `RendererBundle` shell (fields `Any` until MVP.6/7) |
-| `plotlint/loop.py` | Convergence graph: `render`→`inspect`→decide(`patch`\|`stop`) |
-| `autodash/models.py` | All autodash types (MVP.2-9) + `PipelineState` TypedDict |
-| `autodash/config.py` | `PipelineConfig` composing all sub-configs |
-| `autodash/pipeline.py` | Pipeline graph: `load`→`plan`→`explore`→`chart`→`comply`→`output` |
-| `tests/test_core_errors.py` | Error hierarchy and isinstance checks (6 tests) |
-| `tests/test_core_config.py` | Config defaults, custom, frozen immutability (5 tests) |
-| `tests/test_core_parsing.py` | Fenced blocks, plain code, JSON extraction (12 tests) |
-| `tests/test_core_sandbox.py` | Success, errors, timeout, return value (8 tests) |
-| `tests/test_convergence_graph.py` | Graph topology, stubs, all 4 stop conditions (13 tests) |
-| `tests/test_pipeline_graph.py` | Graph topology, stubs, full pipeline passthrough (9 tests) |
-| `tests/test_models.py` | Serialization, properties, construction (16 tests) |
+**Core modules (17 files):** `pyproject.toml`, `plotlint/core/{errors,config,llm,parsing,sandbox}.py`, `plotlint/{models,config,renderer,loop}.py`, `autodash/{models,config,pipeline}.py`, 7 test files (69 tests total).
+
+**Models defined upfront:** All MVP.2-9 types in `autodash/models.py` (DataProfile, AnalysisStep, InsightResult, ChartSpec, OutputArtifact). Avoids forward-reference issues. Construction logic comes in later MVPs.
 
 ### Convergence Loop Stop Conditions
 
-`_make_should_continue(config)` returns a closure that checks (in order):
-
-| Condition | State Fields | Config Fields | Result |
-|-----------|-------------|---------------|--------|
-| Perfect score | `score >= target_score` | `target_score` | `"stop"` |
-| Max iterations | `iteration >= max_iterations` | `max_iterations` | `"stop"` |
-| Render error | `render_error is not None` | — | `"stop"` |
-| Score stagnation | `score_history` window range < threshold | `stagnation_window`, `score_improvement_threshold` | `"stop"` |
-| Otherwise | — | — | `"patch"` |
-
-State `max_iterations` overrides config `max_iterations` when present — allowing per-invocation limits.
-
-### Autodash Model Types Defined Upfront
-
-All model types from MVP.2-9 are defined as full dataclasses in `autodash/models.py` now. This lets `PipelineState` type-check cleanly and avoids forward-reference issues. Construction logic (LLM prompts, parsing, validation) comes in later MVPs.
-
-| MVP | Types |
-|-----|-------|
-| MVP.2 | `SemanticType`, `ColumnProfile`, `DataProfile` (with `to_json`, `from_json`, `column_names`, `get_column`) |
-| MVP.3 | `AggregationType`, `AnalysisStep` |
-| MVP.4 | `InsightResult` (with `TYPE_CHECKING` pandas guard, `__post_init__`, `to_prompt_context`) |
-| MVP.5 | `ChartType`, `ChartPriority`, `RendererType`, `DataMapping`, `ChartSpec`, `ChartPlan` |
-| MVP.9 | `OutputFormat`, `OutputArtifact`, `OutputResult` |
+`_make_should_continue(config)` closure checks: (1) score≥target_score, (2) iteration≥max_iterations, (3) render_error≠None, (4) score stagnation window. State `max_iterations` overrides config.
 
 ### Key Design Decisions
 
-1. **Closure factory for `should_continue` (G1)**: LangGraph conditional edge functions only receive state. `_make_should_continue(config)` closes over `ConvergenceConfig` values, making stop conditions config-driven without putting all config into state.
+1. **Closure factory for conditional edges**: LangGraph edge functions only receive state. `_make_should_continue(config)` closes over config, making stop conditions config-driven without state bloat.
 
-2. **`field(default_factory=...)` for sub-configs (G2)**: `PipelineConfig` composes `ConvergenceConfig`, `LLMConfig`, and `SandboxConfig` — all mutable defaults requiring factory pattern.
+2. **All models defined upfront**: Full dataclass definitions (fields + methods) for MVP.2-9 types in MVP.1. Only construction logic (LLM prompts) deferred. Enables clean `PipelineState` typing.
 
-3. **All autodash models defined upfront (G3)**: Rather than stub forward-references, the full dataclass definitions (fields + methods) go in now. Only construction logic (LLM interaction) comes later.
+3. **`plotlint/core/` real implementations**: `parsing.py` (string manipulation), `sandbox.py` (subprocess + temp file IPC), `llm.py` (protocol + AnthropicClient), `errors.py` (12-class hierarchy), `config.py` (frozen dataclasses) — all testable independently. No stubs.
 
-4. **`plotlint/core/` is real implementations, not stubs (G6)**: `parsing.py` (pure string manipulation), `sandbox.py` (subprocess + temp file IPC), `llm.py` (protocol + Anthropic client with retry), `errors.py` (exception hierarchy), `config.py` (frozen dataclasses) — all testable independently.
+4. **`TYPE_CHECKING` guard for pandas**: `InsightResult.result_df: pd.DataFrame` but pandas imported only under TYPE_CHECKING. Avoids ~200ms startup cost.
 
-5. **`START`/`END` constants (G7)**: Uses current LangGraph API (`from langgraph.graph import START, END`) instead of deprecated `set_entry_point()`.
+5. **`RendererBundle` shell with `Any` fields**: Prevents renderer/extractor mismatches. Fields typed `Any` until protocols defined in MVP.6/7.
 
-6. **`TYPE_CHECKING` guard for pandas (G12)**: `InsightResult.result_df` is `pd.DataFrame` but pandas is only imported under `TYPE_CHECKING`. Avoids ~200ms startup cost for all consumers.
+6. **Subprocess sandbox with temp file IPC**: `execute_code()` avoids stdout corruption. Code → temp file → subprocess → pickled return value → temp file.
 
-7. **`RendererBundle` shell with `Any` fields (G4, G13)**: Prevents renderer/extractor mismatches structurally. Fields typed as `Any` until `Renderer`/`Extractor` protocols are defined in MVP.6/7.
-
-8. **Subprocess sandbox with temp file IPC**: `execute_code()` writes code to temp file, runs in subprocess, captures return value via pickled temp file. Avoids stdout corruption from user code printing.
-
-### Gotchas Found During Implementation
-
-13 gotchas identified and resolved before implementation (documented in mvp.1.md):
-
-1. **G1: `should_continue` can't access config** — Closure factory pattern
-2. **G2: Mutable defaults in frozen dataclasses** — `field(default_factory=...)`
-3. **G3: `PipelineState` references types from MVP.2-5** — Define all types upfront
-4. **G4: `RendererBundle` references MVP.6** — Shell with `Any` fields
-5. **G5: Missing `Optional` import** — `from __future__ import annotations` everywhere
-6. **G6: `plotlint/core/` stubs vs real** — Real implementations
-7. **G7: Deprecated LangGraph API** — `START`/`END` constants
-8. **G8: No `pyproject.toml`** — Created with hatchling build system
-9. **G9: `CompiledStateGraph` not imported** — `from langgraph.graph.state import CompiledStateGraph`
-10. **G10: Missing `RenderResult`/`RenderStatus`** — Defined in MVP.1 since `ConvergenceState` references them
-11. **G11: `figure_pickle` vs `figure_data` naming** — Intentional: state name vs renderer-agnostic name, render_node maps
-12. **G12: `InsightResult` has `pd.DataFrame` field** — `TYPE_CHECKING` guard
-13. **G13: `RendererBundle` needs undefined protocols** — `Any` until MVP.6/7
+7. **13 gotchas resolved**: Documented in mvp.1.md (closure access, mutable defaults, forward refs, deprecated API, missing imports, TYPE_CHECKING guard).
 
 ### Test Results
 
-All 69 tests pass (2.15s):
-- `test_core_errors.py`: 6 tests (hierarchy, isinstance, catching)
-- `test_core_config.py`: 5 tests (defaults, custom, frozen)
-- `test_core_parsing.py`: 12 tests (fenced blocks, plain code, JSON extraction, edge cases)
-- `test_core_sandbox.py`: 8 tests (success, stdout, syntax error, runtime error, import error, timeout, return value, execution time)
-- `test_convergence_graph.py`: 13 tests (topology, stubs, all 4 stop conditions, config-driven)
-- `test_pipeline_graph.py`: 9 tests (topology, stubs, full pipeline passthrough)
-- `test_models.py`: 16 tests (serialization roundtrip, properties, construction, frozen checks)
+All 69 tests pass (2.15s): core utilities (31), graph topology + stop conditions (22), models (16).
 
-### Dependencies
-
-| Package | Version Floor | Purpose |
-|---------|--------------|---------|
-| `langgraph` | >=1.0 | StateGraph, conditional edges |
-| `pandas` | >=2.3 | DataFrame (autodash data pipeline) |
-| `anthropic` | >=0.79 | LLM API (optional, `[llm]` extra) |
-| `pytest` | >=9.0 | Testing (dev) |
-| `pytest-asyncio` | >=1.3 | Async test support (dev) |
+**Dependencies:** langgraph ≥1.0, pandas ≥2.3, anthropic ≥0.79 (optional), pytest ≥9.0 (dev).
 
 ### Unblocks
 
-MVP.2-9 plug into this scaffold:
-- **MVP.2** (Data Intelligence): Replaces `load_node` stub, uses `DataProfile`/`ColumnProfile` already defined
-- **MVP.3** (Analysis Planning): Replaces `plan_node` stub, uses `AnalysisStep` already defined
-- **MVP.4** (Data Exploration): Replaces `explore_node` stub, uses `InsightResult` + `execute_code()`
-- **MVP.5** (Chart Planning): Replaces `chart_node` stub, uses `ChartSpec`/`ChartPlan`
-- **MVP.6** (Renderer): Replaces `render_node` stub, fills `RendererBundle`
-- **MVP.7** (Inspector): Replaces `inspect_node` stub, uses `Issue`/`InspectionResult`
-- **MVP.8** (Patcher): Replaces `patch_node` stub, uses `FixAttempt` + `parse_code_from_response()`
-- **MVP.9** (Output): Replaces `output_node` stub, uses `OutputArtifact`/`OutputResult`
+MVP.2-9 replace stub nodes: load (DataProfile), plan (AnalysisStep), explore (InsightResult + sandbox), chart (ChartSpec), render (RendererBundle), inspect (Issue), patch (FixAttempt), output (OutputArtifact).
 
 **Packages:** plotlint, autodash

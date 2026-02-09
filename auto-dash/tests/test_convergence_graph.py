@@ -6,8 +6,6 @@ from plotlint.config import ConvergenceConfig
 from plotlint.loop import (
     _make_should_continue,
     build_convergence_graph,
-    inspect_node,
-    patch_node,
 )
 from plotlint.models import ConvergenceState
 from plotlint.renderer import matplotlib_bundle
@@ -33,15 +31,10 @@ class TestGraphTopology:
 
 
 class TestStubPassthrough:
-    @pytest.mark.asyncio
-    async def test_inspect_stub_returns_empty(self):
-        result = await inspect_node({})
-        assert result == {}
-
-    @pytest.mark.asyncio
-    async def test_patch_stub_returns_empty(self):
-        result = await patch_node({})
-        assert result == {}
+    # Stubs replaced with real implementations in MVP.7
+    # inspect_node is now a factory (_make_inspect_node)
+    # patch_node remains a stub until MVP.8
+    pass
 
 
 class TestShouldContinue:

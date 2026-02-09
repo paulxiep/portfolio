@@ -201,11 +201,11 @@ def matplotlib_bundle(
 
     Factory function. Called by build_convergence_graph() when
     no explicit bundle is provided.
-
-    extractor is None until MVP.7 provides MatplotlibExtractor.
     """
+    from plotlint.extractors.matplotlib import MatplotlibExtractor
+
     return RendererBundle(
         renderer=MatplotlibRenderer(dpi=dpi, timeout_seconds=timeout_seconds),
-        extractor=None,
+        extractor=MatplotlibExtractor(),
         renderer_type="matplotlib",
     )

@@ -45,12 +45,44 @@ def _make_render_node(renderer: Renderer):
     return render_node
 
 
-async def inspect_node(state: ConvergenceState) -> dict:
-    """Stub: Run Inspector on rendered figure.
+def _make_inspect_node(extractor):
+    """Create an inspect node that closes over an Extractor instance.
 
-    Replaced by real implementation in MVP.7.
+    Follows the same factory pattern as _make_render_node(renderer).
     """
-    return {}
+
+    async def inspect_node(state: ConvergenceState) -> dict:
+        """Run Inspector on rendered figure.
+
+        Reads: figure_pickle (from render_node)
+        Writes: inspection, score, render_error (if extraction fails)
+        """
+        from plotlint.inspector import inspect_from_figure
+        from plotlint.core.errors import ExtractionError
+
+        figure_data = state.get("figure_pickle")
+        if not figure_data:
+            return {
+                "render_error": "No figure data to inspect",
+                "score": 0.0,
+            }
+
+        try:
+            inspection = await asyncio.to_thread(
+                inspect_from_figure, figure_data, extractor
+            )
+            return {
+                "inspection": inspection,
+                "score": inspection.score,
+                "render_error": None,
+            }
+        except ExtractionError as e:
+            return {
+                "render_error": f"Extraction failed: {str(e)}",
+                "score": 0.0,
+            }
+
+    return inspect_node
 
 
 async def patch_node(state: ConvergenceState) -> dict:
@@ -134,7 +166,7 @@ def build_convergence_graph(
     graph = StateGraph(ConvergenceState)
 
     graph.add_node("render", _make_render_node(bundle.renderer))
-    graph.add_node("inspect", inspect_node)
+    graph.add_node("inspect", _make_inspect_node(bundle.extractor))
     graph.add_node("patch", patch_node)
 
     graph.add_edge(START, "render")
