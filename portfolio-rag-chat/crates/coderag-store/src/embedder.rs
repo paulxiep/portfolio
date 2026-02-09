@@ -64,12 +64,13 @@ fn embedding_dimension(model: &EmbeddingModel) -> usize {
 }
 
 /// Formats a code chunk for embedding.
-/// Concatenates identifier + docstring + code for richer semantic signal.
+/// Concatenates identifier + docstring + code + calls for richer semantic signal.
 pub fn format_code_for_embedding(
     identifier: &str,
     language: &str,
     docstring: Option<&str>,
     code: &str,
+    calls: &[String],
 ) -> String {
     let mut parts = vec![format!("{} ({})", identifier, language)];
 
@@ -80,6 +81,11 @@ pub fn format_code_for_embedding(
     }
 
     parts.push(code.to_string());
+
+    if !calls.is_empty() {
+        parts.push(format!("Calls: {}", calls.join(", ")));
+    }
+
     parts.join("\n")
 }
 
@@ -123,6 +129,7 @@ mod tests {
             "rust",
             Some("Processes input data and returns results"),
             "fn process_data() {}",
+            &[],
         );
 
         assert!(result.contains("process_data (rust)"));
@@ -132,11 +139,31 @@ mod tests {
 
     #[test]
     fn test_format_code_for_embedding_without_docstring() {
-        let result = format_code_for_embedding("helper", "python", None, "def helper(): pass");
+        let result = format_code_for_embedding("helper", "python", None, "def helper(): pass", &[]);
 
         assert!(result.contains("helper (python)"));
         assert!(result.contains("def helper"));
         assert!(!result.contains("\n\n")); // no empty docstring line
+    }
+
+    #[test]
+    fn test_format_code_with_calls() {
+        let result = format_code_for_embedding(
+            "foo",
+            "rust",
+            None,
+            "fn foo() {}",
+            &["bar".to_string(), "baz".to_string()],
+        );
+
+        assert!(result.contains("Calls: bar, baz"));
+    }
+
+    #[test]
+    fn test_format_code_without_calls() {
+        let result = format_code_for_embedding("foo", "rust", None, "fn foo() {}", &[]);
+
+        assert!(!result.contains("Calls:"));
     }
 
     #[test]

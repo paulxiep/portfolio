@@ -37,10 +37,10 @@
 
 | Crate | Purpose | Key Files |
 |-------|---------|-----------|
-| `code-raptor` | Ingestion CLI - tree-sitter parsing, chunk extraction | `ingestion/parser.rs`, `main.rs` |
-| `coderag-store` | Embedder (FastEmbed) + VectorStore (LanceDB) | `embedder.rs`, `vector_store.rs` |
-| `coderag-types` | Shared types (CodeChunk, ReadmeChunk, etc.) | `lib.rs` |
-| `portfolio-rag-chat` | Query API - Axum server, LLM client, retrieval | `api/`, `engine/` |
+| `code-raptor` | Ingestion CLI — tree-sitter parsing, language handlers, incremental ingestion, docstring + call extraction | `ingestion/parser.rs`, `ingestion/language.rs`, `ingestion/languages/`, `main.rs` |
+| `coderag-store` | Embedder (FastEmbed) + VectorStore (LanceDB) with scored search API | `embedder.rs`, `vector_store.rs` |
+| `coderag-types` | Shared types — CodeChunk, ReadmeChunk, etc. with UUID, content_hash | `lib.rs` |
+| `portfolio-rag-chat` | Query API — intent classification, query routing, retrieval traces, context builder, LLM | `api/`, `engine/` |
 
 ## Query Pipeline
 
@@ -54,48 +54,107 @@ User Query
          │
          ▼
 ┌─────────────────┐
-│    Retriever    │  Embeds query → searches 4 tables
+│    Embedder     │  embed_one(query) → Vec<f32> (384-dim, ~5ms)
 └────────┬────────┘
          │
-         ▼
-┌─────────────────┐
-│ Context Builder │  Formats chunks into markdown
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│    Generator    │  Google Gemini via rig-core
-└────────┬────────┘
-         │
-         ▼
-    JSON/HTML Response with Sources
+         ├──────────────────────────┐
+         ▼                          ▼
+┌─────────────────┐      ┌──────────────────┐
+│   Classifier    │      │    Retriever     │
+│  cosine sim vs  │─────▶│  searches 4      │
+│  prototype emb. │route │  tables with     │
+└─────────────────┘      │  intent limits   │
+                         └────────┬─────────┘
+                                  │
+                    ┌─────────────┴─────────────┐
+                    ▼                           ▼
+          ┌─────────────────┐         ┌─────────────────┐
+          │ Context Builder │         │  Source Builder  │
+          │ chunks → markdown│        │ ScoredChunk →   │
+          │ (ignores scores)│         │ SourceInfo      │
+          └────────┬────────┘         └────────┬────────┘
+                   │                           │
+                   ▼                           │
+          ┌─────────────────┐                  │
+          │    Generator    │  Gemini          │
+          └────────┬────────┘                  │
+                   │                           │
+                   ▼                           ▼
+          JSON/HTML Response { answer, sources, intent }
 ```
 
 ## Vector Schema (4 Tables)
 
 | Table | Content | Embedding Input |
 |-------|---------|-----------------|
-| `code_chunks` | Functions, classes, structs | `identifier (language) + docstring + code` |
+| `code_chunks` | Functions, classes, structs | `identifier (language) + docstring + code + calls` |
 | `readme_chunks` | README.md files | `Project: name + content` |
 | `crate_chunks` | Cargo.toml metadata | `Crate: name + description + dependencies` |
 | `module_doc_chunks` | Module-level docs (`//!`) | `Module: name + doc_content` |
+
+## Ingestion Pipeline
+
+```
+Source Files (.rs, .py, .ts, .tsx, .js, .jsx)
+    │
+    ▼
+┌─────────────────┐
+│  LanguageHandler │  Trait-based: RustHandler, PythonHandler, TypeScriptHandler
+│  (OnceLock reg.) │  Grammar + query patterns + docstring + call extraction per language
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│   CodeAnalyzer  │  tree-sitter AST → function/class chunks with docstrings + calls
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│   Reconciler    │  SHA256 hash comparison: skip unchanged, nuke+replace changed
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│   Orchestrator  │  Async I/O: embed new chunks, delete stale, insert fresh
+└────────┬────────┘
+         │
+         ▼
+    LanceDB (4 tables)
+```
+
+## Docstring Extraction
+
+| Language | Strategy | Patterns |
+|----------|----------|----------|
+| Rust | Scan backwards from node | `///` outer doc, `#[doc = "..."]` attribute form |
+| Python | AST traversal into body | `"""..."""` / `'''...'''` first expression_statement |
+| TypeScript | Scan backwards for JSDoc | `/** ... */`, filters out `@param`/`@returns` |
 
 ## Key Design Decisions
 
 1. **Function-level chunking**: 1 function/class → 1 vector for precise retrieval
 2. **4-table schema**: Separate tables for different content types with specialized formatting
-3. **Mutex on Embedder**: Only resource needing synchronization (model weights)
-4. **htmx frontend**: Server-rendered HTML with async updates, minimal JS
-5. **Two-stage Docker**: Separate ingestion from query serving
+3. **Trait-based language abstraction**: `LanguageHandler` trait — add new languages by implementing 5 methods
+4. **Incremental ingestion**: Three-layer architecture (Parse→Reconcile→Orchestrate) with SHA256 file hashing
+5. **Docstrings in embeddings and context**: Extracted docs enrich both semantic search and LLM prompt
+6. **Call enrichment in embeddings**: `Calls: foo, bar` appended to embedding text — probabilistic relationship signal
+7. **Intent classification via prototype embeddings**: Cosine similarity against pre-embedded prototype queries, not keyword heuristics
+8. **Declarative routing table**: `HashMap<QueryIntent, RetrievalConfig>` — data, not code. New intents = new entries
+9. **Scored-only search API**: `search_*()` returns `Vec<(T, f32)>` — distance always available, single code path
+10. **Distance → relevance**: `1.0 / (1.0 + dist)` — simple, monotonic, metric-agnostic
+11. **Two-consumer SoC**: Context builder uses chunk content (ignores scores). Source builder uses scores (ignores content)
+12. **Mutex on Embedder**: Only resource needing synchronization (model weights)
+13. **htmx frontend**: Server-rendered HTML with async updates, minimal JS
+14. **Two-stage Docker**: Separate ingestion from query serving
 
-## Retrieval Configuration
+## Intent-Aware Retrieval
 
-| Chunk Type | Default Limit |
-|------------|---------------|
-| Code | 5 |
-| README | 2 |
-| Crate | 3 |
-| Module Docs | 3 |
+| Intent | code | readme | crate | module_doc |
+|--------|------|--------|-------|------------|
+| Overview | 5 | 3 | 3 | 3 |
+| Implementation | 5 | 1 | 1 | 2 |
+| Relationship | 5 | 1 | 2 | 2 |
+| Comparison | 5 | 2 | 3 | 2 |
 
 ## Build & Run
 

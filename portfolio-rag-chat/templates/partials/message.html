@@ -10,15 +10,16 @@
         <div class="answer">{{ answer }}</div>
         {% if !sources.is_empty() %}
         <details class="sources">
-            <summary>📚 Sources ({{ sources.len() }})</summary>
-            <ul>
+            <summary>Sources ({{ sources.len() }}) &mdash; intent: {{ intent }}</summary>
+            <ul class="source-list">
             {% for source in sources %}
-                <li>
-                    <code>{{ source.file }}</code>
-                    {% if let Some(project) = source.project %}
-                    <span class="project-tag">{{ project }}</span>
-                    {% endif %}
-                    <span class="line-info">L{{ source.line }}</span>
+                <li class="source-item">
+                    <span class="chunk-type chunk-type--{{ source.chunk_type }}">{{ source.chunk_type }}</span>
+                    <code class="source-path">{{ source.path }}</code>
+                    {% if source.line > 0 %}<span class="source-line">:{{ source.line }}</span>{% endif %}
+                    <span class="source-label">{{ source.label }}</span>
+                    <span class="source-project">[{{ source.project }}]</span>
+                    <span class="source-relevance">{{ source.relevance_pct }}%</span>
                 </li>
             {% endfor %}
             </ul>

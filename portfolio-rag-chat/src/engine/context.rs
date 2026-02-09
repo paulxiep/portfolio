@@ -1,4 +1,4 @@
-use super::retriever::RetrievalResult;
+use super::retriever::{RetrievalResult, ScoredChunk};
 use crate::models::{CrateChunk, ModuleDocChunk};
 
 /// System prompt - instructs the LLM how to behave
@@ -42,17 +42,20 @@ pub fn build_context(result: &RetrievalResult) -> String {
     sections.join("\n\n")
 }
 
-fn format_code_section(chunks: &[crate::models::CodeChunk]) -> String {
+fn format_code_section(chunks: &[ScoredChunk<crate::models::CodeChunk>]) -> String {
     let mut out = String::from("## Relevant Code\n");
 
-    for chunk in chunks {
-        let project = chunk.project_name.as_deref().unwrap_or("(root)");
+    for scored in chunks {
+        let chunk = &scored.chunk;
         out.push_str(&format!(
-            "\n### `{}` in {} ({}:{})\n```{}\n{}\n```\n",
-            chunk.identifier,
-            project,
-            chunk.file_path,
-            chunk.start_line,
+            "\n### `{}` in {} ({}:{})\n",
+            chunk.identifier, chunk.project_name, chunk.file_path, chunk.start_line,
+        ));
+        if let Some(ref doc) = chunk.docstring {
+            out.push_str(&format!("**Docs:** {}\n", doc));
+        }
+        out.push_str(&format!(
+            "```{}\n{}\n```\n",
             chunk.language,
             chunk.code_content.trim()
         ));
@@ -61,10 +64,11 @@ fn format_code_section(chunks: &[crate::models::CodeChunk]) -> String {
     out
 }
 
-fn format_readme_section(chunks: &[crate::models::ReadmeChunk]) -> String {
+fn format_readme_section(chunks: &[ScoredChunk<crate::models::ReadmeChunk>]) -> String {
     let mut out = String::from("## Project Documentation\n");
 
-    for chunk in chunks {
+    for scored in chunks {
+        let chunk = &scored.chunk;
         out.push_str(&format!(
             "\n### {}\n{}\n",
             chunk.project_name,
@@ -75,11 +79,11 @@ fn format_readme_section(chunks: &[crate::models::ReadmeChunk]) -> String {
     out
 }
 
-fn format_crate_section(chunks: &[CrateChunk]) -> String {
+fn format_crate_section(chunks: &[ScoredChunk<CrateChunk>]) -> String {
     let mut out = String::from("## Crate Structure\n");
 
-    for chunk in chunks {
-        let project = chunk.project_name.as_deref().unwrap_or("(root)");
+    for scored in chunks {
+        let chunk = &scored.chunk;
         let desc = chunk
             .description
             .as_deref()
@@ -92,22 +96,22 @@ fn format_crate_section(chunks: &[CrateChunk]) -> String {
 
         out.push_str(&format!(
             "\n### Crate `{}` ({})\n**Description:** {}\n**Local dependencies:** {}\n",
-            chunk.crate_name, project, desc, deps
+            chunk.crate_name, chunk.project_name, desc, deps
         ));
     }
 
     out
 }
 
-fn format_module_doc_section(chunks: &[ModuleDocChunk]) -> String {
+fn format_module_doc_section(chunks: &[ScoredChunk<ModuleDocChunk>]) -> String {
     let mut out = String::from("## Module Documentation\n");
 
-    for chunk in chunks {
-        let project = chunk.project_name.as_deref().unwrap_or("(root)");
+    for scored in chunks {
+        let chunk = &scored.chunk;
         out.push_str(&format!(
             "\n### Module `{}` ({})\n{}\n",
             chunk.module_name,
-            project,
+            chunk.project_name,
             truncate(&chunk.doc_content, 600)
         ));
     }
@@ -141,7 +145,12 @@ fn truncate(s: &str, max_chars: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::intent::QueryIntent;
     use crate::models::{CodeChunk, CrateChunk, ModuleDocChunk, ReadmeChunk};
+
+    fn scored<T>(chunk: T, score: f32) -> ScoredChunk<T> {
+        ScoredChunk { chunk, score }
+    }
 
     fn sample_code_chunk() -> CodeChunk {
         CodeChunk {
@@ -152,8 +161,11 @@ mod tests {
             code_content: "fn process_data(input: &str) -> Result<Output, Error> {\n    // ...\n}"
                 .into(),
             start_line: 42,
-            project_name: Some("my_project".into()),
+            project_name: "my_project".into(),
             docstring: None,
+            chunk_id: "test-uuid-1".into(),
+            content_hash: "test-hash-1".into(),
+            embedding_model_version: "BGESmallENV15_384".into(),
         }
     }
 
@@ -162,6 +174,9 @@ mod tests {
             file_path: "my_project/README.md".into(),
             project_name: "my_project".into(),
             content: "# My Project\n\nA data processing library.".into(),
+            chunk_id: "test-uuid-2".into(),
+            content_hash: "test-hash-2".into(),
+            embedding_model_version: "BGESmallENV15_384".into(),
         }
     }
 
@@ -171,7 +186,10 @@ mod tests {
             crate_path: "my_project/crates/my-crate".into(),
             description: Some("A utility crate".into()),
             dependencies: vec!["types".into(), "utils".into()],
-            project_name: Some("my_project".into()),
+            project_name: "my_project".into(),
+            chunk_id: "test-uuid-3".into(),
+            content_hash: "test-hash-3".into(),
+            embedding_model_version: "BGESmallENV15_384".into(),
         }
     }
 
@@ -180,17 +198,21 @@ mod tests {
             file_path: "my_project/src/lib.rs".into(),
             module_name: "my_module".into(),
             doc_content: "This module provides core functionality.".into(),
-            project_name: Some("my_project".into()),
+            project_name: "my_project".into(),
+            chunk_id: "test-uuid-4".into(),
+            content_hash: "test-hash-4".into(),
+            embedding_model_version: "BGESmallENV15_384".into(),
         }
     }
 
     #[test]
     fn test_build_context_with_code() {
         let result = RetrievalResult {
-            code_chunks: vec![sample_code_chunk()],
+            code_chunks: vec![scored(sample_code_chunk(), 0.9)],
             readme_chunks: vec![],
             crate_chunks: vec![],
             module_doc_chunks: vec![],
+            intent: QueryIntent::Implementation,
         };
 
         let context = build_context(&result);
@@ -205,9 +227,10 @@ mod tests {
     fn test_build_context_with_readme() {
         let result = RetrievalResult {
             code_chunks: vec![],
-            readme_chunks: vec![sample_readme_chunk()],
+            readme_chunks: vec![scored(sample_readme_chunk(), 0.8)],
             crate_chunks: vec![],
             module_doc_chunks: vec![],
+            intent: QueryIntent::Overview,
         };
 
         let context = build_context(&result);
@@ -221,8 +244,9 @@ mod tests {
         let result = RetrievalResult {
             code_chunks: vec![],
             readme_chunks: vec![],
-            crate_chunks: vec![sample_crate_chunk()],
+            crate_chunks: vec![scored(sample_crate_chunk(), 0.7)],
             module_doc_chunks: vec![],
+            intent: QueryIntent::Overview,
         };
 
         let context = build_context(&result);
@@ -238,7 +262,8 @@ mod tests {
             code_chunks: vec![],
             readme_chunks: vec![],
             crate_chunks: vec![],
-            module_doc_chunks: vec![sample_module_doc_chunk()],
+            module_doc_chunks: vec![scored(sample_module_doc_chunk(), 0.6)],
+            intent: QueryIntent::Implementation,
         };
 
         let context = build_context(&result);
@@ -255,6 +280,7 @@ mod tests {
             readme_chunks: vec![],
             crate_chunks: vec![],
             module_doc_chunks: vec![],
+            intent: QueryIntent::Implementation,
         };
 
         let context = build_context(&result);
@@ -269,6 +295,25 @@ mod tests {
         assert!(prompt.contains(SYSTEM_PROMPT));
         assert!(prompt.contains("## Code"));
         assert!(prompt.contains("What does process_data do?"));
+    }
+
+    #[test]
+    fn test_build_context_with_docstring() {
+        let mut chunk = sample_code_chunk();
+        chunk.docstring = Some("Processes input data and returns results.".into());
+
+        let result = RetrievalResult {
+            code_chunks: vec![scored(chunk, 0.9)],
+            readme_chunks: vec![],
+            crate_chunks: vec![],
+            module_doc_chunks: vec![],
+            intent: QueryIntent::Implementation,
+        };
+
+        let context = build_context(&result);
+
+        assert!(context.contains("**Docs:** Processes input data and returns results."));
+        assert!(context.contains("```rust"));
     }
 
     #[test]
