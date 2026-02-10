@@ -1,5 +1,99 @@
 # Development Log
 
+## 2026-02-09: V3.1 Retrieval Test Dataset (V3 Phase 1)
+
+### Summary
+
+Implemented the declarative test dataset schema for quantitative retrieval quality measurement. Pure data foundation with 37 test cases covering all 4 intent categories (overview, implementation, relationship, comparison) and 3 test tiers (hero, directional, smoke). Schema is implementation-agnostic with stable expectations (file paths, function names, not chunk IDs) that survive chunking strategy changes, embedding model swaps, and routing table updates. Zero coupling to retrieval engine — testable and validatable in isolation.
+
+### Architecture
+
+```
+data/test_queries.json (37 test cases, JSON)
+    |
+    v
+src/harness/dataset.rs: TestDataset::load() -> Result<TestDataset>
+    |
+    +-- TestDataset::validate() -> Vec<String>  (structural checks)
+    |
+    +-- TestDataset::filter_by_tag(tag) -> Vec<&TestCase>  (hero, smoke, etc.)
+```
+
+**Module Boundaries (V3.1):**
+- `dataset.rs` depends on: `serde`, `anyhow` ONLY
+- Does NOT depend on: `engine`, `store`, `coderag-types`
+- Unused until V3.2 (harness binary) — acceptable per plan
+
+### Changes
+
+| File | Status |
+|------|--------|
+| `src/harness/mod.rs` | **NEW** - Module root with re-exports |
+| `src/harness/dataset.rs` | **NEW** - TestDataset + TestCase types, load/filter/validate methods, 18 unit tests |
+| `data/test_queries.json` | **NEW** - 37 test cases (5 hero, 7 overview, 8 implementation, 5 relationship, 4 comparison, 7 smoke, 3 edge) |
+| `src/main.rs` | **MODIFIED** - Added `mod harness;` declaration |
+
+### Key Design Decisions
+
+1. **Pipeline-Agnostic Soft Expectations**: Smoke tests use `min_relevant_results` and `excluded_files` without specifying exact files. Tests survive any chunking/routing/embedding change unless quality catastrophically degrades.
+
+2. **Substring Matching for Files**: `"retriever.rs"` matches `"src/engine/retriever.rs"`. Survives directory restructuring. Validated with warning for overly generic patterns (< 8 chars, no '/').
+
+3. **Vacuous Satisfaction for No-Expectation Cases**: Smoke queries with zero `expected_files` + `expected_identifiers` return `recall = 1.0` (logically correct). Prevents polluting aggregate metrics.
+
+4. **Deduplication by Expected Value**: If `expected_files: ["retriever.rs"]` matches 2 chunk types (code + module_doc), counts as ONE hit. Aligns with user intent: "Did we find the file?" not "How many chunks?"
+
+5. **Forward-Compatible Schema**: All optional fields via `#[serde(default)]`. Future Track fields (A: `expected_folder_paths`, B: `expected_bm25_hits`, C: `expected_callers`) documented and additive.
+
+6. **Enhanced Validation**: Warns on duplicate IDs, empty IDs, unknown intents, overly broad file patterns, multiple tier tags. Enforces test authoring discipline from day one.
+
+### Test Coverage
+
+**37 test cases:**
+- Hero (5): 2 V1 (retriever, incremental-ingestion), 2 V2 (chat-endpoint, intent-classifier), 1 overview (project-overview)
+- Overview (7): architecture, RAG approach, workspace structure, vector database, embedding model, coderag-types, project
+- Implementation (8): embedding generation, vector store, query routing, context building, code parsing, docstring extraction, language handlers, incremental ingestion
+- Relationship (5): what calls retrieve, coderag-types usage, embedder usage, intent classifier callers, vector store dependencies
+- Comparison (4): retriever vs generator, chunk types, code-raptor vs rag-chat, BGE vs other models
+- Smoke (7): retrieval overview, code structure, embedding system, query pipeline, auth exclusion, PostgreSQL exclusion, general quality
+- Edge (3): quantum flux capacitor (no results), ambiguous "store" query, typo resilience
+
+**18 unit tests:**
+- Serde round-trip, filter_by_tag (hero/nonexistent), validate (good/empty ID/duplicate IDs/unknown intent/zero cases)
+- Minimal case (only id+query), unknown fields ignored, min_relevant_results (round-trip/absent), excluded_files (round-trip/absent)
+- Smoke case (soft expectations only), short file pattern warning, multiple tier tags warning
+- **Integration test**: `test_load_test_corpus` validates actual data/test_queries.json
+
+### Success Criteria (V3.1 Spec)
+
+✅ 30-45 test cases (37 delivered)
+✅ At least 2 hero from V1 + 2 from V2 (5 total)
+✅ At least 5 smoke queries (7 delivered)
+✅ At least 3 edge cases (3 delivered)
+✅ All 4 intent categories covered
+✅ Schema validates correctly
+✅ `TestDataset::validate()` returns zero warnings on corpus
+
+### Quality Checks
+
+```bash
+cargo fmt         # ✅ No changes needed
+cargo clippy      # ✅ Zero warnings (unused import warnings expected — module unused until V3.2)
+cargo test        # ✅ 46 passed (18 harness tests + 28 existing)
+```
+
+### What V3.1 Does NOT Include
+
+- ❌ `src/lib.rs` extraction (V3.2 prerequisite)
+- ❌ `runner.rs`, `matching.rs`, `metrics.rs`, `report.rs` (V3.2)
+- ❌ Second binary target `src/bin/harness.rs` (V3.2)
+- ❌ Harness execution logic (V3.2)
+- ❌ Running the harness / baseline measurement (V3.3)
+
+V3.1 delivers the **complete data foundation** — schema + test cases ready for V3.2 execution capability and V3.3 baseline measurement.
+
+---
+
 ## 2026-02-08: V2.3 Retrieval Traces (V2 Phase 3)
 
 ### Summary
