@@ -1,0 +1,21 @@
+id,category,revenue,signup_date,is_active,notes
+1,Electronics,1200.50,2024-01-15,True,Returning customer
+2,Clothing,450.75,2024-02-20,False,New signup
+3,Electronics,2300.00,2024-03-10,True,Bulk order
+4,Food,120.25,2024-04-05,True,Regular
+5,Clothing,890.00,2024-05-12,False,Seasonal
+6,Electronics,3100.50,2024-06-18,True,Premium member
+7,Food,210.00,2024-07-22,True,Subscription
+8,Clothing,675.25,2024-08-30,False,Clearance
+9,Food,340.75,2024-09-14,True,Weekly buyer
+10,Electronics,1800.00,2024-10-01,True,Corporate account
+11,Food,95.50,2024-10-15,False,First purchase
+12,Clothing,520.00,2024-11-02,True,Return visitor
+13,Electronics,4200.75,2024-11-20,True,Holiday special
+14,Food,180.25,2024-12-05,False,Gift purchase
+15,Clothing,760.50,2024-12-18,True,Year-end sale
+16,Electronics,2750.00,2025-01-08,True,New year promo
+17,Food,415.75,2025-01-22,True,Loyalty reward
+18,Clothing,330.00,2025-02-14,False,Valentine deal
+19,Food,275.50,2025-03-01,True,Monthly sub
+20,Electronics,1950.25,2025-03-15,True,Tech upgrade
