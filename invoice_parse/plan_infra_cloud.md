@@ -40,7 +40,7 @@ Define everything needed to deploy the locally-working system to cloud. Covers i
 - **Networking**: VPC, subnets, security groups
 - **Database**: RDS Postgres instance, parameter group
 - **Storage**: S3 bucket with tenant-prefixed paths
-- **Queue**: SQS queues (Queue A, Queue B) + dead-letter queues
+- **Queue**: SQS queues (Queue A, Queue B) + dead-letter queues. **Visibility timeout: 15 minutes** (FM-2.2) — well above worst-case processing time. Workers must call `ChangeMessageVisibility` periodically (heartbeat) during long-running jobs to prevent redelivery.
 - **Compute**: ECS cluster, task definitions for each service, Fargate launch type
 - **Container registry**: ECR repositories per service
 - **Load balancer**: ALB for Ingestion service (webhook endpoint)
@@ -114,13 +114,16 @@ infra/terraform/
 
 ## Monitoring & Logging
 
-- **Logs**: All services log to stdout → CloudWatch Logs via ECS log driver
+- **Logs**: All services log to stdout → CloudWatch Logs via ECS log driver. **Structured JSON logging with `job_id` in every log line** across all services (FM-CC.1)
 - **Metrics**: CloudWatch custom metrics for queue depth, processing latency, error rates
 - **Alerts**: CloudWatch alarms for:
   - Queue depth > threshold (processing backlog)
   - Error rate > threshold
   - ECS task failures
   - RDS connection/storage thresholds
+  - **LLM provider circuit breaker open** (FM-7.2): Alert when any provider is in circuit-breaker-open state
+  - **Delivery failure rate** (FM-2.3): Alert when `delivery_failed` jobs exceed threshold
+  - **Jobs stuck in intermediate states** (FM-2.1): Alert when jobs have been in `ocr_processing` or `extracting` for > 10 minutes
 
 ---
 
@@ -138,3 +141,5 @@ infra/terraform/
 - Auto-scaling ECS tasks based on SQS queue depth
 - Cost monitoring and budgets
 - Staging environment for pre-production validation
+- **Golden test set CI job** (FM-CC.2): Weekly scheduled GitHub Action runs extraction pipeline against 20-30 invoices with known-correct extractions. Alerts if per-field accuracy drops below threshold. Catches silent model degradation from provider updates.
+- **LLM API key validation on deploy** (FM-7.2): Post-deploy health check calls each LLM provider with a trivial extraction test. Fails deployment if any key is invalid or expired.

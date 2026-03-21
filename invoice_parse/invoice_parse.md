@@ -191,17 +191,20 @@ Good: [{row: ["Widget A", "5"]}, {row: ["Hostess", "3"]}]  (preserved)
 1. **Schema validation** (Pydantic)
    - Required fields present
    - Types correct
+   - Format validators: `invoice_date` must be YYYY-MM-DD, `currency` must be ISO 4217
    - Enum values valid
 
 2. **Business logic validation**
-   - VAT math: `total_excl_vat × vat_rate ≈ vat_amount`
+   - VAT math: `total_excl_vat × (1 + vat_rate/100) ≈ vat_amount` (skip if `vat_rate` null; derive from `vat_amount / total_excl_vat`)
    - Date sanity
    - Currency consistency
-   - Line items sum to totals
+   - Line items sum to totals — **adaptive tolerance**: `max(0.01, 0.005 × len(line_items))`
+   - Subtotal detection: flag line items whose total equals sum of other items in same section
+   - Number format cross-check: regex-parsed monetary amounts vs LLM-extracted values
 
 **Confidence scoring:**
-- LLM provides confidence per field (if supported)
-- Validation failures lower confidence
+- Do **not** rely on LLM self-reported confidence (unreliable)
+- Build from: validation checks passed/possible, PaddleOCR confidence scores, field completeness, format consistency, LLM logprobs (if available)
 - Low confidence → flagged for review (future: human-in-loop)
 
 ### 5.4 Output Layer
@@ -246,10 +249,13 @@ Good: [{row: ["Widget A", "5"]}, {row: ["Hostess", "3"]}]  (preserved)
 ### 6.2 Job Status Flow
 
 ```
-queued → ocr_processing → ocr_done → extracting → extracted → validating → done
-                │                         │              │
-                ▼                         ▼              ▼
-            ocr_failed            extraction_failed  needs_review
+queued → ocr_processing → ocr_done → extracting → extracted → validating → done → output_generated → delivered
+              │                          │               │                                │
+              ▼                          ▼               ▼                                ▼
+          ocr_failed            extraction_failed   needs_review                   delivery_failed
+              │ (retry)                  │ (retry)       │ (manual)
+              ▼                          ▼               ▼
+           queued                     ocr_done      reviewed / accepted / corrected
 ```
 
 ### 6.3 Queue Message Schemas
@@ -290,9 +296,9 @@ Design for local development with 1:1 cloud migration.
 | Ingestion | Rust container | ECS Fargate |
 | Processing | Python container | ECS Fargate |
 | Output | Rust container | ECS Fargate |
-| Queue | Redis | SQS |
+| Queue | Redis Streams | SQS |
 | Blob storage | Local filesystem | S3 |
-| Database | SQLite | RDS Postgres |
+| Database | Postgres (Docker) | RDS Postgres |
 | Dashboard | Streamlit local | App Runner |
 
 **Abstraction layer:**
@@ -384,41 +390,71 @@ docker-compose up  # All services + Redis (SQLite for POC, no Postgres container
 | 7. Dashboard | 30 min | Streamlit showing job status |
 
 **POC simplifications:**
-- SQLite instead of Postgres
-- Local filesystem instead of blob storage
-- Single tenant
+- Postgres via Docker (same as prod — eliminates SQLite behavioral differences)
+- Local filesystem instead of S3 blob storage
+- Two test tenants (verify isolation from day one)
 - Polling instead of webhooks (ngrok for demo)
 
 ---
 
-## 11. Production Readiness Checklist
+## 11. Cross-Cutting Concerns (from Failure Mode Analysis)
 
-- [ ] Multi-tenant isolation
-- [ ] Retry + dead-letter handling
-- [ ] Per-tenant rate limits
-- [ ] Confidence scoring + low-confidence flagging
-- [ ] Observability (cost, latency, accuracy per field)
-- [ ] Schema versioning
-- [ ] Secrets management
-- [ ] CI/CD pipeline
-- [ ] Monitoring alerts
+### 11.1 End-to-End Request Tracing (FM-CC.1)
+- Include `job_id` in every log line in every service (Rust + Python)
+- Structured JSON logging across all services
+- Include `job_id` in queue messages (already done) and Telegram replies (for user↔operator correlation)
+
+### 11.2 Silent Model Degradation Detection (FM-CC.2)
+- **Golden test set**: 20-30 invoices with known-correct extractions
+- Run extraction pipeline against test set weekly (scheduled CI job)
+- Alert if per-field accuracy drops below threshold
+- Pin LLM model version where possible (Gemini supports specifying version)
+- Log full LLM responses (not just parsed extractions) for replay and investigation
+
+### 11.3 Idempotency
+- Ingestion: dedup on Telegram `file_unique_id` — prevents duplicate jobs from webhook retries
+- Processing: check if job is already in terminal state before starting — prevents duplicate processing from SQS redelivery
+- Output: check if job is already `delivered` before processing — prevents duplicate Excel delivery
+
+### 11.4 Queue Semantics
+- Use Redis Streams (not lists) locally — supports message reclaim on worker crash
+- SQS visibility timeout set to 15 minutes with heartbeat extension during processing
+- Reaper process: re-enqueue jobs stuck in intermediate states > 10 minutes
 
 ---
 
-## 12. Summary
+## 12. Production Readiness Checklist
+
+- [ ] Multi-tenant isolation (with `WHERE tenant_id = ?` on every query from day one)
+- [ ] Retry + dead-letter handling (state machine supports retry transitions)
+- [ ] Per-tenant rate limits
+- [ ] Confidence scoring from validation signals (not LLM self-report)
+- [ ] Observability (cost, latency, accuracy per field, delivery success rate)
+- [ ] Schema versioning
+- [ ] Secrets management
+- [ ] CI/CD pipeline (including golden test set regression job)
+- [ ] Monitoring alerts (queue depth, error rate, stuck jobs, circuit breaker, delivery failures)
+- [ ] End-to-end request tracing with job_id
+- [ ] LLM provider circuit breaker + fallback integration tests
+- [ ] Idempotency at every service boundary
+
+---
+
+## 13. Summary
 
 **Key architectural decisions:**
 
-1. **Separate OCR from LLM** — cost efficiency, text tokens are 10-50x cheaper than image tokens
-2. **Layout-aware OCR** — preserves table structure critical for invoices
+1. **Separate OCR from LLM** — cost efficiency, text tokens are 10-50x cheaper than image tokens. Vision model fallback only when OCR table detection fails.
+2. **Layout-aware OCR** — preserves table structure critical for invoices. Structural completeness check catches detection failures.
 3. **Service split by scaling needs** — not by function, not by language
 4. **Rust for I/O-bound services** — low memory, high concurrency
 5. **Python where required** — OCR libraries, dashboard (Streamlit)
-6. **Queue-based async** — decouples services, enables retry, absorbs bursts
-7. **Local-cloud equivalence** — same containers, different config
+6. **Queue-based async** — Redis Streams (not lists) locally, SQS with visibility heartbeat in cloud. Idempotency at every boundary.
+7. **Local-cloud equivalence** — Postgres in both environments. Adapter pattern for blob + queue.
 
 **The senior MLE signal:**
 - Problem framing over blind execution
 - Trade-off reasoning documented
 - Production concerns addressed in POC design
 - Clear "what we're not building" boundaries
+- **Failure mode analysis**: 20 concrete failure modes identified and mitigated across all design decisions

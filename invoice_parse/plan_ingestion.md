@@ -47,14 +47,16 @@ Receive invoice documents from external channels (Telegram, email), authenticate
 ## API / Endpoints
 
 ### `POST /webhook/telegram`
-- Receives Telegram update
-- Validates it contains a document
-- Identifies tenant from chat_id
-- Downloads file from Telegram servers
-- Writes to blob storage
-- Creates job record in DB
-- Publishes to Queue A
-- Responds 200 OK (async processing)
+1. Receives Telegram update
+2. Validates it contains a document
+3. **Return 200 OK immediately** (FM-11.2) — Telegram retries if response is slow. All subsequent steps run asynchronously (spawned task).
+4. **Dedup check** (FM-11.2): Check if a job with same `file_unique_id` already exists for this tenant. If so, skip (idempotent).
+5. Identifies tenant from chat_id. If unknown → reply to user with rejection message, do not silently drop (FM-4.1).
+6. **Check file size** (FM-11.1): Use `getFile` response to check `file_size` before downloading. If > 20MB, reply to user: "File too large. Please compress the PDF or send as images." Do not create job record.
+7. Downloads file from Telegram servers
+8. Writes to blob storage
+9. Creates job record in DB (with `source_file_unique_id` for future dedup)
+10. Publishes to Queue A
 
 ### `GET /health`
 - Returns service health status
@@ -85,7 +87,7 @@ Receive invoice documents from external channels (Telegram, email), authenticate
 - Lookup table: `source_identifier → tenant_id`
 - Telegram: `chat_id` mapped to tenant
 - Email: sender domain or specific address mapped to tenant
-- Unknown source → reject with error message
+- Unknown source → **always reply to user** (FM-4.1): "This bot is not configured for your account. Contact [admin] to register." Log unregistered attempts with `chat_id` for operator visibility. Never return 200 to Telegram without informing the user.
 
 ---
 
@@ -109,6 +111,7 @@ Receive invoice documents from external channels (Telegram, email), authenticate
 - Webhook signature validation for Telegram
 - Email channel support (SendGrid inbound parse or IMAP)
 - Multi-tenant lookup and rate limiting
-- Request logging and tracing (correlation ID = job_id)
+- Request logging and tracing (correlation ID = job_id) — **structured JSON logging with job_id in every log line** (FM-CC.1)
 - Graceful shutdown (drain in-flight requests)
 - Health check endpoint for ECS/ALB
+- **Telegram Local Bot API** (FM-11.1): Self-hosted Telegram Bot API server removes the 20MB file download limit. Consider for production if large scanned PDFs are common.
