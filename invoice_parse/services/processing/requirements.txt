@@ -1,0 +1,2 @@
+# Pinned deps for Docker build — generated from pyproject.toml
+# TODO: populate when service dependencies are finalized

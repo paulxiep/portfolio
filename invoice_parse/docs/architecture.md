@@ -143,6 +143,27 @@ The pipeline is **linear** (OCR → LLM → Validation), **event-driven** (invoi
 
 ---
 
+## 4.5 Why Not an Agentic Workflow
+
+We considered an agentic workflow where the LLM iteratively refines its extraction — deciding what to do next, whether to re-OCR a region, or whether to call a different tool. We rejected it for this use case.
+
+Invoice extraction is a structured, repeatable task. Agentic loops add latency and cost without improving accuracy compared to a well-prompted single-pass extraction with deterministic validation. The validation layer already catches errors the LLM makes; re-running the LLM on the same input rarely fixes them.
+
+**Instead, the processing pipeline includes conditional fallback paths that provide the adaptability of an agentic workflow without the unpredictability and cost:**
+
+| Conditional branch | Deterministic trigger | Action |
+|---|---|---|
+| Vision model fallback | OCR detects no table regions but monetary patterns exist in text (FM-1.1) | Re-process with vision model for that specific job |
+| LLM provider failover | Primary API fails N times consecutively (FM-7.1) | Circuit breaker routes to next provider in chain |
+| VAT rate derivation | `vat_rate` is null (FM-5.1) | Compute from `vat_amount / total_excl_vat` |
+| Human escalation | Confidence score below threshold (FM-8.1) | Flag as `needs_review`, deliver with warning |
+
+Each branch has a clear condition and a predetermined action — no LLM deciding what to do next. The pipeline is smarter than a naive linear flow, but it is still a pipeline.
+
+**When agents would be justified:** If the system needed to handle arbitrary document types (not just invoices), or if extraction accuracy plateaued and self-correction loops showed measurable improvement, an agentic approach would be worth the added complexity and cost.
+
+---
+
 ## 5. Component Design
 
 ### 5.1 OCR Layer
@@ -458,3 +479,4 @@ docker-compose up  # All services + Redis (SQLite for POC, no Postgres container
 - Production concerns addressed in POC design
 - Clear "what we're not building" boundaries
 - **Failure mode analysis**: 20 concrete failure modes identified and mitigated across all design decisions
+

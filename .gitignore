@@ -6,6 +6,7 @@ sim.db*
 *.parquet
 *.pkl
 *.pyc
+.venv/
 
 # Frontend (quant-trading-gym)
 quant-trading-gym/frontend/node_modules/

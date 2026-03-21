@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "invoice-dashboard"
+version = "0.1.0"
+description = "Invoice pipeline monitoring dashboard — Streamlit"
+requires-python = ">=3.12"
+dependencies = [
+    "invoice-shared",
+    "streamlit>=1.40",
+]
+
+[tool.setuptools.packages.find]
+include = ["dashboard*"]
