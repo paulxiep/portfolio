@@ -1,0 +1,11 @@
+database:
+  url: postgresql+psycopg://invoice:invoice@postgres:5432/invoice_parse
+
+blob_storage:
+  type: local_fs
+  base_path: /data/blobs
+
+queue:
+  type: redis_stream
+  url: redis://redis:6379
+  consumer_group: invoice_workers

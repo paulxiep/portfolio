@@ -1,0 +1,16 @@
+# Production config — values sourced from environment variables / Secrets Manager
+# This file defines the structure; actual secrets are injected at deploy time.
+
+database:
+  url: ${DATABASE_URL}
+
+blob_storage:
+  type: s3
+  bucket: ${S3_BUCKET}
+  region: ${AWS_REGION}
+
+queue:
+  type: sqs
+  queue_a_url: ${SQS_QUEUE_A_URL}
+  queue_b_url: ${SQS_QUEUE_B_URL}
+  region: ${AWS_REGION}

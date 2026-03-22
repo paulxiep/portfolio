@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "invoice-processing"
+version = "0.1.0"
+description = "Invoice processing service — OCR, LLM extraction, validation"
+requires-python = ">=3.12"
+dependencies = [
+    "invoice-shared",
+    "paddleocr>=3.4.0",
+    "paddlepaddle>=3.2.0,<3.3",  # 3.3.0 has PIR/oneDNN CPU inference bug
+    "pymupdf>=1.27",
+    "google-genai>=1.68",
+    "anthropic>=0.86",
+    "openai>=2.29",
+    "pillow>=12.1",
+    "python-dotenv>=1.2",
+]
+
+[project.scripts]
+invoice-process-cli = "invoice_processing.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["invoice_processing*"]
