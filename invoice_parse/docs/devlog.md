@@ -100,17 +100,43 @@ Scaffolded the full processing pipeline across 4 modules + CLI entry point. **OC
 - On sample invoice, PPStructureV3 detects 5 blocks: 3 titles + 2 tables (header table + Job table). The Misc section (3 line items), VAT summary, and bottom totals are undetected — the layout model cuts off at ~84% page height.
 - PPStructureV3 bbox for the Job table (y=1645–2938) is larger than the content it actually extracted, swallowing the Misc section spatially without extracting it.
 
-**Hybrid OCR approach:**
-- Run both PPStructureV3 (for table structure with HTML) and basic PaddleOCR (for full-page text with bbox coordinates).
-- PPStructureV3 provides structured table HTML for detected regions.
-- Raw PaddleOCR provides (text, x, y) for every line on the page.
-- Dynamic row grouping: sort all lines by y, detect natural gaps between consecutive y-values (gap > 2× median = cluster boundary). Lines in the same y-cluster are same row, joined by tab.
-- Dynamic region detection: y-gaps > 3× median row gap insert `---` separators, giving the LLM section boundaries without hardcoded thresholds.
-- No bbox filtering of raw text — PPStructureV3 bboxes are unreliable as coverage claims. The LLM gets both views: structured tables + full spatial raw text.
-- Result: all 7 line items (4 Job + 3 Misc), VAT 20% = 461 CZK, and totals are captured.
+**Separation of concerns refactor — ocr.py / table_extract.py / extraction.py:**
+
+Initial implementation had `ocr.py` doing raw OCR + PPStructureV3 + spatial clustering + LLM prompt formatting — too many concerns in one module. Refactored into:
+
+| Module | Responsibility |
+|--------|---------------|
+| `ocr.py` | Pure raw OCR. PDF/image → `RawOcrOutput` with `list[OcrLine(text, x, y)]` per page. No table logic. |
+| `table_extract.py` | Table reconstruction from raw OCR or layout models. `TableExtractor` ABC with two strategies: `SpatialClusterExtractor` (gap-based coordinate clustering) and `PPStructureExtractor` (PPStructureV3 layout detection). Both output `TableExtractionOutput`. |
+| `extraction.py` | LLM extraction. Receives **either or both** raw OCR and table extraction. Prompt builder composes whichever inputs are available with clear section headers. |
+
+Design rationale:
+- LLM is likely more robust at inferring table structure from coordinates than hardcoded clustering, especially across diverse invoice layouts. Separating concerns allows swapping strategies or sending raw coordinates directly to LLM.
+- `extraction.py` accepts `raw_ocr: RawOcrOutput | None` and `table_extraction: TableExtractionOutput | None`. CLI flags control which inputs to provide: `--table-method spatial_cluster|ppstructure|none`, `--raw-only`.
+- `SpatialClusterExtractor`: dynamic gap detection for row grouping (gap > 2× median y-gap = new row) and region boundaries (gap > 3× median row gap = separator). No hardcoded pixel thresholds.
+- PPStructureV3 bboxes unreliable as coverage claims (Job table bbox swallowed Misc section without extracting it). Each extractor is self-contained rather than trying to filter/merge.
+
+**Image format support:**
+- `process_ocr()` now accepts PDF and image files (PNG, JPG, WEBP). Detects format by filename extension or PDF magic bytes.
+- Tested on 17 invoice files (1 PDF, 16 images in various formats). All processed successfully, 37–106 OCR lines per file.
 
 **Dockerfile iterations:**
 - `python:3.12-slim` base requires `libgl1 libglib2.0-0 libgomp1` for OpenCV + PaddlePaddle.
 - `paddlex[ocr]` extra required for PPStructureV3 (not installed by `paddleocr` alone).
 - Build context must be project root (`invoice_parse/`) for shared lib access. Docker Compose profile `processing` added.
 - `.env.sample` for API keys; `python-dotenv` loads `.env` in CLI and worker entry points.
+
+### End-to-end extraction testing
+
+Tested full pipeline (OCR → spatial cluster table extraction → Gemini 2.5 Flash → validation) on 3 invoices:
+
+| Invoice | Items | Confidence | Validation | Notes |
+|---------|-------|------------|------------|-------|
+| `sample_invoice.pdf` (CZK, Job+Misc) | 7/7 correct | 100% | All passed | Dates `2.7.` vs `12.7.` — OCR boundary splits `1` into shift label. LLM correctly reads what OCR gives it. |
+| `invoice-example.webp` (EUR, spices) | 4/4 correct | 96% | All passed | Clean extraction. European format handled. |
+| `Purchase-Invoice.webp` (INR, electronics) | 3 extracted | 68% | **Failed: vat_sum, line_items_sum** | `total_incl_vat` misread (2.1M vs expected 504K). Power Strips tariff×qty math wrong. Correctly flagged `needs_review`. |
+
+Observations:
+- Validation catches real problems: VAT arithmetic and line items sum failures correctly flag bad extractions for review.
+- OCR text boundary issues (date digits absorbed into adjacent text) are an inherent limitation of line-level OCR — not fixable at extraction layer.
+- Indian invoice with large numbers (INR 280,000+) had OCR/extraction errors on totals. Likely OCR misread on dense number-heavy layout.

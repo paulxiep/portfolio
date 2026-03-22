@@ -1,9 +1,11 @@
 """Queue consumer loop — pulls from Queue A, runs pipeline, publishes to Queue B.
 
 Responsibilities:
-- Orchestrate OCR → extraction → validation (delegates all logic to modules)
+- Orchestrate OCR → table extraction → LLM extraction → validation
 - Manage DB state transitions (optional — skipped in CLI mode)
 - Queue consumption with graceful shutdown
+
+All domain logic is delegated to ocr, table_extract, extraction, and validation modules.
 """
 
 from __future__ import annotations
@@ -11,13 +13,11 @@ from __future__ import annotations
 import json
 import logging
 import signal
-import sys
-from datetime import datetime, timezone
 
 from invoice_shared.adapters.blob_store import BlobStore
+from invoice_shared.adapters.factory import create_blob_store, create_queue
 from invoice_shared.adapters.queue import MessageQueue
 from invoice_shared.config import load_config
-from invoice_shared.adapters.factory import create_blob_store, create_queue
 from invoice_shared.db import get_session, session_factory, transition_job
 from invoice_shared.models import (
     InvoiceExtraction,
@@ -28,6 +28,7 @@ from invoice_shared.models import (
 
 from .extraction import LLMExtractor, create_extractor
 from .ocr import process_ocr
+from .table_extract import TableExtractor, create_table_extractor
 from .validation import ValidationResult, validate_extraction
 
 logger = logging.getLogger(__name__)
@@ -46,8 +47,9 @@ def run_pipeline(
     blob_store: BlobStore,
     db_session_factory=None,
     extractor: LLMExtractor | None = None,
+    table_extractor: TableExtractor | None = None,
 ) -> tuple[dict, ValidationResult]:
-    """Run the full OCR → extraction → validation pipeline.
+    """Run the full OCR → table extraction → LLM extraction → validation pipeline.
 
     Args:
         pdf_bytes: Raw PDF file content.
@@ -56,6 +58,7 @@ def run_pipeline(
         blob_store: Where to write intermediate artifacts.
         db_session_factory: SQLAlchemy session factory. None to skip DB transitions.
         extractor: LLM extractor instance. Defaults to Gemini.
+        table_extractor: Table extraction strategy. Defaults to SpatialCluster.
 
     Returns:
         (extraction_dict, validation_result)
@@ -68,22 +71,32 @@ def run_pipeline(
         with get_session(db_session_factory) as session:
             transition_job(session, job_id, status)
 
-    # --- Substep 1: OCR ---
+    # --- Substep 1: Raw OCR ---
     _transition(JobStatus.OCR_PROCESSING)
-    ocr_output = process_ocr(pdf_bytes)
+    raw_ocr, images = process_ocr(pdf_bytes)
     blob_store.put(
-        f"{blob_prefix}/ocr_output.json",
-        json.dumps(ocr_output.to_dict(), ensure_ascii=False).encode(),
+        f"{blob_prefix}/raw_ocr.json",
+        json.dumps(raw_ocr.to_dict(), ensure_ascii=False).encode(),
     )
     _transition(JobStatus.OCR_DONE)
-    logger.info("OCR complete — %d page(s), tables=%s", len(ocr_output.pages), ocr_output.has_table_regions)
+    logger.info("OCR complete — %d page(s), %d lines",
+                len(raw_ocr.pages), sum(len(p.lines) for p in raw_ocr.pages))
+
+    # --- Substep 1b: Table extraction ---
+    if table_extractor is None:
+        table_extractor = create_table_extractor("spatial_cluster")
+    table_extraction = table_extractor.extract(raw_ocr, images)
+    blob_store.put(
+        f"{blob_prefix}/table_extraction.json",
+        json.dumps(table_extraction.to_dict(), ensure_ascii=False).encode(),
+    )
+    logger.info("Table extraction complete (method=%s)", table_extraction.method)
 
     # --- Substep 2: LLM extraction ---
     _transition(JobStatus.EXTRACTING)
     if extractor is None:
         extractor = create_extractor("gemini")
-    ocr_text = ocr_output.to_prompt_text()
-    extraction = extractor.extract(ocr_text)
+    extraction = extractor.extract(raw_ocr=raw_ocr, table_extraction=table_extraction)
     extraction_dict = extraction.model_dump()
     blob_store.put(
         f"{blob_prefix}/extraction.json",
@@ -94,7 +107,8 @@ def run_pipeline(
 
     # --- Substep 3: Validation ---
     _transition(JobStatus.VALIDATING)
-    validation = validate_extraction(extraction, ocr_output.avg_confidence)
+    ocr_confidence = 1.0  # TODO: derive from table extraction quality signals
+    validation = validate_extraction(extraction, ocr_confidence)
 
     target = JobStatus.NEEDS_REVIEW if validation.needs_review else JobStatus.DONE
     if db_session_factory is not None:

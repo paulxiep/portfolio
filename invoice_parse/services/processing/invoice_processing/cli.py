@@ -2,6 +2,9 @@
 
 Usage:
     python -m invoice_processing.cli path/to/invoice.pdf [--provider gemini] [--output-dir ./output] [--ocr-only] [-v]
+    python -m invoice_processing.cli path/to/invoice.pdf --table-method ppstructure
+    python -m invoice_processing.cli path/to/invoice.pdf --table-method spatial_cluster
+    python -m invoice_processing.cli path/to/invoice.pdf --raw-only  (send only raw OCR to LLM)
 
 No Redis or Postgres required. Uses local filesystem and skips DB state transitions.
 """
@@ -14,12 +17,12 @@ import logging
 from pathlib import Path
 
 from .ocr import process_ocr
+from .table_extract import create_table_extractor
 from .extraction import create_extractor
 from .validation import validate_extraction
 
 
 def main() -> None:
-    # Load .env file if present (for GEMINI_API_KEY etc.)
     from dotenv import load_dotenv
 
     load_dotenv()
@@ -33,6 +36,17 @@ def main() -> None:
         help="LLM provider (default: gemini)",
     )
     parser.add_argument(
+        "--table-method",
+        default="spatial_cluster",
+        choices=["spatial_cluster", "ppstructure", "none"],
+        help="Table extraction method (default: spatial_cluster)",
+    )
+    parser.add_argument(
+        "--raw-only",
+        action="store_true",
+        help="Send only raw OCR to LLM (no table extraction)",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path("./output"),
@@ -41,7 +55,7 @@ def main() -> None:
     parser.add_argument(
         "--ocr-only",
         action="store_true",
-        help="Run only OCR step, skip LLM extraction and validation",
+        help="Run only OCR + table extraction, skip LLM and validation",
     )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
@@ -52,35 +66,46 @@ def main() -> None:
     )
     logger = logging.getLogger(__name__)
 
-    # Read PDF
     pdf_bytes = args.pdf_path.read_bytes()
     logger.info("Read %d bytes from %s", len(pdf_bytes), args.pdf_path)
-
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     # --- OCR ---
     logger.info("Running OCR...")
-    ocr_output = process_ocr(pdf_bytes)
+    raw_ocr, images = process_ocr(pdf_bytes, filename=args.pdf_path.name)
 
-    ocr_path = args.output_dir / "ocr_output.json"
-    ocr_path.write_text(json.dumps(ocr_output.to_dict(), indent=2, ensure_ascii=False))
-    logger.info("OCR output written to %s", ocr_path)
-    logger.info(
-        "OCR avg confidence: %.3f, tables found: %s",
-        ocr_output.avg_confidence,
-        ocr_output.has_table_regions,
-    )
+    ocr_path = args.output_dir / "raw_ocr.json"
+    ocr_path.write_text(json.dumps(raw_ocr.to_dict(), indent=2, ensure_ascii=False))
+    logger.info("Raw OCR written to %s", ocr_path)
+
+    # --- Table extraction ---
+    table_extraction = None
+    if not args.raw_only and args.table_method != "none":
+        logger.info("Running table extraction (%s)...", args.table_method)
+        table_extractor = create_table_extractor(args.table_method)
+        table_extraction = table_extractor.extract(raw_ocr, images)
+
+        table_path = args.output_dir / "table_extraction.json"
+        table_path.write_text(json.dumps(table_extraction.to_dict(), indent=2, ensure_ascii=False))
+        logger.info("Table extraction written to %s", table_path)
 
     if args.ocr_only:
-        print("\n=== OCR TEXT ===")
-        print(ocr_output.to_prompt_text())
+        if table_extraction:
+            print("\n=== TABLE EXTRACTION ===")
+            print(table_extraction.to_prompt_text())
+        print("\n=== RAW OCR ===")
+        for page in raw_ocr.pages:
+            for line in page.lines:
+                print(f"  x={line.x:5d} y={line.y:5d}  {line.text}")
         return
 
-    # --- Extraction ---
+    # --- LLM Extraction ---
     logger.info("Running LLM extraction with %s...", args.provider)
     extractor = create_extractor(args.provider)
-    ocr_text = ocr_output.to_prompt_text()
-    extraction = extractor.extract(ocr_text)
+    extraction = extractor.extract(
+        raw_ocr=raw_ocr,
+        table_extraction=table_extraction,
+    )
     extraction_dict = extraction.model_dump()
 
     extraction_path = args.output_dir / "extraction.json"
@@ -89,7 +114,8 @@ def main() -> None:
 
     # --- Validation ---
     logger.info("Running validation...")
-    validation = validate_extraction(extraction, ocr_output.avg_confidence)
+    ocr_confidence = 1.0 if table_extraction else 0.5
+    validation = validate_extraction(extraction, ocr_confidence)
 
     validation_path = args.output_dir / "validation.json"
     validation_data = {
@@ -97,12 +123,7 @@ def main() -> None:
         "needs_review": validation.needs_review,
         "summary": validation.summary,
         "checks": [
-            {
-                "name": c.name,
-                "passed": c.passed,
-                "skipped": c.skipped,
-                "detail": c.detail,
-            }
+            {"name": c.name, "passed": c.passed, "skipped": c.skipped, "detail": c.detail}
             for c in validation.checks
         ],
     }

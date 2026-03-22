@@ -7,6 +7,8 @@ sim.db*
 *.pkl
 *.pyc
 .venv/
+invoices/
+output/
 
 # Frontend (quant-trading-gym)
 quant-trading-gym/frontend/node_modules/
