@@ -1,9 +1,9 @@
 # Ingestion Service
 
 ## Purpose
-Receive invoice documents from external channels (Telegram, email), authenticate the source, store the input file, create a job record, and enqueue for processing.
+Receive invoice documents from external channels (email, Telegram), authenticate the source, store the input file, create a job record, and enqueue for processing.
 
-**Rust (Axum)** — optimized for high-concurrency connection handling with minimal memory.
+**Rust (Axum + tokio)** — Axum serves a health endpoint; a background tokio task polls an IMAP mailbox for incoming invoices.
 
 ---
 
@@ -12,10 +12,11 @@ Receive invoice documents from external channels (Telegram, email), authenticate
 | Component | Choice |
 |-----------|--------|
 | Language | Rust |
-| Web framework | Axum |
-| Telegram client | teloxide or raw Bot API via reqwest |
-| Database | sqlx (SQLite locally, Postgres in prod) |
-| Queue | Redis via `redis-rs` |
+| Web framework | Axum (health endpoint only) |
+| Email client | `async-imap` 0.11 + `async-native-tls` |
+| Email parser | `mail-parser` 0.9 (MIME parsing, attachment extraction) |
+| Database | sqlx (Postgres) |
+| Queue | Redis Streams via `redis-rs` |
 | Blob storage | Local FS adapter (see infra contracts) |
 
 ---
@@ -25,17 +26,20 @@ Receive invoice documents from external channels (Telegram, email), authenticate
 | Decision | Rationale |
 |----------|-----------|
 | Rust/Axum over Python/FastAPI | Handles burst connections with minimal memory; stateless I/O-bound work |
-| Webhook mode over polling for Telegram | Lower latency, no polling overhead; ngrok for local dev |
-| Tenant identification from source | Telegram: map chat_id → tenant; Email: map sender domain → tenant |
+| IMAP polling over webhook for POC | No external service signup (SendGrid/Mailgun), no ngrok, no DNS changes; works behind NAT. Gmail App Password takes 2 minutes to set up |
+| `async-imap` over sync `imap` | Fits tokio runtime; avoids blocking the async executor |
+| `mail-parser` for MIME | Zero-copy, RFC 5322/8621 compliant, `.attachments()` API for direct extraction |
+| Tenant identification from source | Email: map sender domain/address → tenant |
 | Store raw file immediately | Decouple ingestion speed from processing speed |
+| Mark email as Seen after success | Failed processing leaves email UNSEEN for retry on next poll cycle |
 
 ---
 
 ## Interface Contracts
 
 ### Inputs
-- **Telegram webhook**: POST from Telegram Bot API with document message
-- **Email** (future): Inbound webhook from SendGrid/Mailgun, or IMAP polling
+- **Email (IMAP)**: Poll Gmail INBOX for UNSEEN messages with PDF/image attachments
+- **Telegram** (future): POST webhook from Telegram Bot API with document message
 
 ### Outputs
 - **Queue A message**: JSON message to processing queue (see infra contracts)
@@ -44,37 +48,57 @@ Receive invoice documents from external channels (Telegram, email), authenticate
 
 ---
 
-## API / Endpoints
+## IMAP Polling Flow
 
-### `POST /webhook/telegram`
-1. Receives Telegram update
-2. Validates it contains a document
-3. **Return 200 OK immediately** (FM-11.2) — Telegram retries if response is slow. All subsequent steps run asynchronously (spawned task).
-4. **Dedup check** (FM-11.2): Check if a job with same `file_unique_id` already exists for this tenant. If so, skip (idempotent).
-5. Identifies tenant from chat_id. If unknown → reply to user with rejection message, do not silently drop (FM-4.1).
-6. **Check file size** (FM-11.1): Use `getFile` response to check `file_size` before downloading. If > 20MB, reply to user: "File too large. Please compress the PDF or send as images." Do not create job record.
-7. Downloads file from Telegram servers
-8. Writes to blob storage
-9. Creates job record in DB (with `source_file_unique_id` for future dedup)
-10. Publishes to Queue A
+### Poll loop (background tokio task)
+```
+loop {
+    1. Connect to IMAP server (imap.gmail.com:993) with TLS
+    2. Login with credentials (from env vars)
+    3. SELECT INBOX
+    4. SEARCH for UNSEEN messages
+    5. For each UNSEEN message:
+       a. FETCH full message (RFC822)
+       b. Parse with mail-parser → extract attachments
+       c. For each PDF/image attachment:
+          - Dedup check: Message-ID + filename as unique key
+          - Tenant ID: hardcoded POC tenant
+          - Generate job_id (UUID v4)
+          - Write attachment to blob storage
+          - INSERT job record (status: queued)
+          - Publish QueueAMessage to Redis Stream
+       d. Mark message as \Seen via STORE command
+    6. LOGOUT
+    7. Sleep for poll_interval_secs (default: 30s)
+}
+```
 
 ### `GET /health`
-- Returns service health status
+- Returns service health status (Axum, runs alongside poll loop)
 
 ---
 
-## Telegram Integration
+## Email Integration
 
-### Bot setup
-- BotFather: create bot, get token
-- Set webhook URL: `https://<domain>/webhook/telegram`
-- Local dev: ngrok tunnel → localhost
+### Gmail setup (POC)
+- Enable 2-Step Verification on Google account
+- Create App Password at https://myaccount.google.com/apppasswords
+- Enable IMAP in Gmail Settings > Forwarding and POP/IMAP
+- Store credentials as `IMAP_USER` and `IMAP_PASSWORD` env vars
 
 ### File handling
-- Telegram sends `file_id` in message
-- Service calls `getFile` API → download URL
-- Download file bytes, write to blob storage
+- `mail-parser` extracts attachments with filename + content bytes
 - Support PDF, common image formats (jpg, png)
+- Dedup key: `{Message-ID}:{attachment_filename}` — prevents reprocessing on next poll
+
+### Configuration (`config/local.yaml`)
+```yaml
+imap:
+  server: imap.gmail.com
+  port: 993
+  poll_interval_secs: 30
+  mailbox: INBOX
+```
 
 ---
 
@@ -85,33 +109,35 @@ Receive invoice documents from external channels (Telegram, email), authenticate
 
 ### Production
 - Lookup table: `source_identifier → tenant_id`
-- Telegram: `chat_id` mapped to tenant
 - Email: sender domain or specific address mapped to tenant
-- Unknown source → **always reply to user** (FM-4.1): "This bot is not configured for your account. Contact [admin] to register." Log unregistered attempts with `chat_id` for operator visibility. Never return 200 to Telegram without informing the user.
+- Telegram: `chat_id` mapped to tenant
+- Unknown source → log unregistered attempts with sender address for operator visibility
 
 ---
 
 ## Rate Limiting
 - Per-tenant rate limit from `tenants.rate_limit` column
 - In-memory counter (POC) or Redis-based (production)
-- Exceeded → respond with "rate limited" message, don't enqueue
+- Exceeded → skip processing, log warning
 
 ---
 
 ## POC Scope
-- [ ] Axum server with `/webhook/telegram` endpoint
-- [ ] Telegram file download
+- [ ] IMAP poll loop connecting to Gmail
+- [ ] Email parsing and attachment extraction
+- [ ] Dedup on Message-ID + filename
 - [ ] Local filesystem blob write
-- [ ] SQLite job record creation
-- [ ] Redis queue publish
+- [ ] Postgres job record creation
+- [ ] Redis Stream queue publish
 - [ ] Hardcoded single tenant
-- [ ] ngrok for local webhook testing
+- [ ] Axum health endpoint
 
 ## Production Considerations
-- Webhook signature validation for Telegram
-- Email channel support (SendGrid inbound parse or IMAP)
-- Multi-tenant lookup and rate limiting
+- Telegram channel support (webhook mode with teloxide or raw reqwest)
+- Email via SendGrid/Mailgun inbound parse (webhook, lower latency than IMAP)
+- Multi-tenant lookup from sender domain/address
+- Per-tenant rate limiting
 - Request logging and tracing (correlation ID = job_id) — **structured JSON logging with job_id in every log line** (FM-CC.1)
-- Graceful shutdown (drain in-flight requests)
+- Graceful shutdown (drain in-flight poll cycle)
 - Health check endpoint for ECS/ALB
-- **Telegram Local Bot API** (FM-11.1): Self-hosted Telegram Bot API server removes the 20MB file download limit. Consider for production if large scanned PDFs are common.
+- IMAP IDLE for push-based notification instead of polling (reduces latency + Gmail API calls)

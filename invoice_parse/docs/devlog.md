@@ -45,3 +45,72 @@
 | sqlx (Rust) | 0.8 | 20M recent downloads, 0.9 is alpha |
 | redis (Rust) | 1.0 | Stable, adopted |
 | serde_yaml | 0.9 | 48M downloads; replacement serde_yml at 0.0.12 not adopted |
+
+---
+
+## Session 2: Processing Service — OCR Implementation + Pipeline Scaffolding
+
+### Code written
+Scaffolded the full processing pipeline across 4 modules + CLI entry point. **OCR module tested end-to-end; extraction, validation, and full pipeline not yet tested.**
+
+| Module | Status |
+|--------|--------|
+| `ocr.py` | **Tested** — hybrid PPStructureV3 + raw PaddleOCR with dynamic spatial clustering |
+| `extraction.py` | Written — GeminiExtractor with structured JSON output. Not yet tested (needs API key). |
+| `validation.py` | Written — VAT math, line items sum, dates, confidence scoring. Not yet tested. |
+| `worker.py` | Written — pipeline orchestration + queue consumer. Not yet tested. |
+| `cli.py` | **Tested** — OCR-only mode works. Full pipeline mode not yet tested. |
+
+### Design decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| PyMuPDF over pdf2image | Pure Python wheel — no system `poppler` dependency. Simpler on Windows and Docker. |
+| PPStructureV3 (not legacy PPStructure) | PaddleOCR 3.x API: `parsing_res_list` with `block_label`/`block_content`. |
+| Hybrid OCR: PPStructureV3 + raw PaddleOCR | PPStructureV3 misses page regions (see below). Raw OCR with coordinates fills gaps. |
+| Dynamic spatial clustering for raw OCR | Row grouping by y-gap detection, region dividers by large y-gaps. No hardcoded thresholds. |
+| `google-genai` SDK (not `google-generativeai`) | New unified SDK is GA. Uses `response_json_schema` + `response_mime_type`. |
+| `gemini-2.5-flash` as default model | Configurable via `GEMINI_MODEL` env var. |
+| `validate_extraction` takes `ocr_avg_confidence: float` not full `OcrOutput` | Validation module stays pure — no dependency on OCR data structures. |
+| CLI writes directly to output dir (not via BlobStore) | BlobStore enforces UUID path segments. CLI uses human-readable paths. |
+| `run_pipeline()` with optional `db_session_factory` | Same function serves worker (with DB) and CLI (without). |
+| HTML table parsing via stdlib `html.parser` | No BeautifulSoup dependency. |
+| Confidence = 50% checks + 30% OCR + 20% completeness | Deterministic, auditable. No LLM self-report per FM-8.1. |
+
+### Version choices (latest stable as of Mar 2026)
+
+| Component | Version | Source |
+|-----------|---------|--------|
+| paddleocr | 3.4.0 | PyPI, Jan 2026 |
+| paddlepaddle | 3.2.2 (pinned <3.3) | PyPI; 3.3.0 has PIR/oneDNN CPU bug |
+| PyMuPDF | 1.27.2 | PyPI, Mar 2026 |
+| google-genai | 1.56.0 | PyPI, Mar 2026 |
+| anthropic | 0.86.0 | PyPI, Mar 2026 |
+| openai | 2.29.0 | PyPI, Mar 2026 |
+| Pillow | 12.1.1 | PyPI, Feb 2026 |
+
+### OCR testing and iteration
+
+**PaddlePaddle 3.3.0 CPU inference bug:**
+- PaddlePaddle 3.3.0 introduced a PIR (Paddle Intermediate Representation) executor that breaks oneDNN CPU inference: `ConvertPirAttribute2RuntimeAttribute not support [pir::ArrayAttribute<pir::DoubleAttribute>]`
+- Affects both Windows and Linux Docker. `FLAGS_use_mkldnn=0` and `paddle.set_flags()` do not fix it — the C++ runtime ignores the Python-level flag.
+- [GitHub issue #77340](https://github.com/PaddlePaddle/Paddle/issues/77340). Fix: pin `paddlepaddle>=3.2.0,<3.3`.
+
+**PPStructureV3 misses page regions:**
+- On sample invoice, PPStructureV3 detects 5 blocks: 3 titles + 2 tables (header table + Job table). The Misc section (3 line items), VAT summary, and bottom totals are undetected — the layout model cuts off at ~84% page height.
+- PPStructureV3 bbox for the Job table (y=1645–2938) is larger than the content it actually extracted, swallowing the Misc section spatially without extracting it.
+
+**Hybrid OCR approach:**
+- Run both PPStructureV3 (for table structure with HTML) and basic PaddleOCR (for full-page text with bbox coordinates).
+- PPStructureV3 provides structured table HTML for detected regions.
+- Raw PaddleOCR provides (text, x, y) for every line on the page.
+- Dynamic row grouping: sort all lines by y, detect natural gaps between consecutive y-values (gap > 2× median = cluster boundary). Lines in the same y-cluster are same row, joined by tab.
+- Dynamic region detection: y-gaps > 3× median row gap insert `---` separators, giving the LLM section boundaries without hardcoded thresholds.
+- No bbox filtering of raw text — PPStructureV3 bboxes are unreliable as coverage claims. The LLM gets both views: structured tables + full spatial raw text.
+- Result: all 7 line items (4 Job + 3 Misc), VAT 20% = 461 CZK, and totals are captured.
+
+**Dockerfile iterations:**
+- `python:3.12-slim` base requires `libgl1 libglib2.0-0 libgomp1` for OpenCV + PaddlePaddle.
+- `paddlex[ocr]` extra required for PPStructureV3 (not installed by `paddleocr` alone).
+- Build context must be project root (`invoice_parse/`) for shared lib access. Docker Compose profile `processing` added.
+- `.env.sample` for API keys; `python-dotenv` loads `.env` in CLI and worker entry points.

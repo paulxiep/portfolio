@@ -27,6 +27,24 @@ services:
       timeout: 5s
       retries: 5
 
+  processing:
+    build:
+      context: ..
+      dockerfile: services/processing/Dockerfile
+    env_file:
+      - ../services/processing/.env
+    volumes:
+      - ../sample_invoice.pdf:/app/sample_invoice.pdf:ro
+      - processing_output:/app/output
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    profiles:
+      - processing
+
 volumes:
   pgdata:
   redisdata:
+  processing_output:

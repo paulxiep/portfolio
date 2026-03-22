@@ -207,14 +207,15 @@ class OpenAIExtractor(LLMExtractor):
 ---
 
 ## POC Scope
-- [ ] Redis queue consumer (poll loop)
-- [ ] PaddleOCR integration with layout detection
-- [ ] Gemini Flash 3.0 API call with structured output
-- [ ] Pydantic extraction model
-- [ ] Basic validation (schema + VAT math)
-- [ ] Simple confidence scoring
-- [ ] Write results to local filesystem + SQLite
-- [ ] Enqueue to Queue B
+- [x] Redis queue consumer (poll loop)
+- [x] PaddleOCR integration with layout detection
+- [x] Gemini Flash API call with structured output
+- [x] Pydantic extraction model (in shared lib)
+- [x] Basic validation (schema + VAT math + line items sum + dates)
+- [x] Simple confidence scoring (check pass rate + OCR confidence + field completeness)
+- [x] Write results to blob storage + DB (optional DB via DI)
+- [x] Enqueue to Queue B
+- [x] CLI entry point for standalone testing without infra
 
 ## Production Considerations
 - Horizontal scaling: multiple worker instances consuming from same queue
@@ -227,3 +228,36 @@ class OpenAIExtractor(LLMExtractor):
 - **Golden test set** (FM-CC.2): Maintain 20-30 invoices with known-correct extractions. Run extraction pipeline against this set weekly. Alert if per-field accuracy drops below threshold. Pin model versions where possible.
 - **Startup health check** (FM-7.2): Validate all LLM API keys with a trivial extraction test before accepting queue messages
 - **Full LLM response logging**: Log raw LLM responses (not just parsed extractions) for replay and degradation investigation
+
+---
+
+## Implementation Design Decisions
+
+Decisions made during MVP implementation that refine the original plan:
+
+| Decision | Rationale |
+|----------|-----------|
+| PPStructureV3 API (not legacy PPStructure) | PaddleOCR 3.x provides `layout_blocks` with typed regions and HTML tables via `PPStructureV3` class. Replaces older `PPStructure` API. |
+| PyMuPDF for PDF→image conversion | Pure Python wheel — no system `poppler` dependency (pdf2image requires it). Works on Windows without setup. |
+| `google-genai` SDK with `response_json_schema` | New unified Google GenAI SDK (GA). Structured output via `response_json_schema=Model.model_json_schema()` + `response_mime_type="application/json"`. Temperature 0 for deterministic extraction. |
+| `gemini-2.5-flash` default (configurable via `GEMINI_MODEL` env var) | Plan said "Gemini Flash 3.0" — actual model ID is `gemini-2.5-flash`. Made configurable for easy model upgrades. |
+| Validation decoupled from OcrOutput | `validate_extraction()` takes `ocr_avg_confidence: float` instead of full `OcrOutput`. Keeps validation pure with no dependency on OCR data structures. |
+| `run_pipeline()` with optional DB via DI | Single pipeline function serves both worker (with `db_session_factory`) and CLI (without). `_transition()` helper no-ops when factory is None. |
+| CLI bypasses BlobStore for output | BlobStore enforces UUID path segments for multi-tenant safety. CLI writes to human-readable `--output-dir` for inspection. |
+| HTML table parsing via stdlib `html.parser` | PPStructure returns tables as HTML. Used stdlib `HTMLParser` subclass — no BeautifulSoup dependency needed. |
+| Adaptive line items tolerance | `max(0.01, 0.005 × n_items)` absolute OR `< 0.5%` relative. Handles both few-item and many-item invoices. |
+
+### CLI Usage
+
+```bash
+# OCR only (no API key needed):
+python -m invoice_processing.cli path/to/invoice.pdf --ocr-only -v
+
+# Full pipeline (needs GEMINI_API_KEY):
+GEMINI_API_KEY=xxx python -m invoice_processing.cli path/to/invoice.pdf -v
+
+# Custom output directory and provider:
+python -m invoice_processing.cli invoice.pdf --output-dir ./results --provider gemini
+```
+
+Outputs: `ocr_output.json`, `extraction.json`, `validation.json` + summary to stdout.
