@@ -1,0 +1,33 @@
+# Rust build artifacts
+**/target/
+
+# Python environments
+**/.venv/
+**/__pycache__/
+**/*.pyc
+
+# PaddleOCR model cache
+.paddlex/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+
+# Local data / output
+data/
+output/
+*.env
+
+# Docs (not needed in containers)
+docs/
+*.md
+!README.md
+
+# Tests
+tests/
+.pytest_cache/

@@ -1,0 +1,123 @@
+services:
+  postgres:
+    image: postgres:18
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: invoice_parse
+      POSTGRES_USER: invoice
+      POSTGRES_PASSWORD: invoice
+    volumes:
+      - pgdata:/var/lib/postgresql
+      - ../migrations/001_initial.sql:/docker-entrypoint-initdb.d/001_initial.sql:ro
+      - ../seed.sql:/docker-entrypoint-initdb.d/002_seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U invoice -d invoice_parse"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:8
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # --- Model init (one-shot: downloads OCR models on first run) ---
+
+  model-init:
+    build:
+      context: ..
+      dockerfile: services/processing/Dockerfile
+    volumes:
+      - paddlex_models:/root/.paddlex/official_models
+    command: ["python", "-c", "from paddleocr import PPStructureV3, PaddleOCR; PPStructureV3(use_doc_orientation_classify=False, use_doc_unwarping=False, use_seal_recognition=False, use_formula_recognition=False, use_chart_recognition=False, use_table_recognition=True, device='cpu'); PaddleOCR(lang='en', text_detection_model_name='PP-OCRv5_mobile_det', text_recognition_model_name='en_PP-OCRv5_mobile_rec'); print('Models ready')"]
+    profiles:
+      - app
+
+  # --- Application services (profile: app) ---
+
+  processing:
+    build:
+      context: ..
+      dockerfile: services/processing/Dockerfile
+    env_file:
+      - ../.env
+    environment:
+      INVOICE_PARSE_CONFIG: /app/config/docker.yaml
+      PIPELINE_CACHE: "1"
+      OCR_DET_MODEL: PP-OCRv5_mobile_det
+      OCR_REC_MODEL: en_PP-OCRv5_mobile_rec
+    volumes:
+      - blobdata:/data/blobs
+      - paddlex_models:/root/.paddlex/official_models
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      model-init:
+        condition: service_completed_successfully
+    profiles:
+      - app
+
+  output:
+    build:
+      context: ..
+      dockerfile: services/output/Dockerfile
+    environment:
+      INVOICE_PARSE_CONFIG: /app/config/docker.yaml
+    volumes:
+      - blobdata:/data/blobs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    profiles:
+      - app
+
+  # One-shot: burst-enqueue all invoices, then exit
+  ingest:
+    build:
+      context: ..
+      dockerfile: services/ingestion/Dockerfile
+    environment:
+      INVOICE_PARSE_CONFIG: /app/config/docker.yaml
+    volumes:
+      - blobdata:/data/blobs
+      - ../invoices:/app/invoices:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ["/app/ingestion", "/app/invoices"]
+    profiles:
+      - ingest
+
+  dashboard:
+    build:
+      context: ..
+      dockerfile: services/dashboard/Dockerfile
+    ports:
+      - "8501:8501"
+    environment:
+      INVOICE_PARSE_CONFIG: /app/config/docker.yaml
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - app
+
+volumes:
+  pgdata:
+  redisdata:
+  blobdata:
+  paddlex_models:
