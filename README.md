@@ -1,33 +1,26 @@
-# Portfolio
+# Old Portfolio (2023-24)
 
-**This portfolio is only meant to supplement my employment experience, not replace it.**
+**[Full Portfolio →](https://paulxie.com/projects)**
 
 **Certificates in the [certificates](certificates) folder**
 
-It is both a place to showcase my other skills aside from what I demonstrated in work, and for me to develop new skills via new projects.
-
-Projects are divided into 2025+ and 2023-24, which correlates to AI-assisted (2025+) vs 100% hand-write (2023-24).
-
-I'm currently testing and pushing the boundaries of AI-assisted coding on [quant-trading-gym](quant-trading-gym) project.
+This is an archive of my pre-AI-assistance portfolio projects (2023-24), showcasing skills I developed through 100% hand-written code.
 
 More project info can be found on the projects' own readme.
 
-## 2025 onwards (AI-assisted projects)
+> **Note:** The [invoice-parse](invoice-parse), [portfolio-rag-chat](portfolio-rag-chat), and [quant-trading-gym](quant-trading-gym) folders remain as archived copies for old links. See the [full portfolio](https://paulxie.com/projects) for their latest versions.
 
-1. [quant-trading-gym](quant-trading-gym) (Rust + Python + TS + Dockerfile): a quantitative trading simulation in Rust with RL training in Python, modular quant strategies, risk management, microservices architecture, and web interface for portfolio manager game.
-2. [portfolio-rag-chat](portfolio-rag-chat) (Rust + Dockerfile): RAG chatbot that answers questions about code repositories. Parses Rust, Python, and TypeScript with tree-sitter, extracts docstrings and call graphs, incremental ingestion via SHA256 hashing. Intent classification routes queries to optimized retrieval strategies. Retrieval traces surface all sources with relevance scores.
-
-## 2023-2024 (100% hand-written)
+## Projects
 
 1. [7_wonders](7_wonders) (Python): Reinforcement learning using Gymnasium library. OOP. Only implemented Deep-Q Learning for now.
 2. [catan](catan) (Python): Object-oriented programming, practical AI programming.
 3. [simple_machine_learning_deployments](simple_machine_learning_deployments) (Python + Dockerfile): Machine Learning Engineering, Airflow, Flask
 4. [earth_surface_temperature](earth_surface_temperature) (Python): Interactive dashboard using Plotly and Streamlit.
-5. [24_plus_solver](24_plus_solver) (Python): This is mainly a toy project for a challenge, made use of advanced Python syntax like generator and overloading. 
+5. [24_plus_solver](24_plus_solver) (Python): This is mainly a toy project for a challenge, made use of advanced Python syntax like generator and overloading.
 6. [chat_csv](chat_csv) (Python): Chatbot app that allows you to ask questions about your csv or postgresql data.
 7. [sentiment_analysis](sentiment_analysis) (Python): NLP. Sentiment Analysis. Web-scraping..
 
-Sentiment Analysis, 7 Wonders, Catan, Simple ML Deployments, and Chat CSV are multi-day projects spanning a few days or weeks, 
+Sentiment Analysis, 7 Wonders, Catan, Simple ML Deployments, and Chat CSV are multi-day projects spanning a few days or weeks,
 the rest are 1-day projects.
 
 ---
@@ -36,16 +29,14 @@ the rest are 1-day projects.
 
 *Keywords extracted by GitHub Copilot*
 
-- **Programming Languages:** `Python` · `Rust` · `Typescript` · `SQL`
-- **Machine Learning & AI:** `TensorFlow` · `Keras` · `Scikit-learn` · `CatBoost` · `XGBoost` · `Deep Q-Learning (DQN)` · `Reinforcement Learning` · `LSTM` · `Bidirectional LSTM` · `Neural Networks` · `Embeddings` · `Experience Replay` · `Target Networks` · `Policy Networks` · `Gymnasium` · `Distributed Training` · `MirroredStrategy` · `WandB Experiment Tracking` · `Decision Tree` · `Random Forest` · `Gradient Boosted Trees` · `Ensemble Learning` · `Linear Models (Logistic Regression)` · `Support Vector Machines (SVM)` · `Feature Engineering` · `SHAP Feature Selection` · `Imputation Strategies` · `Training-Serving Parity`
-- **NLP & LLM:** `LangChain` · `OpenAI API (GPT-4/GPT-3.5)` · `Google Gemini API` · `RAG (Retrieval-Augmented Generation)` · `Vector Databases` · `LanceDB` · `FastEmbed` · `BGE Embeddings` · `Semantic Search` · `Docstring Extraction` · `JSDoc Parsing` · `Intent Classification (Cosine Similarity)` · `Prototype Query Embeddings` · `Retrieval Traces` · `Distance-to-Relevance Scoring` · `Sentiment Analysis` · `Text Classification` · `TF-IDF Vectorization` · `PyThaiNLP` · `Tokenization` · `Prompt Engineering` · `Natural Language to SQL`
-- **Quantitative Finance:** `Trading Simulation` · `Order Book / LOB` · `Matching Engine` · `Market Microstructure` · `Technical Indicators (SMA, EMA, RSI, MACD, Bollinger Bands, ATR)` · `Risk Metrics (VaR, Sharpe, Sortino, Max Drawdown)` · `VWAP Execution` · `Market Making` · `Fair Value Models` · `Random Walk` · `Fixed-Point Arithmetic` · `Batch Auction` · `Pairs Trading` · `Statistical Arbitrage`
-- **Web Development & APIs:** `Axum 0.8` · `Flask` · `REST API` · `WebSocket` · `Streamlit` · `htmx` · `Askama Templates` · `Tower HTTP` · `CORS` · `React 19` · `Vite 6` · `Tailwind CSS` · `Recharts` · `React Query (TanStack)` · `Real-Time Dashboard`
-- **Data Engineering & Visualization:** `Pandas` · `Polars` · `Apache Arrow` · `Apache Parquet` · `Plotly` · `Interactive Dashboards` · `Geospatial Visualization` · `Time Series Analysis` · `Signal Processing` · `Data Pipelines` · `Kaggle API` · `OHLCV Candle Aggregation`
-- **Databases:** `PostgreSQL` · `SQLAlchemy` · `LanceDB` · `Vector Search` · `SQLite` · `rusqlite`
-- **DevOps & MLOps:** `Docker` · `Docker Compose` · `Apache Airflow` · `DAG Orchestration` · `Model Serving` · `Batch Prediction` · `Containerization` · `CI/CD Concepts` · `Distroless Containers`
-- **Systems Programming (Rust):** `Tokio (Async Runtime)` · `Cargo Workspaces` · `Rayon (Parallel Iterators)` · *`PyO3 Python Bindings (planned)`* · `Tree-sitter (AST Parsing)` · `Ratatui/Crossterm (TUI)` · `Serde` · `Error Handling (anyhow/thiserror)` · `tracing (Structured Logging)` · `clap (CLI)` · `tokio-tungstenite` · `Let-Chaining` · `OnceLock` · `Call Graph Extraction (AST-based)` · `SmallVec`
-- **Software Engineering & Architecture:** `Object-Oriented Programming` · `Dataclasses` · `Factory Pattern` · `Strategy Pattern` · `Template Method Pattern` · `Command Pattern` · `Repository Pattern` · `Pipeline Pattern` · `Trait-Based Polymorphism` · `Trait-Based Abstraction (LanguageHandler)` · `Registry Pattern` · `Three-Layer Pipeline (Parse→Reconcile→Orchestrate)` · `Incremental Processing (SHA256)` · `Dependency Injection` · `Layered Architecture` · `Plugin Architecture` · `Modular Design` · `Separation of Concerns (SoC)` · `Data-Driven Configuration` · `Declarative Routing Table` · `Scored Search API` · `Ephemeral Side-Channel Pattern` · `Multi-Agent Systems` · `Event-Driven Architecture` · `High-Performance Computing` · `Hook Pattern`
+- **Programming Languages:** `Python` · `SQL`
+- **Machine Learning & AI:** `TensorFlow` · `Keras` · `Scikit-learn` · `CatBoost` · `XGBoost` · `Deep Q-Learning (DQN)` · `Reinforcement Learning` · `LSTM` · `Bidirectional LSTM` · `Neural Networks` · `Embeddings` · `Experience Replay` · `Target Networks` · `Policy Networks` · `Gymnasium` · `Distributed Training` · `MirroredStrategy` · `WandB Experiment Tracking` · `Random Forest` · `Gradient Boosted Trees` · `Ensemble Learning` · `Linear Models (Logistic Regression)` · `Feature Engineering`
+- **NLP & LLM:** `LangChain` · `OpenAI API (GPT-4/GPT-3.5)` · `Sentiment Analysis` · `Text Classification` · `TF-IDF Vectorization` · `PyThaiNLP` · `Tokenization` · `Prompt Engineering` · `Natural Language to SQL`
+- **Web Development & APIs:** `Flask` · `REST API` · `Streamlit`
+- **Data Engineering & Visualization:** `Pandas` · `Plotly` · `Interactive Dashboards` · `Geospatial Visualization` · `Time Series Analysis` · `Signal Processing` · `Kaggle API`
+- **Databases:** `PostgreSQL` · `SQLAlchemy`
+- **DevOps & MLOps:** `Docker` · `Docker Compose` · `Apache Airflow` · `DAG Orchestration` · `Model Serving` · `Batch Prediction` · `Containerization`
+- **Software Engineering & Architecture:** `Object-Oriented Programming` · `Dataclasses` · `Factory Pattern` · `Strategy Pattern`
 - **Game AI & Simulation:** `Game Engine Development` · `Hexagonal Grid Geometry` · `Pathfinding Algorithms` · `Heuristic Functions` · `Rule-Based AI` · `Monte Carlo Methods`
 - **Testing & Quality:** `Locust Load Testing` · `Model Evaluation (F1, Confusion Matrix)` · `Cross-Validation` · `Early Stopping`
 - **Other Tools:** `Tkinter GUI` · `Selenium Web Scraping` · `Multi-Threading` · `Generators` · `Lazy Evaluation`
