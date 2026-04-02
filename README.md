@@ -8,7 +8,7 @@ This is an archive of my pre-AI-assistance portfolio projects (2023-24), showcas
 
 More project info can be found on the projects' own readme.
 
-> **Note:** The [invoice-parse](https://github.com/paulxiep/invoice-parse), [portfolio-rag-chat](https://github.com/paulxiep/code-rag), and [quant-trading-gym](https://github.com/paulxiep/quant-trading-gym) folders remain as archived copies for old links, but has moved to their own repositories. Also available on [project list on new personal website](https://paulxie.com/projects).
+> **Note:** The [invoice-parse](https://github.com/paulxiep/invoice-parse) and [portfolio-rag-chat](https://github.com/paulxiep/code-rag)  folders remain as archived copies for old links, but has moved to their own repositories. [quant-trading-gym](https://github.com/paulxiep/quant-trading-gym) has been migrated fully. Also available on [project list on new personal website](https://paulxie.com/projects).
 
 ## Projects
 
