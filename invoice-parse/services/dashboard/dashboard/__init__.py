@@ -1,1 +1,0 @@
-"""Invoice pipeline monitoring dashboard."""
