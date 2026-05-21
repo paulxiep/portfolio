@@ -2,7 +2,7 @@
 
 **[Full Portfolio →](https://paulxie.com/projects)**
 
-**Certificates in the [certificates](https://github.com/paulxiep/portfolio/tree/main/certificates) folder**
+**Certificates in the [certificates](certificates) folder**
 
 This is an archive of my pre-AI-assistance portfolio projects (2023-24), showcasing skills I developed through 100% hand-written code.
 
@@ -12,13 +12,13 @@ More project info can be found on the projects' own readme.
 
 ## Projects
 
-1. [7_wonders](https://github.com/paulxiep/portfolio/tree/main/7_wonders) (Python): Reinforcement learning using Gymnasium library. OOP. Only implemented Deep-Q Learning for now.
-2. [catan](https://github.com/paulxiep/portfolio/tree/main/catan) (Python): Object-oriented programming, practical AI programming.
-3. [simple_machine_learning_deployments](https://github.com/paulxiep/portfolio/tree/main/simple_machine_learning_deployments) (Python + Dockerfile): Machine Learning Engineering, Airflow, Flask
-4. [earth_surface_temperature](https://github.com/paulxiep/portfolio/tree/main/earth_surface_temperature) (Python): Interactive dashboard using Plotly and Streamlit.
-5. [24_plus_solver](https://github.com/paulxiep/portfolio/tree/main/24_plus_solver) (Python): This is mainly a toy project for a challenge, made use of advanced Python syntax like generator and overloading.
-6. [chat_csv](https://github.com/paulxiep/portfolio/tree/main/chat_csv) (Python): Chatbot app that allows you to ask questions about your csv or postgresql data.
-7. [sentiment_analysis](https://github.com/paulxiep/portfolio/tree/main/sentiment_analysis) (Python): NLP. Sentiment Analysis. Web-scraping..
+1. [7_wonders](7_wonders) (Python): Reinforcement learning using Gymnasium library. OOP. Only implemented Deep-Q Learning for now.
+2. [catan](catan) (Python): Object-oriented programming, practical AI programming.
+3. [simple_machine_learning_deployments](simple_machine_learning_deployments) (Python + Dockerfile): Machine Learning Engineering, Airflow, Flask
+4. [earth_surface_temperature](earth_surface_temperature) (Python): Interactive dashboard using Plotly and Streamlit.
+5. [24_plus_solver](24_plus_solver) (Python): This is mainly a toy project for a challenge, made use of advanced Python syntax like generator and overloading.
+6. [chat_csv](chat_csv) (Python): Chatbot app that allows you to ask questions about your csv or postgresql data.
+7. [sentiment_analysis](sentiment_analysis) (Python): NLP. Sentiment Analysis. Web-scraping..
 
 Sentiment Analysis, 7 Wonders, Catan, Simple ML Deployments, and Chat CSV are multi-day projects spanning a few days or weeks,
 the rest are 1-day projects.
